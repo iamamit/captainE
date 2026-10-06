@@ -7,7 +7,7 @@ A video editor built from scratch that combines:
 - **A built-in AI co-editor** (codit, like Copilot in VS Code) that edits through the same commands a person uses,
 - **Git-style branches** for edits: work on a branch, compare it with another branch side by side, merge.
 
-Status: **research and planning only** (started 2026-10-01). No code yet.
+Status: planning docs plus the first web MVP foundation (see [MVP plan](docs/14-mvp-web.md)). Run `npm install && npm run dev`; tests: `npm test`, `npm run e2e`.
 
 ## Documents
 
@@ -27,6 +27,7 @@ Status: **research and planning only** (started 2026-10-01). No code yet.
 | 11 | [Licensing and legal](docs/11-licensing-and-legal.md) | Open-source licenses, codec patents, what's safe to ship |
 | 12 | [Roadmap](docs/12-roadmap.md) | Phases, deliverables, exit criteria, effort |
 | 13 | [Risks and open questions](docs/13-risks-and-open-questions.md) | What could sink it, decisions still to make |
+| 14 | [MVP: creator editor for desktop browsers](docs/14-mvp-web.md) | First release scope, stack and build order |
 | — | [References](docs/references.md) | Every source used, grouped by topic |
 
 ## Relationship to the other projects
