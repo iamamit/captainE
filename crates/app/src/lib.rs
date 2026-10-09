@@ -38,10 +38,13 @@ use captaine_time::Rational;
 
 /// Replace the open project with the one in `path`.
 pub fn open_project(app: &mut App, path: PathBuf) {
-    match Session::load(&path) {
-        Ok(s) => {
+    match Session::load_recovering(&path) {
+        Ok((s, note)) => {
             app.replace_session(s, Some(path.clone()));
             remember(&path);
+            if let Some(n) = note {
+                app.toast(n, true);
+            }
         }
         Err(e) => app.toast(e, true),
     }
@@ -117,6 +120,12 @@ fn remember(path: &Path) {
 
 /// The project to open at start-up: the path given, else the last one used, else a fresh one in ~/Movies/captainE.
 pub fn startup_session(arg: Option<PathBuf>) -> (Session, PathBuf) {
+    let (s, p, _) = startup_session_noted(arg);
+    (s, p)
+}
+
+/// Like [`startup_session`], plus a note when a damaged project was replaced by its backup.
+pub fn startup_session_noted(arg: Option<PathBuf>) -> (Session, PathBuf, Option<String>) {
     let candidates = arg.into_iter().chain(
         state_dir()
             .and_then(|d| std::fs::read_to_string(d.join("last_project")).ok())
@@ -124,8 +133,8 @@ pub fn startup_session(arg: Option<PathBuf>) -> (Session, PathBuf) {
     );
     for p in candidates {
         if p.exists() {
-            if let Ok(s) = Session::load(&p) {
-                return (s, p);
+            if let Ok((s, note)) = Session::load_recovering(&p) {
+                return (s, p, note);
             }
         }
     }
@@ -142,7 +151,39 @@ pub fn startup_session(arg: Option<PathBuf>) -> (Session, PathBuf) {
     }
     let s = blank_session(1920, 1080, Rational::FPS_30);
     let _ = s.save(&path);
-    (s, path)
+    (s, path, None)
+}
+
+/// Mark this run as started; true when the previous run never marked itself finished (a crash or a kill).
+pub fn mark_running(dir: &Path) -> bool {
+    let flag = dir.join("running");
+    let crashed = flag.exists();
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(&flag, std::process::id().to_string());
+    crashed
+}
+
+/// This run ended normally.
+pub fn mark_finished(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join("running"));
+}
+
+/// Write panics to `<dir>/crash-<time>.txt` (message, place, backtrace) before the usual report.
+pub fn install_crash_log(dir: PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let text = format!(
+            "captainE {} crashed\n{info}\n\n{}\n",
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("crash-{when}.txt")), text);
+        previous(info);
+    }));
 }
 
 struct Shell {
@@ -156,6 +197,9 @@ impl eframe::App for Shell {
 
     fn on_exit(&mut self) {
         self.app.on_exit();
+        if let Some(d) = state_dir() {
+            mark_finished(&d);
+        }
     }
 }
 
@@ -189,6 +233,10 @@ pub fn run(arg: Option<PathBuf>) -> eframe::Result {
         let path = helper_search_path(&std::env::var("PATH").unwrap_or_default(), &exe);
         std::env::set_var("PATH", path);
     }
+    let crashed = state_dir().is_some_and(|d| {
+        install_crash_log(d.clone());
+        mark_running(&d)
+    });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 940.0])
@@ -201,9 +249,18 @@ pub fn run(arg: Option<PathBuf>) -> eframe::Result {
         "captainE",
         options,
         Box::new(move |cc| {
-            let (session, path) = startup_session(arg);
+            let (session, path, note) = startup_session_noted(arg);
             let mut app = App::new(&cc.egui_ctx, session, Some(path));
             app.fit_on_start();
+            if crashed {
+                app.toast(
+                    "captainE did not close properly last time. Your edits were saved as you made them; older versions are in the project's .backups folder.",
+                    true,
+                );
+            }
+            if let Some(n) = note {
+                app.toast(n, true);
+            }
             Ok(Box::new(Shell { app }))
         }),
     )

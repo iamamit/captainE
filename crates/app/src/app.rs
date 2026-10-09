@@ -939,7 +939,11 @@ impl App {
         }
         if let Some(p) = &self.path {
             match self.session.save(p) {
-                Ok(()) => self.dirty_since = None,
+                Ok(()) => {
+                    self.dirty_since = None;
+                    // a timed copy every five minutes of work, the newest twenty kept
+                    let _ = self.session.snapshot(p, 300, 20);
+                }
                 Err(e) => {
                     self.dirty_since = None;
                     self.toast(format!("could not save: {e}"), true);

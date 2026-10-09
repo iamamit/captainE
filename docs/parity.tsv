@@ -59,6 +59,6 @@ d05	Delivery	Real-time playback of 4K and long timelines	5	0.5	scaled decode: 4K
 d06	Delivery	Color management and HDR	3	0.25	
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
 u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.5	
-u02	Platform	Stability and crash recovery	4	0.5	
+u02	Platform	Stability and crash recovery	4	0.75	atomic autosave after every edit, .bak of the last good file, timed snapshots (every 5 min, newest 20), automatic fallback to them when a file is damaged, unclean-exit notice, crash log; no in-app snapshot browser, no per-process watchdog
 u03	Platform	Installable app (.app bundle), Windows, Linux	3	0.5	macOS .app bundle (tools/bundle.sh; tools/test_bundle.sh checks plist, signature and a start with a bare PATH); no Windows/Linux, not notarized
 u04	Platform	Collaboration: branches, compare, merge	2	1	ahead of Adobe here

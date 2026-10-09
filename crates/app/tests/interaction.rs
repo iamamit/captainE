@@ -2149,3 +2149,69 @@ fn roll_slip_and_slide_tools_work_with_the_mouse() {
     settle(&mut h);
     assert_eq!(app(&h).tool, Tool::Slide);
 }
+
+#[test]
+fn an_unclean_exit_is_noticed_and_a_panic_leaves_a_crash_log() {
+    let d = std::env::temp_dir().join(format!("captaine-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(
+        !captaine_app::mark_running(&d),
+        "a first run is not a crash"
+    );
+    assert!(
+        captaine_app::mark_running(&d),
+        "no clean exit in between: the last run crashed"
+    );
+    captaine_app::mark_finished(&d);
+    assert!(!captaine_app::mark_running(&d), "a clean exit clears it");
+    captaine_app::mark_finished(&d);
+    // a panic on another thread writes the report
+    captaine_app::install_crash_log(d.clone());
+    let _ = std::thread::spawn(|| panic!("boom in the test")).join();
+    let logs: Vec<_> = std::fs::read_dir(&d)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("crash-"))
+        .collect();
+    assert_eq!(logs.len(), 1);
+    let text = std::fs::read_to_string(logs[0].path()).unwrap();
+    assert!(
+        text.contains("boom in the test") && text.contains("crashed"),
+        "{text}"
+    );
+    let _ = std::panic::take_hook();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn opening_a_damaged_project_falls_back_to_its_backup_and_says_so() {
+    let d = std::env::temp_dir().join(format!("captaine-open-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let p = d.join("p.captaine.json");
+    let good = captaine_app::blank_session(640, 360, Rational::FPS_24);
+    good.save(&p).unwrap();
+    let mut changed = captaine_app::blank_session(640, 360, Rational::FPS_24);
+    changed
+        .apply(captaine_ops::Op::RenameTimeline {
+            id: changed
+                .editor
+                .project()
+                .timelines
+                .keys()
+                .next()
+                .copied()
+                .unwrap(),
+            name: "Edited".into(),
+        })
+        .unwrap();
+    changed.save(&p).unwrap(); // the first version is now the .bak
+    std::fs::write(&p, "{ truncated").unwrap();
+    let mut h = editor();
+    captaine_app::open_project(app_mut(&mut h), p.clone());
+    settle(&mut h);
+    let said: Vec<_> = app(&h).toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("backup")), "{said:?}");
+    assert_eq!(app(&h).timeline().unwrap().name, "Timeline 1");
+    let _ = std::fs::remove_dir_all(&d);
+}

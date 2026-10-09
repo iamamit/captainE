@@ -46,6 +46,56 @@ struct FileV2 {
     redo: Vec<HistoryEntry>,
 }
 
+/// `<project>.bak`: the version before the latest save.
+pub fn backup_path(path: &Path) -> std::path::PathBuf {
+    let mut n = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    n.push(".bak");
+    path.with_file_name(n)
+}
+
+fn snapshots_dir(path: &Path) -> std::path::PathBuf {
+    let mut n = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    n.push(".backups");
+    path.with_file_name(n)
+}
+
+fn snapshot_time(p: &Path) -> Option<u64> {
+    p.file_stem()?.to_str()?.parse().ok()
+}
+
+/// Timed snapshots of a project, oldest first.
+pub fn snapshots(path: &Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<(u64, std::path::PathBuf)> = fs::read_dir(snapshots_dir(path))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter_map(|p| snapshot_time(&p).map(|t| (t, p)))
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Keep the version about to be replaced as `.bak`, but not more often than every 20 seconds, so a burst of
+/// edits does not copy a big file each time yet a bad write never costs more than a short while of work.
+fn keep_previous(path: &Path) {
+    let bak = backup_path(path);
+    let recent = fs::metadata(&bak)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < 20);
+    if !recent && path.exists() && Session::load(path).is_ok() {
+        let _ = fs::copy(path, &bak);
+    }
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -192,7 +242,51 @@ impl Session {
         let json = serde_json::to_string_pretty(&f).map_err(|e| e.to_string())?;
         let tmp = path.with_extension("tmp");
         fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        keep_previous(path);
         fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// Open a project; when the file is damaged, fall back to the last good copy (`.bak`) or the newest
+    /// timed snapshot, and say so. The second value is that note.
+    pub fn load_recovering(path: &Path) -> Result<(Session, Option<String>), String> {
+        let first = match Session::load(path) {
+            Ok(s) => return Ok((s, None)),
+            Err(e) => e,
+        };
+        let mut tries = vec![backup_path(path)];
+        tries.extend(snapshots(path).into_iter().rev());
+        for b in tries {
+            if let Ok(s) = Session::load(&b) {
+                let note = format!(
+                    "{} could not be read ({first}); opened the backup {} instead",
+                    path.display(),
+                    b.file_name()
+                        .map_or(String::new(), |n| n.to_string_lossy().into_owned())
+                );
+                return Ok((s, Some(note)));
+            }
+        }
+        Err(first)
+    }
+
+    /// Write a timed snapshot next to the project (`<project>.backups/<seconds>.json`), keeping the newest
+    /// `keep`. A snapshot is only taken when the last one is older than `min_age_secs`.
+    pub fn snapshot(&self, path: &Path, min_age_secs: u64, keep: usize) -> Result<bool, String> {
+        let existing = snapshots(path);
+        let now = now();
+        if let Some(last) = existing.last().and_then(|p| snapshot_time(p)) {
+            if now.saturating_sub(last) < min_age_secs {
+                return Ok(false);
+            }
+        }
+        let dir = snapshots_dir(path);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        self.save(&dir.join(format!("{now}.json")))?;
+        let all = snapshots(path);
+        for old in all.iter().take(all.len().saturating_sub(keep)) {
+            let _ = fs::remove_file(old);
+        }
+        Ok(true)
     }
 
     // ---- editing (the working state) ------------------------------------------------------------------------
