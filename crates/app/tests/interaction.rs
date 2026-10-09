@@ -1988,3 +1988,86 @@ fn a_mask_can_be_drawn_with_the_mouse() {
         4
     );
 }
+
+#[test]
+fn media_can_be_tagged_binned_and_searched_from_the_pool() {
+    use captaine_app::media_org::*;
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let media: Vec<_> = {
+        let mut m: Vec<_> = app(&h).project().media.values().cloned().collect();
+        m.sort_by(|a, b| a.name.cmp(&b.name));
+        m
+    };
+    app_mut(&mut h).selected_clip = None;
+    app_mut(&mut h).selected_media = Some(media[1].id);
+    app_mut(&mut h).inspector_tab = InspectorTab::Metadata;
+    settle(&mut h);
+    // type a tag and a bin name in the metadata tab
+    h.get_by_label("Media Tags").click();
+    settle(&mut h);
+    h.get_by_label("Media Tags")
+        .type_text("Drone, sunset, drone");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    h.get_by_label("Media Bin").click();
+    settle(&mut h);
+    h.get_by_label("Media Bin").type_text("Day 1");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    let meta = app(&h).project().meta[&media[1].id].clone();
+    assert_eq!(meta.tags, ["Drone", "sunset"], "duplicates dropped");
+    assert_eq!(meta.bin, "Day 1");
+    // the pool lists the bin, and the search finds the clip by its tag
+    let counts = bin_counts(&app(&h).project().meta, &app(&h).project().media);
+    assert_eq!(counts, [("Day 1".to_string(), 1)]);
+    assert!(matches_search(&media[1], Some(&meta), "sunset drone"));
+    assert!(!matches_search(&media[0], None, "sunset"));
+    assert!(matches_search(&media[0], None, "a"), "names still match");
+    h.get_by_label("Bin Day 1").click();
+    settle(&mut h);
+    assert_eq!(app(&h).user_bin.as_deref(), Some("Day 1"));
+    // undo takes the organising back
+    app_mut(&mut h).undo();
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(app(&h).project().meta.is_empty());
+}
+
+#[test]
+fn proxies_are_made_in_the_background_and_attached() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let dir = std::env::temp_dir().join(format!("captaine-proxy-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    app_mut(&mut h).path = Some(dir.join("p.captaine"));
+    let id = app(&h)
+        .project()
+        .media
+        .values()
+        .find(|m| m.has_video)
+        .unwrap()
+        .id;
+    app_mut(&mut h).make_proxies(&[id], 90);
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.step();
+        if app(&h).project().media[&id].proxy.is_some() {
+            break;
+        }
+    }
+    let proxy = app(&h).project().media[&id]
+        .proxy
+        .clone()
+        .expect("a proxy was attached");
+    assert!(std::path::Path::new(&proxy).exists());
+    assert!(proxy.contains("p.captaine.cache"));
+    // asking again does nothing new
+    app_mut(&mut h).make_proxies(&[id], 90);
+    assert!(app(&h).proxies.busy.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use captaine_agent::*;
 use captaine_model::*;
-use captaine_ops::apply;
+use captaine_ops::{apply, Author, Editor, Op};
 use captaine_time::{Rational, RationalTime};
 use serde_json::{json, Value};
 
@@ -108,7 +108,7 @@ fn read_tools_describe_the_project() {
         .call("nonsense", &json!({}))
         .unwrap_err()
         .contains("unknown tool"));
-    assert_eq!(tool_definitions().as_array().unwrap().len(), 36);
+    assert_eq!(tool_definitions().as_array().unwrap().len(), 37);
     for d in tool_definitions().as_array().unwrap() {
         assert!(
             d["name"].is_string()
@@ -447,4 +447,46 @@ fn credentials_round_trip_through_a_private_file() {
     unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
     Credentials::forget();
     assert_eq!(Credentials::load(), None);
+}
+
+#[test]
+fn copilot_can_file_and_tag_media() {
+    let mut ed = Editor::new(Project::new(ProjectSettings::default()));
+    ed.apply(
+        Author::User,
+        Op::AddMedia {
+            media: MediaRef {
+                id: Id::from_u128(5),
+                name: "beach.mp4".into(),
+                path: "/beach.mp4".into(),
+                duration: Some(RationalTime::new(100, Rational::FPS_30)),
+                has_audio: true,
+                width: 16,
+                height: 9,
+                has_video: true,
+                proxy: None,
+            },
+        },
+    )
+    .unwrap();
+    let mut tools = ToolBox::new(ed.project(), &[], None, 0.0).unwrap();
+    let out = tools
+        .call(
+            "organize_media",
+            &json!({"media": "beach.mp4", "bin": "Day 1", "tags": ["drone", " sunset "], "note": "wide"}),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["bin"], "Day 1");
+    assert_eq!(v[0]["tags"], json!(["drone", "sunset"]));
+    // omitted fields stay; an empty bin takes it out
+    let out = tools
+        .call("organize_media", &json!({"media": "beach.mp4", "bin": ""}))
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v[0]["bin"].is_null());
+    assert_eq!(v[0]["note"], "wide");
+    assert!(tools
+        .call("organize_media", &json!({"media": "nope.mp4", "bin": "x"}))
+        .is_err());
 }

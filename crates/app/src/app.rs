@@ -194,6 +194,12 @@ pub struct App {
     pub voiceover: Option<crate::voiceover::Recorder>,
     /// The folder the LUT browser lists
     pub lut_folder: Option<PathBuf>,
+    /// Proxy files being made
+    pub proxies: crate::media_org::ProxyJobs,
+    /// Show only this user bin in the media pool
+    pub user_bin: Option<String>,
+    /// Text boxes of the metadata tab: (media, tags, note)
+    pub meta_draft: Option<(Id, String, String, String)>,
     audio_live: bool,
 
     // engine plumbing
@@ -306,6 +312,9 @@ impl App {
             audio: AudioEngine::new(),
             voiceover: None,
             lut_folder: None,
+            proxies: Default::default(),
+            user_bin: None,
+            meta_draft: None,
             audio_live: false,
             worker: RenderWorker::spawn(ctx.clone()),
             jobs: Jobs::spawn(ctx.clone()),
@@ -883,6 +892,7 @@ impl App {
                 }
             }
         }
+        self.poll_proxies();
         for done in self.jobs.poll() {
             match done {
                 Done::Thumb(id, img) => {

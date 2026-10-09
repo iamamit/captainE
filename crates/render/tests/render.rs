@@ -548,7 +548,7 @@ fn the_other_transitions_reveal_the_new_picture_their_own_way() {
         .unwrap();
     f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, b))
         .unwrap();
-    let mut set = |f: &mut Fixture, kind| {
+    let set = |f: &mut Fixture, kind| {
         f.ed.apply(
             Author::User,
             Op::SetTransition {

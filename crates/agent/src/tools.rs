@@ -311,6 +311,7 @@ impl ToolBox {
         match name {
             "get_timeline" => Ok(self.timeline_json()?.to_string()),
             "list_media" => self.list_media(),
+            "organize_media" => self.organize_media(input),
             "find_silences" => self.find_silences(input),
             "split" => self.split(input),
             "delete_item" => self.delete_item(input),
@@ -360,10 +361,36 @@ impl ToolBox {
                     "duration_sec": m.duration.map(|d| r2(d.to_seconds_f64())),
                     "has_video": m.has_video, "has_audio": m.has_audio,
                     "size": if m.has_video { json!([m.width, m.height]) } else { Value::Null },
+                    "bin": self.project().meta.get(&m.id).map(|x| x.bin.clone()).filter(|b| !b.is_empty()),
+                    "tags": self.project().meta.get(&m.id).map(|x| x.tags.clone()).filter(|t| !t.is_empty()),
+                    "note": self.project().meta.get(&m.id).map(|x| x.note.clone()).filter(|n| !n.is_empty()),
                 })
             })
             .collect();
         Ok(Value::Array(v).to_string())
+    }
+
+    fn organize_media(&mut self, input: &Value) -> R {
+        let m = self.find_media(req_text(input, "media")?)?;
+        let mut meta = self.project().meta.get(&m.id).cloned().unwrap_or_default();
+        if let Some(b) = text(input, "bin") {
+            meta.bin = b.trim().to_string();
+        }
+        if let Some(tags) = input.get("tags").and_then(Value::as_array) {
+            meta.tags = tags
+                .iter()
+                .filter_map(|t| t.as_str())
+                .map(|t| t.trim().to_string())
+                .collect();
+        }
+        if let Some(n) = text(input, "note") {
+            meta.note = n.trim().to_string();
+        }
+        self.commit(Op::SetMediaMeta {
+            media: m.id,
+            meta: Some(meta),
+        })?;
+        self.list_media()
     }
 
     fn clip_with_media(&self, key: &str) -> Result<(Clip, MediaRef, i64), String> {
@@ -1465,6 +1492,7 @@ pub fn tool_definitions() -> Value {
     let track = json!({"type": "string", "description": "track name such as V1 or A2"});
     json!([
         {"name": "get_timeline", "description": "The whole timeline: tracks, every clip/title/gap with its id, start and duration in seconds, and non-default properties. Call this before editing.", "input_schema": obj(json!({}), &[])},
+        {"name": "organize_media", "description": "File a media item in a bin of the media pool (a folder the user sees), give it tags and a note. Omitted fields stay as they are; bin \"\" takes it out of its bin; tags replaces the whole tag list. Returns the media list.", "input_schema": obj(json!({"media": {"type": "string"}, "bin": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}}), &["media"])},
         {"name": "list_media", "description": "The media pool: ids, names, lengths, whether each has picture and sound.", "input_schema": obj(json!({}), &[])},
         {"name": "find_silences", "description": "Analyse a clip's audio and list quiet stretches (timeline seconds). Read-only.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number", "description": "level below which audio counts as silent; default -42"}, "min_seconds": {"type": "number", "description": "shortest silence to report; default 0.45"}}), &["item_id"])},
         {"name": "split", "description": "Cut the item under a time on one track into two (nothing moves).", "input_schema": obj(json!({"track": track, "at_sec": {"type": "number"}}), &["track", "at_sec"])},

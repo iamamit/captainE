@@ -1042,6 +1042,22 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 proxy: prev,
             })
         }
+        Op::SetMediaMeta { media, meta } => {
+            if !p.media.contains_key(media) {
+                return Err(OpError::NotFound("media", *media));
+            }
+            if let Some(m) = meta {
+                m.check().map_err(OpError::BadProps)?;
+            }
+            let prev = match meta.clone().filter(|m| !m.is_empty()) {
+                Some(m) => p.meta.insert(*media, m),
+                None => p.meta.remove(media),
+            };
+            Ok(Op::SetMediaMeta {
+                media: *media,
+                meta: prev,
+            })
+        }
         Op::SetAnimTrack { item, prop, keys } => {
             let loc = item_loc(p, *item)?;
             let rate = timeline_rate(p, loc.timeline);

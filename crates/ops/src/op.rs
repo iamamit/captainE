@@ -136,6 +136,11 @@ pub enum Op {
         media: Id,
         proxy: Option<String>,
     },
+    /// File a media item in a bin, tag it, note it (None clears all of that).
+    SetMediaMeta {
+        media: Id,
+        meta: Option<captaine_model::MediaMeta>,
+    },
     /// Replace a title's content and look (the id and the length stay).
     SetTitle {
         item: Id,
@@ -216,6 +221,11 @@ impl Op {
             Op::SetTrackMix { track, .. } => format!("Set pan, solo or lock of track {track}"),
             Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
             Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
+            Op::SetMediaMeta { media, meta } => match meta {
+                Some(m) if !m.bin.is_empty() => format!("Move {media} to bin {}", m.bin),
+                Some(_) => format!("Tag {media}"),
+                None => format!("Clear the organising of {media}"),
+            },
             Op::SetTitle { item, .. } => format!("Edit title {item}"),
             Op::SetAnimTrack { item, prop, keys } => {
                 if keys.is_empty() {

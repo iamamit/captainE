@@ -11,6 +11,7 @@ pub mod jobs;
 pub mod links;
 pub mod loudness_ops;
 pub mod markers_ui;
+pub mod media_org;
 pub mod multicam;
 pub mod nesting;
 pub mod presets_store;

@@ -1316,6 +1316,27 @@ fn bins(app: &mut App, ui: &mut Ui) {
             }
         });
     }
+    let mine = crate::media_org::bin_counts(&app.project().meta, &app.project().media);
+    if !mine.is_empty() {
+        ui.add_space(4.0);
+        ui.label(RichText::new("My bins").size(12.0).color(theme::MUTED));
+        for (name, n) in mine {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                let on = app.user_bin.as_deref() == Some(name.as_str());
+                let text = RichText::new(format!("{name} ({n})"))
+                    .size(12.0)
+                    .color(if on { Color32::WHITE } else { theme::MUTED });
+                let r = ui.add(egui::Label::new(text).sense(Sense::click()));
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Bin {name}"))
+                });
+                if r.clicked() {
+                    app.user_bin = if on { None } else { Some(name.clone()) };
+                }
+            });
+        }
+    }
 }
 
 fn grid(app: &mut App, ui: &mut Ui) {
@@ -1325,7 +1346,14 @@ fn grid(app: &mut App, ui: &mut Ui) {
         .media
         .values()
         .filter(|m| m.nested_timeline().is_none())
-        .filter(|m| q.is_empty() || m.name.to_lowercase().contains(&q))
+        .filter(|m| {
+            q.is_empty() || crate::media_org::matches_search(m, app.project().meta.get(&m.id), &q)
+        })
+        .filter(|m| {
+            app.user_bin
+                .as_ref()
+                .is_none_or(|b| app.project().meta.get(&m.id).is_some_and(|x| &x.bin == b))
+        })
         .filter(|m| match app.bin {
             Bin::All => true,
             Bin::Footage => m.has_video,
@@ -1471,6 +1499,35 @@ fn media_cell(app: &mut App, ui: &mut Ui, m: &MediaRef, w: f32) {
         }
         if ui.button("Add to Timeline").clicked() {
             app.place_media(m.id, None, None);
+            ui.close();
+        }
+        ui.menu_button("Move to bin", |ui| {
+            let mine = crate::media_org::bin_counts(&app.project().meta, &app.project().media);
+            for (name, _) in mine {
+                if ui.button(&name).clicked() {
+                    app.move_to_bin(m.id, &name);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("New bin").size(11.0).color(theme::MUTED));
+            let mut name = String::new();
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .id_salt(("new-bin", m.id))
+                    .hint_text("Name, then Enter"),
+            );
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                app.move_to_bin(m.id, &name);
+                ui.close();
+            }
+            if app.media_meta(m.id).bin != "" && ui.button("Take out of its bin").clicked() {
+                app.move_to_bin(m.id, "");
+                ui.close();
+            }
+        });
+        if m.has_video && ui.button("Make proxy").clicked() {
+            app.make_proxies(&[m.id], 540);
             ui.close();
         }
     });
@@ -2656,6 +2713,77 @@ fn metadata(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(k).color(theme::MUTED).size(11.5));
             ui.label(RichText::new(v).font(mono(11.0)));
         });
+    }
+    if m.has_video && m.nested_timeline().is_none() {
+        let busy = app.proxies.busy.contains(&m.id);
+        ui.horizontal(|ui| {
+            if chip(
+                ui,
+                if busy {
+                    "Making proxy…"
+                } else {
+                    "Make proxy"
+                },
+                false,
+                !busy && m.proxy.is_none(),
+            )
+            .on_hover_text(
+                "A light 540p copy that plays smoothly while you edit; exports use the original",
+            )
+            .clicked()
+            {
+                app.make_proxies(&[m.id], 540);
+            }
+            let all: Vec<Id> = app.project().media.keys().copied().collect();
+            if chip(ui, "Make all proxies", false, true).clicked() {
+                app.make_proxies(&all, 540);
+            }
+        });
+    }
+    section(ui, "Organise");
+    let draft = app.meta_draft.take().filter(|d| d.0 == m.id);
+    let (_, mut bin, mut tags, mut note) = draft.unwrap_or_else(|| {
+        let cur = app.media_meta(m.id);
+        (m.id, cur.bin, cur.tags.join(", "), cur.note)
+    });
+    let mut commit = false;
+    for (label, text, hint) in [
+        ("Bin", &mut bin, "none"),
+        ("Tags", &mut tags, "comma, separated"),
+        ("Note", &mut note, "a note about this clip"),
+    ] {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [44.0, 22.0],
+                egui::Label::new(RichText::new(label).size(12.0)),
+            );
+            let r = ui.add(
+                egui::TextEdit::singleline(text)
+                    .id_salt((label, m.id))
+                    .hint_text(hint)
+                    .desired_width(ui.available_width()),
+            );
+            r.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    true,
+                    format!("Media {label}"),
+                )
+            });
+            commit |= r.lost_focus();
+        });
+    }
+    if commit {
+        app.set_media_meta(
+            m.id,
+            captaine_model::MediaMeta {
+                bin: bin.trim().to_string(),
+                tags: crate::media_org::parse_tags(&tags),
+                note: note.trim().to_string(),
+            },
+        );
+    } else {
+        app.meta_draft = Some((m.id, bin, tags, note));
     }
 }
 

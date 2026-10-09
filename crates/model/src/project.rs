@@ -1233,6 +1233,48 @@ pub struct Project {
     pub settings: ProjectSettings,
     pub media: BTreeMap<Id, MediaRef>,
     pub timelines: BTreeMap<Id, Arc<Timeline>>,
+    /// How the user organised the media pool: bins, tags and notes
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<Id, MediaMeta>,
+}
+
+/// A media item's place in the user's bins, with tags and a note, all searchable.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaMeta {
+    /// Name of the user's bin ("" for none)
+    #[serde(default)]
+    pub bin: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+impl MediaMeta {
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.bin.len() > 60 || self.note.len() > 2000 || self.tags.len() > 20 {
+            return Err("bin names are up to 60 characters, notes 2000, and 20 tags");
+        }
+        if self
+            .tags
+            .iter()
+            .any(|t| t.trim().is_empty() || t.len() > 40)
+        {
+            return Err("tags are 1 to 40 characters");
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bin.is_empty() && self.tags.is_empty() && self.note.is_empty()
+    }
+
+    /// Does a lower-case search word match the bin, a tag or the note?
+    pub fn matches(&self, q: &str) -> bool {
+        self.bin.to_lowercase().contains(q)
+            || self.note.to_lowercase().contains(q)
+            || self.tags.iter().any(|t| t.to_lowercase().contains(q))
+    }
 }
 
 impl Project {
@@ -1241,6 +1283,7 @@ impl Project {
             settings,
             media: BTreeMap::new(),
             timelines: BTreeMap::new(),
+            meta: BTreeMap::new(),
         }
     }
 
