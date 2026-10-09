@@ -1,0 +1,64 @@
+# id	area	feature	weight	status	note
+# status: 0 = absent, 0.25 = engine only or very partial, 0.5 = works but clearly short of Adobe, 0.75 = solid, 1 = at parity for a creator
+e01	Editing	Multi-track timeline; insert, overwrite, lift, extract, split, trim	5	1	
+e02	Editing	Ripple, roll, slip, slide with the mouse	4	0.5	engine and CLI only for roll/slide/slip; mouse does ripple trim
+e03	Editing	Snapping, zoom, scrub, JKL shuttle	3	1	
+e04	Editing	Linked audio and video clips	4	0	
+e05	Editing	Multi-select, copy, paste, duplicate	4	0	
+e06	Editing	Undo, redo, history	5	1	also branches
+e07	Editing	Track controls: lock, solo, mute, target, add and remove	3	0.5	hide/mute and add exist
+e08	Editing	Nested sequences / compound clips	3	0	
+e09	Editing	Multicam	2	0	
+e10	Editing	Source monitor with 3-point and 4-point edits	4	0	
+e11	Editing	Proxy workflow	3	0.5	manual proxies work; no auto-generation
+e12	Editing	Speed, reverse, freeze, time remapping	5	0	
+e13	Editing	Video transitions (dissolve, dip, wipe, slide)	5	0	
+e14	Editing	Keyframe animation on any property	5	0	
+e15	Editing	Markers and chapters	2	0	
+e16	Editing	Media bins, search, metadata	3	0.5	
+e17	Editing	Several sequences open and switchable	3	0.25	model supports it
+e18	Editing	Interchange: EDL, FCPXML, OTIO, SRT import/export	3	0	
+e19	Editing	Autosave and versioning	3	1	commits, branches, merge
+v01	Video	Transform, opacity, blend modes	4	0.75	4 blend modes
+v02	Video	Titles and text with templates and styling	4	0.5	3 templates, one font
+v03	Video	Shapes and graphics layers	3	0	
+v04	Video	Masks	3	0	
+v05	Video	Chroma key	4	0	
+v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0	
+v07	Video	Effects stack, inspector, presets	4	0	
+v08	Video	Stabilization	3	0	
+v09	Video	Motion tracking	2	0	
+v10	Video	Text animators and animation presets	3	0	
+v11	Video	Adjustment layers	3	0	
+v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.25	
+v13	Video	AI background removal / rotoscoping	3	0	
+c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.5	4 controls
+c02	Color	Wheels, curves, HSL	4	0	
+c03	Color	Scopes (waveform, vectorscope, histogram)	3	0	
+c04	Color	LUTs	3	0	
+c05	Color	Auto color and shot matching	2	0	
+a01	Audio	Gain, pan, fades, mute, waveforms	4	1	
+a02	Audio	Mixer panel with track faders and live meters	4	0	
+a03	Audio	Loudness measure and normalize to a target	4	0.5	measure only
+a04	Audio	EQ, compressor, limiter, de-esser	4	0	
+a05	Audio	Noise reduction and voice cleanup	4	0	
+a06	Audio	Auto ducking	3	0	
+a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
+a08	Audio	Voice-over recording	2	0	
+i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0	
+i02	AI	Edit by transcript, filler-word removal	4	0.25	silence removal only
+i03	AI	Scene detection and auto-cut	3	0	
+i04	AI	Natural-language editing assistant	4	0.75	Claude agent and local skills
+i05	AI	Auto-reframe to vertical and other aspect ratios	3	0	
+i06	AI	Generative fill, extend, text-to-video	1	0	out of scope; counted so the score is honest
+d01	Delivery	Export H.264, HEVC, ProRes	5	1	
+d02	Delivery	Export presets, queue, background export	4	0	
+d03	Delivery	Hardware-accelerated encode	3	0	
+d04	Delivery	Range export, audio only, GIF, image sequence, alpha	3	0	
+d05	Delivery	Real-time playback of 4K and long timelines	5	0.25	CPU compositor
+d06	Delivery	Color management and HDR	3	0.25	
+d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
+u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.5	
+u02	Platform	Stability and crash recovery	4	0.5	
+u03	Platform	Installable app (.app bundle), Windows, Linux	3	0	
+u04	Platform	Collaboration: branches, compare, merge	2	1	ahead of Adobe here
