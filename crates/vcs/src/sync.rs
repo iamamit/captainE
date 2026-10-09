@@ -90,6 +90,28 @@ pub fn sync_ops(from: &Project, to: &Project) -> Result<Vec<Op>, String> {
                 name: t.name.clone(),
             });
         }
+        // markers: gone, new and changed
+        for m in &f.markers {
+            if !t.markers.iter().any(|x| x.id == m.id) {
+                ops.push(Op::RemoveMarker {
+                    timeline: *tid,
+                    marker: m.id,
+                });
+            }
+        }
+        for m in &t.markers {
+            match f.markers.iter().find(|x| x.id == m.id) {
+                None => ops.push(Op::AddMarker {
+                    timeline: *tid,
+                    marker: m.clone(),
+                }),
+                Some(old) if old != m => ops.push(Op::SetMarker {
+                    timeline: *tid,
+                    marker: m.clone(),
+                }),
+                _ => {}
+            }
+        }
     }
 
     // phase 1: take out every item that is gone or out of order, in every surviving track

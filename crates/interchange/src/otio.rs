@@ -21,6 +21,9 @@ fn range(start: i64, duration: i64, rate: Rational) -> Value {
     json!({"OTIO_SCHEMA": "TimeRange.1", "start_time": rt(start, rate), "duration": rt(duration, rate)})
 }
 
+/// OTIO's colour names for our six marker colours, in [`Marker::COLORS`] order.
+const OTIO_COLORS: [&str; 6] = ["BLUE", "GREEN", "YELLOW", "RED", "PURPLE", "CYAN"];
+
 pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
     let tl = project.timeline(timeline).ok_or("timeline not found")?;
     let rate = tl.rate;
@@ -106,11 +109,24 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
             "metadata": {"captaine": {"gain_db": track.gain_db}},
         }));
     }
+    let markers: Vec<Value> = tl
+        .markers
+        .iter()
+        .map(|m| {
+            json!({
+                "OTIO_SCHEMA": "Marker.2",
+                "name": m.name,
+                "color": OTIO_COLORS[(m.color as usize).min(OTIO_COLORS.len() - 1)],
+                "marked_range": range(m.tick, m.duration, rate),
+                "metadata": {"captaine": {"note": m.note}},
+            })
+        })
+        .collect();
     let doc = json!({
         "OTIO_SCHEMA": "Timeline.1",
         "name": tl.name,
         "global_start_time": rt(0, rate),
-        "tracks": {"OTIO_SCHEMA": "Stack.1", "name": "tracks", "children": tracks},
+        "tracks": {"OTIO_SCHEMA": "Stack.1", "name": "tracks", "children": tracks, "markers": markers},
         "metadata": {"captaine": {"width": project.settings.width, "height": project.settings.height}},
     });
     serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
@@ -323,6 +339,36 @@ pub fn import(project: &Project, text: &str) -> Result<Vec<Op>, String> {
         }
         tl.tracks.push(Arc::new(t));
     }
+    for m in stack
+        .get("markers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(r) = m.get("marked_range") else {
+            continue;
+        };
+        let start = r.get("start_time").and_then(time_of).map_or(0, |t| t.0);
+        let dur = r.get("duration").and_then(time_of).map_or(0, |t| t.0);
+        let mut marker = Marker::new(
+            Id::new(),
+            start.max(0),
+            m.get("name").and_then(Value::as_str).unwrap_or("Marker"),
+        );
+        marker.duration = dur.max(0);
+        marker.color = m
+            .get("color")
+            .and_then(Value::as_str)
+            .and_then(|c| OTIO_COLORS.iter().position(|x| x.eq_ignore_ascii_case(c)))
+            .unwrap_or(0) as u8;
+        marker.note = m
+            .pointer("/metadata/captaine/note")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        tl.markers.push(marker);
+    }
+    tl.markers.sort_by_key(|m| (m.tick, m.id));
     ops.push(Op::AddTimeline { timeline: tl });
     Ok(ops)
 }

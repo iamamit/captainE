@@ -1,6 +1,6 @@
 use captaine_model::{
-    AudioProps, Effect, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, Transition,
-    VideoProps,
+    AudioProps, Effect, Id, Item, Keyframe, Marker, MediaRef, Retime, Timeline, Title, Track,
+    Transition, VideoProps,
 };
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,19 @@ pub enum Op {
     RenameTimeline {
         id: Id,
         name: String,
+    },
+    AddMarker {
+        timeline: Id,
+        marker: Marker,
+    },
+    RemoveMarker {
+        timeline: Id,
+        marker: Id,
+    },
+    /// Replace the marker with this marker's id (move it, rename it, recolour it).
+    SetMarker {
+        timeline: Id,
+        marker: Marker,
     },
     AddTrack {
         timeline: Id,
@@ -162,6 +175,9 @@ impl Op {
             Op::AddTimeline { timeline } => format!("Add timeline {}", timeline.name),
             Op::RemoveTimeline { id } => format!("Remove timeline {id}"),
             Op::RenameTimeline { name, .. } => format!("Rename timeline to {name}"),
+            Op::AddMarker { marker, .. } => format!("Add marker {}", marker.name),
+            Op::RemoveMarker { marker, .. } => format!("Remove marker {marker}"),
+            Op::SetMarker { marker, .. } => format!("Edit marker {}", marker.name),
             Op::AddTrack { track, .. } => format!("Add track {}", track.name),
             Op::RemoveTrack { track } => format!("Remove track {track}"),
             Op::InsertItem { index, .. } => format!("Insert item at {index}"),

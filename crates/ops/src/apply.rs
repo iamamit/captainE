@@ -177,6 +177,51 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 timeline: (*tl).clone(),
             })
         }
+        Op::AddMarker { timeline, marker } => {
+            marker.check().map_err(OpError::BadProps)?;
+            ensure_free(p, marker.id)?;
+            let tl = p
+                .timeline_mut(*timeline)
+                .ok_or(OpError::NotFound("timeline", *timeline))?;
+            tl.markers.push(marker.clone());
+            tl.markers.sort_by_key(|m| (m.tick, m.id));
+            Ok(Op::RemoveMarker {
+                timeline: *timeline,
+                marker: marker.id,
+            })
+        }
+        Op::RemoveMarker { timeline, marker } => {
+            let tl = p
+                .timeline_mut(*timeline)
+                .ok_or(OpError::NotFound("timeline", *timeline))?;
+            let i = tl
+                .markers
+                .iter()
+                .position(|m| m.id == *marker)
+                .ok_or(OpError::NotFound("marker", *marker))?;
+            let old = tl.markers.remove(i);
+            Ok(Op::AddMarker {
+                timeline: *timeline,
+                marker: old,
+            })
+        }
+        Op::SetMarker { timeline, marker } => {
+            marker.check().map_err(OpError::BadProps)?;
+            let tl = p
+                .timeline_mut(*timeline)
+                .ok_or(OpError::NotFound("timeline", *timeline))?;
+            let i = tl
+                .markers
+                .iter()
+                .position(|m| m.id == marker.id)
+                .ok_or(OpError::NotFound("marker", marker.id))?;
+            let old = std::mem::replace(&mut tl.markers[i], marker.clone());
+            tl.markers.sort_by_key(|m| (m.tick, m.id));
+            Ok(Op::SetMarker {
+                timeline: *timeline,
+                marker: old,
+            })
+        }
         Op::RenameTimeline { id, name } => {
             let tl = p
                 .timeline_mut(*id)

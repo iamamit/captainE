@@ -72,8 +72,12 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 }
                 toggle_text(ui, "Link", false, false)
                     .on_hover_text("Linked audio/video selection is planned for the next phase");
-                toggle_text(ui, "Markers", false, false)
-                    .on_hover_text("Markers are planned for the next phase");
+                if toggle_text(ui, "Markers", app.markers_open, true)
+                    .on_hover_text("List the markers (M adds one at the playhead)")
+                    .clicked()
+                {
+                    app.markers_open = !app.markers_open;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // zoom slider (logarithmic)
                     let (rect, resp) =
@@ -498,7 +502,17 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     if resp.clicked() {
         if let Some(pos) = resp.interact_pointer_pos() {
             if ruler.contains(pos) {
-                app.set_playhead(view.tick(pos.x).clamp(0, end_tick.max(0)));
+                let ms = app.markers();
+                match crate::markers_ui::marker_at(&ms, &|t| view.x(t), pos.x) {
+                    Some(id) => {
+                        let m = ms.iter().find(|m| m.id == id).expect("hit marker exists");
+                        app.set_playhead(m.tick);
+                        if ui.input(|i| i.modifiers.alt) {
+                            app.marker_edit = Some(m.clone());
+                        }
+                    }
+                    None => app.set_playhead(view.tick(pos.x).clamp(0, end_tick.max(0))),
+                }
             } else {
                 match app.tool {
                     Tool::Blade => {
@@ -532,6 +546,12 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     }
     if resp.secondary_clicked() {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            app.ctx_tick = view.tick(pos.x).max(0);
+            app.ctx_marker = if ruler.contains(pos) {
+                crate::markers_ui::marker_at(&app.markers(), &|t| view.x(t), pos.x)
+            } else {
+                None
+            };
             if let Some(c) = hit(pos) {
                 app.selected_clip = Some(c.id);
             }
@@ -556,6 +576,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     // ruler
     p.rect_filled(ruler, 0.0, theme::PANEL);
     draw_ruler(app, &p, ruler, &view);
+    draw_markers(app, &p, ruler, &view);
     // rows
     for row in &rows {
         let r = Rect::from_min_max(
@@ -1025,6 +1046,47 @@ fn draw_clip(
     }
 }
 
+fn draw_markers(app: &App, p: &Painter, ruler: Rect, view: &View) {
+    let painter = p.with_clip_rect(ruler);
+    for m in app.markers() {
+        let x = view.x(m.tick);
+        if x < ruler.left() - 80.0 || x > ruler.right() + 8.0 {
+            continue;
+        }
+        let col = crate::markers_ui::color_of(&m);
+        if m.duration > 0 {
+            let x2 = view.x(m.tick + m.duration);
+            painter.rect_filled(
+                Rect::from_min_max(
+                    pos2(x, ruler.bottom() - 5.0),
+                    pos2(x2.max(x + 2.0), ruler.bottom()),
+                ),
+                0.0,
+                col.gamma_multiply(0.7),
+            );
+        }
+        let top = ruler.bottom() - 14.0;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                pos2(x - 4.5, top),
+                pos2(x + 4.5, top),
+                pos2(x + 4.5, top + 7.0),
+                pos2(x, top + 12.0),
+                pos2(x - 4.5, top + 7.0),
+            ],
+            col,
+            Stroke::new(1.0, Color32::from_black_alpha(120)),
+        ));
+        painter.text(
+            pos2(x + 8.0, top + 4.0),
+            Align2::LEFT_CENTER,
+            &m.name,
+            ui_font(10.0),
+            Color32::from_white_alpha(210),
+        );
+    }
+}
+
 fn draw_ruler(app: &App, p: &Painter, ruler: Rect, view: &View) {
     p.hline(
         ruler.x_range(),
@@ -1079,6 +1141,24 @@ fn draw_ruler(app: &App, p: &Painter, ruler: Rect, view: &View) {
 }
 
 fn clip_menu(app: &mut App, ui: &mut egui::Ui) {
+    if let Some(id) = app.ctx_marker {
+        if ui.button("Edit Marker…").clicked() {
+            app.marker_edit = app.markers().into_iter().find(|m| m.id == id);
+            ui.close();
+        }
+        if ui.button("Delete Marker").clicked() {
+            app.remove_marker(id);
+            app.ctx_marker = None;
+            ui.close();
+        }
+        ui.separator();
+    }
+    if ui.button("Add Marker Here   M").clicked() {
+        let t = app.ctx_tick;
+        app.add_marker(Some(t), None);
+        ui.close();
+    }
+    ui.separator();
     let has = app.selected().is_some() || app.selected_title().is_some();
     if ui
         .add_enabled(has, egui::Button::new("Copy   ⌘C"))

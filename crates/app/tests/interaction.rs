@@ -1129,3 +1129,49 @@ fn transcript_tab_offers_transcription_and_subtitle_tools() {
         assert_eq!(app(&h).duration_ticks(), before);
     }
 }
+
+#[test]
+fn markers_pin_jump_edit_and_list_as_chapters() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).playhead = 48;
+    settle(&mut h);
+    h.key_press(Key::M);
+    settle(&mut h);
+    app_mut(&mut h).playhead = 200;
+    h.key_press(Key::M);
+    settle(&mut h);
+    let ms = app(&h).markers();
+    assert_eq!((ms.len(), ms[0].tick, ms[1].tick), (2, 48, 200));
+    assert_eq!(ms[0].name, "Marker 1");
+    // jump between them with alt + arrows
+    h.key_press_modifiers(Modifiers::ALT, Key::ArrowLeft);
+    settle(&mut h);
+    assert_eq!(app(&h).playhead, 48);
+    h.key_press_modifiers(Modifiers::ALT, Key::ArrowRight);
+    settle(&mut h);
+    assert_eq!(app(&h).playhead, 200);
+    // rename and recolour through the update path the dialog uses
+    let mut m = ms[0].clone();
+    m.name = "Intro".into();
+    m.color = 3;
+    app_mut(&mut h).update_marker(m);
+    assert_eq!(app(&h).markers()[0].name, "Intro");
+    // chapters, in the form video sites read
+    assert_eq!(
+        app(&h).chapters_text(),
+        "0:00 Start\n0:02 Intro\n0:08 Marker 2"
+    );
+    // the list window shows them
+    h.get_by_label("Markers").click();
+    settle(&mut h);
+    h.get_by_label("Intro");
+    h.get_by_label("Copy chapters");
+    // everything is one undo each
+    app_mut(&mut h).undo();
+    app_mut(&mut h).undo();
+    app_mut(&mut h).undo();
+    assert!(app(&h).markers().is_empty());
+}

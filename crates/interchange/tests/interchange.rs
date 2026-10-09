@@ -174,7 +174,17 @@ fn apply_all(p: &Project, ops: Vec<Op>) -> Project {
 
 #[test]
 fn otio_round_trip_loses_nothing() {
-    let (p, tl) = project();
+    let (mut p, tl) = project();
+    {
+        let t = p.timeline_mut(tl).unwrap();
+        let mut a = Marker::new(Id::new(), 30, "Chapter A");
+        a.color = 3;
+        a.note = "first".into();
+        let mut b = Marker::new(Id::new(), 5, "Range");
+        b.duration = 12;
+        t.markers = vec![b, a];
+        t.markers.sort_by_key(|m| (m.tick, m.id));
+    }
     let text = otio::export(&p, tl).unwrap();
     // it is the OpenTimelineIO structure other tools expect
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -203,6 +213,21 @@ fn otio_round_trip_loses_nothing() {
     let back = apply_all(&fresh, ops);
     let new_tl = *back.timelines.keys().next().unwrap();
     assert_eq!(shape(&back, new_tl), shape(&p, tl));
+    let mine: Vec<_> = p
+        .timeline(tl)
+        .unwrap()
+        .markers
+        .iter()
+        .map(|m| (m.tick, m.duration, m.name.clone(), m.color, m.note.clone()))
+        .collect();
+    let theirs: Vec<_> = back
+        .timeline(new_tl)
+        .unwrap()
+        .markers
+        .iter()
+        .map(|m| (m.tick, m.duration, m.name.clone(), m.color, m.note.clone()))
+        .collect();
+    assert_eq!(theirs, mine, "markers survive");
     assert_eq!(
         back.media.len(),
         3,

@@ -241,6 +241,25 @@ fn sync_ops_reproduce_the_target_exactly() {
     renamed.timeline_mut(id(TL)).unwrap().name = "other".into();
     let ops = sync_ops(&a, &renamed).unwrap();
     assert_eq!(&run(&a, &ops), &renamed);
+    // markers: new, moved and removed ones
+    let mut marked = a.clone();
+    {
+        let tl = marked.timeline_mut(id(TL)).unwrap();
+        tl.markers.push(Marker::new(Id::new(), 30, "Chapter 1"));
+        tl.markers.push(Marker::new(Id::new(), 10, "Start"));
+        tl.markers.sort_by_key(|m| (m.tick, m.id));
+    }
+    let ops = sync_ops(&a, &marked).unwrap();
+    assert_eq!(&run(&a, &ops), &marked);
+    let mut moved = marked.clone();
+    {
+        let tl = moved.timeline_mut(id(TL)).unwrap();
+        tl.markers[0].tick = 50;
+        tl.markers.sort_by_key(|m| (m.tick, m.id));
+        tl.markers.pop();
+    }
+    let ops = sync_ops(&marked, &moved).unwrap();
+    assert_eq!(&run(&marked, &ops), &moved);
     let mut retimed = a.clone();
     retimed.timeline_mut(id(TL)).unwrap().rate = captaine_time::Rational::FPS_25;
     assert!(sync_ops(&a, &retimed).unwrap_err().contains("retimed"));

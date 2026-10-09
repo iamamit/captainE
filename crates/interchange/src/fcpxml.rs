@@ -152,6 +152,21 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
             match item {
                 Item::Clip(c) => {
                     let mut x = clip_xml(c, s, None, "            ");
+                    // chapter markers that fall inside this clip, in the clip's own time
+                    for m in tl.markers.iter().filter(|m| m.tick >= s && m.tick < end) {
+                        let local = RationalTime::new(c.source_start.value, c.source_start.rate);
+                        let off = RationalTime::new(m.tick - s, rate)
+                            .rescale(local.rate, captaine_time::Rounding::Nearest)
+                            .map_or(0, |x| x.value);
+                        let at = local.value + off;
+                        let tag = format!(
+                            "              <chapter-marker start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
+                            t(at, local.rate),
+                            t(1, rate),
+                            esc(&m.name)
+                        );
+                        connected += &tag;
+                    }
                     if !connected.is_empty() {
                         if x.ends_with("/>\n") {
                             x.truncate(x.len() - 3);

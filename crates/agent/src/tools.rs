@@ -285,6 +285,7 @@ impl ToolBox {
             "playhead_sec": r2(self.playhead_secs),
             "selected_item": self.selection.map(|i| i.to_string()),
             "tracks": tracks,
+            "markers": tl.markers.iter().map(|m| json!({"id": m.id.to_string(), "at_sec": r2(self.secs(m.tick)), "name": m.name, "note": m.note, "length_sec": r2(self.secs(m.duration))})).collect::<Vec<_>>(),
             "note": "track order is bottom to top for video; later video tracks draw over earlier ones",
         }))
     }
@@ -322,6 +323,8 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "add_marker" => self.add_marker_tool(input),
+            "remove_marker" => self.remove_marker_tool(input),
             "transcribe" => self.transcribe_tool(input),
             "remove_filler_words" => self.remove_fillers_tool(input),
             "add_captions" => self.add_captions_tool(input),
@@ -859,6 +862,44 @@ impl ToolBox {
         Ok(json!({"ok": true, "captions": lines.len(), "track": captaine_interchange::srt::CAPTION_TRACK}).to_string())
     }
 
+    fn add_marker_tool(&mut self, input: &Value) -> R {
+        let tl = self.timeline()?.id;
+        let tick = self.ticks(req_num(input, "at_sec")?).max(0);
+        let mut m = Marker::new(Id::new(), tick, req_text(input, "name")?);
+        m.note = text(input, "note").unwrap_or("").to_string();
+        if let Some(d) = num(input, "duration_sec") {
+            m.duration = self.ticks(d).max(0);
+        }
+        if let Some(c) = text(input, "color") {
+            m.color = Marker::COLORS
+                .iter()
+                .position(|(n, _)| n.eq_ignore_ascii_case(c))
+                .ok_or("color is one of blue, green, yellow, red, purple, cyan")?
+                as u8;
+        }
+        let id = m.id;
+        self.commit(Op::AddMarker {
+            timeline: tl,
+            marker: m,
+        })?;
+        Ok(json!({"ok": true, "marker_id": id.to_string()}).to_string())
+    }
+
+    fn remove_marker_tool(&mut self, input: &Value) -> R {
+        let tl = self.timeline()?.clone();
+        let key = req_text(input, "marker_id")?;
+        let m = tl
+            .markers
+            .iter()
+            .find(|m| m.id.to_string() == key || m.id.to_full_string() == key || m.name == key)
+            .ok_or_else(|| format!("no marker '{key}'"))?;
+        self.commit(Op::RemoveMarker {
+            timeline: tl.id,
+            marker: m.id,
+        })?;
+        Ok(json!({"ok": true}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1030,6 +1071,8 @@ pub fn tool_definitions() -> Value {
         {"name": "transcribe", "description": "Speech to text for a clip, locally. Returns segments with start/end in timeline seconds. Read-only; takes a few seconds per minute of audio.", "input_schema": obj(json!({"item_id": item, "language": {"type": "string", "description": "ISO code like en; omit to detect"}}), &["item_id"])},
         {"name": "remove_filler_words", "description": "Transcribe a clip and cut out hesitations (um, uh, er, hmm); the rest closes up. strict=true also cuts words like 'like', 'basically', 'literally', 'actually', 'so'.", "input_schema": obj(json!({"item_id": item, "strict": {"type": "boolean"}, "language": {"type": "string"}}), &["item_id"])},
         {"name": "add_captions", "description": "Transcribe a clip and put the words on screen as caption titles on a 'Captions' track (made if needed), timed to the speech. max_chars limits a caption line (default 42).", "input_schema": obj(json!({"item_id": item, "max_chars": {"type": "number"}, "language": {"type": "string"}}), &["item_id"])},
+        {"name": "add_marker", "description": "Pin a marker (a chapter, a note to self) on the timeline at a time. Optional note, duration_sec for a range, color (blue, green, yellow, red, purple, cyan).", "input_schema": obj(json!({"at_sec": {"type": "number"}, "name": {"type": "string"}, "note": {"type": "string"}, "duration_sec": {"type": "number"}, "color": {"type": "string"}}), &["at_sec", "name"])},
+        {"name": "remove_marker", "description": "Remove a marker by its id (see get_timeline) or its exact name.", "input_schema": obj(json!({"marker_id": {"type": "string"}}), &["marker_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

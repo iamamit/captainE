@@ -79,6 +79,10 @@ pub fn export(project: &Project, timeline: Id, drop_frame: bool) -> Result<Strin
             }
         }
     }
+    for m in &tl.markers {
+        let color = ["BLUE", "GREEN", "YELLOW", "RED", "PURPLE", "CYAN"][(m.color as usize).min(5)];
+        out += &format!("* LOC: {} {color:<7} {}\n", tc(m.tick, rate, drop), m.name);
+    }
     Ok(out)
 }
 

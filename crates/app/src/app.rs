@@ -201,6 +201,11 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    pub markers_open: bool,
+    pub marker_edit: Option<captaine_model::Marker>,
+    /// The marker the last right-click on the ruler landed on
+    pub ctx_marker: Option<Id>,
+    pub ctx_tick: i64,
     pub transcripts: std::collections::HashMap<
         crate::transcript_ui::TranscriptKey,
         Vec<captaine_speech::Segment>,
@@ -286,6 +291,10 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            markers_open: false,
+            marker_edit: None,
+            ctx_marker: None,
+            ctx_tick: 0,
             transcripts: Default::default(),
             transcribing: None,
             word_sel: None,

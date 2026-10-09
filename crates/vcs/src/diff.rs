@@ -279,12 +279,17 @@ pub fn diff(a: &Project, b: &Project) -> Vec<Change> {
                 format!("Added timeline '{}'", t.name),
             )),
             (Some(ta), Some(tb)) => {
-                if ta.name != tb.name || ta.rate != tb.rate {
-                    let f = if ta.rate != tb.rate {
-                        vec!["rate".to_string()]
-                    } else {
-                        vec!["name".to_string()]
-                    };
+                let mut f: Vec<String> = Vec::new();
+                if ta.rate != tb.rate {
+                    f.push("rate".into());
+                }
+                if ta.name != tb.name {
+                    f.push("name".into());
+                }
+                if ta.markers != tb.markers {
+                    f.push("markers".into());
+                }
+                if !f.is_empty() {
                     let mut c = simple(
                         Target::Timeline(*id),
                         What::Timeline,

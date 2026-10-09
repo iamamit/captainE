@@ -14,7 +14,7 @@ e11	Editing	Proxy workflow	3	0.5	manual proxies work; no auto-generation
 e12	Editing	Speed, reverse, freeze, time remapping	5	0.5	constant speed 5-2000%, reverse, freeze + freeze-frame (Shift+F), pitch-kept audio; no speed ramps/remap curves, no frame blending/optical flow
 e13	Editing	Video transitions (dissolve, dip, wipe, slide)	5	0.5	6 kinds (dissolve, dip, wipes, pushes) centred on the cut, audio crossfade, inspector + Cmd+T; no handle-aware alignment, no custom/GPU transitions
 e14	Editing	Keyframe animation on any property	5	0.75	inspector diamonds, auto-key edits, mixer+render; no curve editor/timeline markers yet
-e15	Editing	Markers and chapters	2	0	
+e15	Editing	Markers and chapters	2	0.75	markers (point or range, colour, note) on the ruler, M / alt+arrows, list window, chapters copy, undo, merge/diff, OTIO/EDL/FCPXML, Copilot tools; no marker-to-caption link
 e16	Editing	Media bins, search, metadata	3	0.5	
 e17	Editing	Several sequences open and switchable	3	0.75	sequence menu: new, duplicate, rename, delete, switch; Copilot sees the active one; no side-by-side tabs
 e18	Editing	Interchange: EDL, FCPXML, OTIO, SRT import/export	3	0.75	OTIO read/write (lossless round trip within captainE), CMX3600 EDL read/write incl. speed, FCPXML 1.9 write; no FCPXML import, no AAF

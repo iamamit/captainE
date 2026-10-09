@@ -868,6 +868,56 @@ impl Track {
     }
 }
 
+/// A note pinned to a moment (or a stretch) of the timeline. Markers stay where they are when the edit
+/// around them changes; they are also the chapters of an exported video.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: Id,
+    /// Where it sits, in ticks of the timeline rate
+    pub tick: i64,
+    /// 0 for a point; otherwise the length of the range it marks
+    #[serde(default)]
+    pub duration: i64,
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+    /// Colour index into [`Marker::COLORS`]
+    #[serde(default)]
+    pub color: u8,
+}
+
+impl Marker {
+    pub const COLORS: [(&'static str, [u8; 3]); 6] = [
+        ("Blue", [0x4f, 0x8c, 0xf5]),
+        ("Green", [0x3d, 0xc2, 0x7a]),
+        ("Yellow", [0xe6, 0xb4, 0x2e]),
+        ("Red", [0xe5, 0x48, 0x4d]),
+        ("Purple", [0x9b, 0x6b, 0xf0]),
+        ("Cyan", [0x3c, 0xc4, 0xd8]),
+    ];
+
+    pub fn new(id: Id, tick: i64, name: impl Into<String>) -> Marker {
+        Marker {
+            id,
+            tick,
+            duration: 0,
+            name: name.into(),
+            note: String::new(),
+            color: 0,
+        }
+    }
+
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.tick < 0 || self.duration < 0 {
+            return Err("a marker cannot sit before the start or have a negative length");
+        }
+        if self.color as usize >= Marker::COLORS.len() {
+            return Err("unknown marker colour");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     pub id: Id,
@@ -875,6 +925,8 @@ pub struct Timeline {
     /// All item durations on this timeline are whole ticks of this rate.
     pub rate: Rational,
     pub tracks: Vec<Arc<Track>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
 }
 
 impl Timeline {
@@ -884,6 +936,7 @@ impl Timeline {
             name: name.into(),
             rate,
             tracks: Vec::new(),
+            markers: Vec::new(),
         }
     }
 
@@ -972,6 +1025,10 @@ impl Project {
             || self.timelines.contains_key(&id)
             || self.find_track(id).is_some()
             || self.find_item(id).is_some()
+            || self
+                .timelines
+                .values()
+                .any(|tl| tl.markers.iter().any(|m| m.id == id))
     }
 
     pub fn media_in_use(&self, media: Id) -> bool {
@@ -1002,6 +1059,19 @@ impl Project {
         }
         for tl in self.timelines.values() {
             note(tl.id, "timeline", &mut errs);
+            if tl
+                .markers
+                .windows(2)
+                .any(|w| (w[0].tick, w[0].id) > (w[1].tick, w[1].id))
+            {
+                errs.push(format!("markers of {} are not in time order", tl.name));
+            }
+            for m in &tl.markers {
+                note(m.id, "marker", &mut errs);
+                if let Err(e) = m.check() {
+                    errs.push(format!("marker {}: {e}", m.id));
+                }
+            }
             for t in &tl.tracks {
                 note(t.id, "track", &mut errs);
                 for item in &t.items {

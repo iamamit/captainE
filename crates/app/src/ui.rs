@@ -1010,6 +1010,15 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(Modifiers::COMMAND, Key::B) {
         split_at_playhead(app);
     }
+    if pressed(none, Key::M) {
+        app.add_marker(None, None);
+    }
+    if pressed(Modifiers::ALT, Key::ArrowLeft) {
+        app.jump_marker(-1);
+    }
+    if pressed(Modifiers::ALT, Key::ArrowRight) {
+        app.jump_marker(1);
+    }
     if pressed(Modifiers::COMMAND, Key::C) {
         app.copy_selection();
     }
@@ -2175,6 +2184,7 @@ fn metadata(app: &mut App, ui: &mut Ui) {
 // ---- dialogs ---------------------------------------------------------------------------------------
 
 pub fn dialogs(app: &mut App, ctx: &Context) {
+    crate::markers_ui::windows(app, ctx);
     if let Some((id, mut name)) = app.rename_sequence.take() {
         let (mut keep, mut done) = (true, false);
         egui::Window::new("Rename sequence")

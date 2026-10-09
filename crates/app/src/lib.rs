@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod compare;
 pub mod copilot;
 pub mod jobs;
+pub mod markers_ui;
 pub mod scopes;
 pub mod sequences;
 pub mod source;
