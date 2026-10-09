@@ -1411,11 +1411,7 @@ fn auto_reframe_makes_a_vertical_copy_of_the_sequence() {
         .flat_map(|t| t.items.iter())
         .filter_map(|i| i.as_clip().cloned())
         .collect();
-    assert_eq!(
-        clips.len(),
-        originals + 0 * 1 + (clips.len() - originals),
-        "clips came across"
-    );
+    assert!(clips.len() >= originals, "clips came across");
     let video: Vec<&Clip> = clips
         .iter()
         .filter(|c| c.video.transform.scale.0 > 1.5)
