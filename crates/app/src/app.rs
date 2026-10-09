@@ -200,6 +200,7 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    pub source: crate::source::SourceMonitor,
     /// Smoothed peak levels: one per timeline track, then the master
     pub meters: Vec<f32>,
     pub scope_kind: crate::scopes::ScopeKind,
@@ -275,6 +276,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            source: crate::source::SourceMonitor::new(ctx.clone()),
             meters: Vec::new(),
             scope_kind: crate::scopes::ScopeKind::Waveform,
             scope_tex: None,

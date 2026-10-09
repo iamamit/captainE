@@ -9,7 +9,7 @@ e06	Editing	Undo, redo, history	5	1	also branches
 e07	Editing	Track controls: lock, solo, mute, target, add and remove	3	0.5	hide/mute and add exist
 e08	Editing	Nested sequences / compound clips	3	0	
 e09	Editing	Multicam	2	0	
-e10	Editing	Source monitor with 3-point and 4-point edits	4	0	
+e10	Editing	Source monitor with 3-point and 4-point edits	4	0.75	source monitor (scrub, marks, Insert/Overwrite via , and .), 3-point and 4-point (fit to fill via speed) edits; no playback or audio scrub in the source
 e11	Editing	Proxy workflow	3	0.5	manual proxies work; no auto-generation
 e12	Editing	Speed, reverse, freeze, time remapping	5	0.5	constant speed 5-2000%, reverse, freeze + freeze-frame (Shift+F), pitch-kept audio; no speed ramps/remap curves, no frame blending/optical flow
 e13	Editing	Video transitions (dissolve, dip, wipe, slide)	5	0.5	6 kinds (dissolve, dip, wipes, pushes) centred on the cut, audio crossfade, inspector + Cmd+T; no handle-aware alignment, no custom/GPU transitions

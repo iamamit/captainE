@@ -920,3 +920,62 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
     assert!(m4a.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn source_monitor_three_and_four_point_edits() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let media_a = app(&h)
+        .project()
+        .media
+        .values()
+        .find(|m| m.name == "a.mp4")
+        .unwrap()
+        .id;
+    app_mut(&mut h).open_source(media_a);
+    settle(&mut h);
+    assert!(app(&h).source.open);
+    // source marks: frames 24..72 of a 24 fps file = 2 s
+    app_mut(&mut h).source.mark_in = Some(24);
+    app_mut(&mut h).source.mark_out = Some(72);
+    let total = app(&h).duration_ticks();
+    // insert (3-point, the playhead is the timeline in): ripples 48 ticks
+    app_mut(&mut h).playhead = 96; // the cut between a and b
+    h.key_press(Key::Comma);
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), total + 48);
+    let placed = app(&h).selected().unwrap().0;
+    assert_eq!((placed.source_start.value, placed.duration.value), (24, 48));
+    assert!(placed.retime.is_identity());
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), total);
+    // overwrite does not change the length
+    app_mut(&mut h).playhead = 10;
+    h.key_press(Key::Period);
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), total);
+    assert_eq!(app(&h).selected().unwrap().0.source_start.value, 24);
+    app_mut(&mut h).undo();
+    // four points: timeline marks 100..124 hold the 2 s of source, so it plays at double speed
+    app_mut(&mut h).mark_in = Some(100);
+    app_mut(&mut h).mark_out = Some(124);
+    app_mut(&mut h).source_edit(false);
+    settle(&mut h);
+    let fitted = app(&h).selected().unwrap().0;
+    assert_eq!(fitted.duration.value, 24);
+    assert!(
+        (fitted.retime.speed - 2.0).abs() < 1e-9,
+        "{}",
+        fitted.retime.speed
+    );
+    // the viewer can be switched back to the program
+    settle(&mut h);
+    app_mut(&mut h).toasts.clear(); // a toast would sit over the tab
+    h.get_by_label("Program").click();
+    settle(&mut h);
+    settle(&mut h);
+    assert!(!app(&h).source.open);
+}

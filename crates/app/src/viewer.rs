@@ -38,6 +38,24 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
                 theme::MUTED,
             );
 
+            let tabs = Rect::from_min_size(
+                pos2(head.right() - 420.0, head.top() + 3.0),
+                vec2(180.0, 24.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(tabs), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if chip(ui, "Program", !app.source.open, true).clicked() {
+                        app.source.open = false;
+                    }
+                    if chip(ui, "Source", app.source.open, true).clicked() {
+                        app.source.open = true;
+                        if app.source.media.is_none() {
+                            app.source.media = app.selected_media;
+                        }
+                    }
+                });
+            });
             let btn = Rect::from_min_size(
                 pos2(head.right() - 232.0, head.top() + 3.0),
                 vec2(80.0, 24.0),
@@ -66,6 +84,19 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
             );
             let scale = (area.width() / cw).min(area.height() / ch).max(0.01);
             let pic = Rect::from_center_size(area.center(), vec2(cw * scale, ch * scale));
+            if app.source.open {
+                let transport_rect =
+                    Rect::from_min_max(pos2(full.left(), full.bottom() - transport_h), full.max);
+                let p = ui.painter();
+                p.rect_filled(transport_rect, 0.0, Color32::from_rgb(0x11, 0x11, 0x14));
+                p.hline(
+                    transport_rect.x_range(),
+                    transport_rect.top(),
+                    Stroke::new(1.0, theme::BORDER),
+                );
+                crate::source::show(app, ui, area, transport_rect);
+                return;
+            }
             let p = ui.painter();
             p.rect_filled(pic, 0.0, Color32::BLACK);
             if let Some(tex) = &app.program {

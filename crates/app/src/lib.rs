@@ -8,6 +8,7 @@ pub mod compare;
 pub mod copilot;
 pub mod jobs;
 pub mod scopes;
+pub mod source;
 pub mod theme;
 pub mod timeline;
 pub mod titles_ui;

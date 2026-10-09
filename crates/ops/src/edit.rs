@@ -180,6 +180,25 @@ pub fn overwrite_item(project: &Project, track: Id, at: RationalTime, item: Item
     Ok(pl.finish("Overwrite"))
 }
 
+/// Ripple insert: put `item` at `at` on `track`, cutting whatever is there in two and pushing everything
+/// from that point later. Past the end of the track it is the same as an overwrite.
+pub fn insert_item(project: &Project, track: Id, at: RationalTime, item: Item) -> Result<Op> {
+    let mut pl = Planner::new(project);
+    let (rate, t) = pl.track(track)?;
+    if at.rate != rate {
+        return Err(OpError::BadDuration(track));
+    }
+    if at.value >= t.duration_ticks() {
+        pl.overwrite(track, at.value, item)?;
+        return Ok(pl.finish("Insert"));
+    }
+    pl.ensure_cut(track, at.value)?;
+    let (_, t) = pl.track(track)?;
+    let index = t.item_starts().iter().filter(|st| **st < at.value).count();
+    pl.push(Op::InsertItem { track, index, item })?;
+    Ok(pl.finish("Insert"))
+}
+
 /// Append at the end of the track.
 pub fn append(project: &Project, track: Id, clip: Clip) -> Op {
     let index = project

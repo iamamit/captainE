@@ -897,6 +897,33 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     }
     let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
     let none = Modifiers::NONE;
+    if app.source.open {
+        // the source monitor has its own marks and its own frame stepping
+        if pressed(none, Key::I) {
+            app.source.mark_in = Some(app.source.frame);
+        }
+        if pressed(none, Key::O) {
+            app.source.mark_out = Some(app.source.frame);
+        }
+        if pressed(none, Key::ArrowLeft) {
+            app.source_step(-1);
+        }
+        if pressed(none, Key::ArrowRight) {
+            app.source_step(1);
+        }
+        if pressed(Modifiers::SHIFT, Key::ArrowLeft) {
+            app.source_step(-10);
+        }
+        if pressed(Modifiers::SHIFT, Key::ArrowRight) {
+            app.source_step(10);
+        }
+        if pressed(none, Key::Comma) {
+            app.source_edit(true);
+        }
+        if pressed(none, Key::Period) {
+            app.source_edit(false);
+        }
+    }
     if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) {
         app.redo();
     }
@@ -1278,13 +1305,17 @@ fn media_cell(app: &mut App, ui: &mut Ui, m: &MediaRef, w: f32) {
         app.selected_media = Some(m.id);
     }
     if resp.double_clicked() {
-        app.place_media(m.id, None, None);
+        app.open_source(m.id);
     }
     if resp.drag_started() {
         app.selected_media = Some(m.id);
         egui::DragAndDrop::set_payload(ui.ctx(), MediaDrag(m.id));
     }
     resp.context_menu(|ui| {
+        if ui.button("Open in Source Monitor").clicked() {
+            app.open_source(m.id);
+            ui.close();
+        }
         if ui.button("Add to Timeline").clicked() {
             app.place_media(m.id, None, None);
             ui.close();

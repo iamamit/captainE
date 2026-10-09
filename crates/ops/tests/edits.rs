@@ -457,3 +457,53 @@ fn range_extract_and_lift_keep_tracks_in_sync() {
     assert!(edit::extract_range(ed.project(), id(2), t(500), t(600)).is_err()); // nothing there
     assert!(edit::lift_range(ed.project(), id(99), t(0), t(10)).is_err());
 }
+
+#[test]
+fn insert_ripples_and_cuts_what_is_under_it() {
+    let mut ed = editor();
+    put(&mut ed, V1, clip(10, 0, 60)); // 0..60
+    put(&mut ed, V1, clip(11, 100, 30)); // 60..90
+    let before = ed.snapshot();
+    // in the middle of the first clip: it is cut and the new clip goes between the halves
+    run(&mut ed, |p| {
+        edit::insert_item(p, id(V1), t(20), Item::Clip(clip(12, 300, 15)))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        [
+            (0, 20, false),
+            (20, 15, false),
+            (35, 40, false),
+            (75, 30, false)
+        ]
+    );
+    assert_eq!(
+        clip_at(&ed, V1, 35).source_start,
+        t(20),
+        "the right half continues the source"
+    );
+    ed.undo();
+    assert_eq!(ed.project(), &before, "one undo step");
+    // exactly on a cut: nothing is split
+    run(&mut ed, |p| {
+        edit::insert_item(p, id(V1), t(60), Item::Clip(clip(13, 300, 10)))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        [(0, 60, false), (60, 10, false), (70, 30, false)]
+    );
+    ed.undo();
+    // past the end it overwrites, padding with a gap
+    run(&mut ed, |p| {
+        edit::insert_item(p, id(V1), t(100), Item::Clip(clip(14, 300, 10)))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        [
+            (0, 60, false),
+            (60, 30, false),
+            (90, 10, true),
+            (100, 10, false)
+        ]
+    );
+}
