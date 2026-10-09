@@ -13,7 +13,7 @@ e10	Editing	Source monitor with 3-point and 4-point edits	4	0
 e11	Editing	Proxy workflow	3	0.5	manual proxies work; no auto-generation
 e12	Editing	Speed, reverse, freeze, time remapping	5	0	
 e13	Editing	Video transitions (dissolve, dip, wipe, slide)	5	0	
-e14	Editing	Keyframe animation on any property	5	0	
+e14	Editing	Keyframe animation on any property	5	0.75	inspector diamonds, auto-key edits, mixer+render; no curve editor/timeline markers yet
 e15	Editing	Markers and chapters	2	0	
 e16	Editing	Media bins, search, metadata	3	0.5	
 e17	Editing	Several sequences open and switchable	3	0.25	model supports it
