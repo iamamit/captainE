@@ -1756,7 +1756,35 @@ pub fn effects_stack(
                 }
             });
         }
-        for (v, d) in e.params.iter_mut().zip(e.kind.params()) {
+        // colour effects get pictures to drag; the other settings are plain sliders
+        let hidden: &[usize] = match e.kind {
+            EffectKind::ColorWheels => {
+                let (c, d) = crate::effect_widgets::wheels_row(ui, e);
+                changed |= c;
+                done |= d;
+                &[1, 2, 3, 5, 6, 7, 9, 10, 11]
+            }
+            EffectKind::Curves => {
+                ui.horizontal(|ui| {
+                    for (k, name) in ["Master", "Red", "Green", "Blue"].into_iter().enumerate() {
+                        if chip(ui, name, app.curve_tab == k, true).clicked() {
+                            app.curve_tab = k;
+                        }
+                    }
+                });
+                let (c, d) = crate::effect_widgets::curve_editor(ui, e, app.curve_tab);
+                changed |= c;
+                done |= d;
+                &[
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                ]
+            }
+            _ => &[],
+        };
+        for (i, (v, d)) in e.params.iter_mut().zip(e.kind.params()).enumerate() {
+            if hidden.contains(&i) {
+                continue;
+            }
             let r = slider_row(
                 ui,
                 d.name,
@@ -1942,7 +1970,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         &'static str,
         bool,
     );
-    let rows: [Row; 11] = [
+    let rows: [Row; 15] = [
         ("position.x", "Position X", (-cw, cw), 0.0, 1, "", false),
         ("position.y", "Position Y", (-ch, ch), 0.0, 1, "", false),
         ("scale", "Scale", (5.0, 400.0), 100.0, 1, "%", false),
@@ -1968,6 +1996,18 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
             "K",
             false,
         ),
+        ("tint", "Tint", (-100.0, 100.0), 0.0, 0, "", false),
+        (
+            "highlights",
+            "Highlights",
+            (-100.0, 100.0),
+            0.0,
+            0,
+            "",
+            false,
+        ),
+        ("shadows", "Shadows", (-100.0, 100.0), 0.0, 0, "", false),
+        ("vibrance", "Vibrance", (-100.0, 100.0), 0.0, 0, "", false),
         ("volume", "Volume", (-60.0, 12.0), 0.0, 1, " dB", true),
         ("pan", "Pan", (-1.0, 1.0), 0.0, 2, "", true),
     ];
@@ -2026,7 +2066,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         });
     }
     section(ui, "Color");
-    for r in &rows[5..9] {
+    for r in &rows[5..13] {
         anim_row(ui, r, &mut edits, &mut toggles);
     }
     let mut color_action = None;
@@ -2050,7 +2090,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         });
     }
     section(ui, "Audio & Speed");
-    for r in &rows[9..] {
+    for r in &rows[13..] {
         anim_row(ui, r, &mut edits, &mut toggles);
     }
     match color_action {

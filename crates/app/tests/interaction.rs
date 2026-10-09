@@ -1649,3 +1649,70 @@ fn multicam_switches_angles_with_the_number_keys() {
         "the cuts are gone ({log})"
     );
 }
+
+#[test]
+fn colour_wheels_and_curves_can_be_dragged() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let id = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    app_mut(&mut h).do_op(captaine_ops::Op::SetEffects {
+        item: id,
+        effects: vec![
+            Effect::new(EffectKind::ColorWheels),
+            Effect::new(EffectKind::Curves),
+        ],
+    });
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    let fx = |a: &App| a.clip_by_id(id).unwrap().0.effects;
+    // push the lift wheel toward red (right of centre)
+    h.get_by_label("Lift wheel").scroll_to_me();
+    settle(&mut h);
+    if let Ok(out) = std::env::var("CAPTAINE_SHOTS") {
+        std::fs::create_dir_all(&out).unwrap();
+        h.render()
+            .expect("render")
+            .save(std::path::Path::new(&out).join("wheels.png"))
+            .unwrap();
+    }
+    let r = h.get_by_label("Lift wheel").rect();
+    drag(&mut h, r.center(), pos2(r.center().x + 30.0, r.center().y));
+    let lift = fx(app(&h))[0].params.clone();
+    assert!(
+        lift[1] > 0.2 && lift[2] < -0.05 && lift[3] < -0.05,
+        "pushed toward red: {lift:?}"
+    );
+    assert!(
+        (lift[1] + lift[2] + lift[3]).abs() < 1e-6,
+        "a tint, not a brightness change"
+    );
+    assert_eq!(lift[0], 0.0, "the master is its own slider");
+    // double-click resets it
+    let r = h.get_by_label("Lift wheel").rect();
+    click(&mut h, r.center());
+    click(&mut h, r.center());
+    // the master curve's middle point can be dragged up
+    h.get_by_label("Curve point Master 3").scroll_to_me();
+    settle(&mut h);
+    let p = h.get_by_label("Curve point Master 3").rect().center();
+    drag(&mut h, p, pos2(p.x, p.y - 30.0));
+    let curve = fx(app(&h))[1].params.clone();
+    assert!(curve[2] > 0.6, "the midpoint went up: {}", curve[2]);
+    assert_eq!((curve[0], curve[4]), (0.0, 1.0), "the ends stayed put");
+    // and the tabs switch to another channel
+    h.get_by_label("Red").click();
+    settle(&mut h);
+    h.get_by_label("Curve point Red 5");
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(
+        fx(app(&h))[1].params[2] <= 0.51,
+        "undo took the drag back: {}",
+        fx(app(&h))[1].params[2]
+    );
+}

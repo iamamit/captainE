@@ -537,6 +537,18 @@ impl ToolBox {
         if let Some(x) = num(input, "temperature_k") {
             v.color.temperature = x;
         }
+        if let Some(x) = num(input, "tint") {
+            v.color.tint = x;
+        }
+        if let Some(x) = num(input, "highlights") {
+            v.color.highlights = x;
+        }
+        if let Some(x) = num(input, "shadows") {
+            v.color.shadows = x;
+        }
+        if let Some(x) = num(input, "vibrance") {
+            v.color.vibrance = x;
+        }
         if v != video {
             ops.push(Op::SetVideo { item: id, video: v });
         }
@@ -1337,9 +1349,9 @@ pub fn tool_definitions() -> Value {
         {"name": "trim_item", "description": "Move one edge of a clip or title. edge 'in' = its start (positive delta shortens it from the front); edge 'out' = its end (positive delta lengthens it). Ripple: later items on the track shift.", "input_schema": obj(json!({"item_id": item, "edge": {"type": "string", "enum": ["in", "out"]}, "delta_sec": {"type": "number"}}), &["item_id", "edge", "delta_sec"])},
         {"name": "move_item", "description": "Move a clip or title to a time (and optionally another track of the same kind). It overwrites whatever it lands on.", "input_schema": obj(json!({"item_id": item, "at_sec": {"type": "number"}, "to_track": track}), &["item_id", "at_sec"])},
         {"name": "add_clip", "description": "Put media on a track. Without at_sec it is appended to the end of the track; with at_sec it overwrites from there.", "input_schema": obj(json!({"media_id": {"type": "string"}, "track": track, "at_sec": {"type": "number"}, "from_sec": {"type": "number", "description": "where in the source to start"}, "duration_sec": {"type": "number"}}), &["media_id"])},
-        {"name": "set_clip", "description": "Change properties of a clip or title: opacity 0-1, position_x/position_y in canvas pixels from centre, scale_percent, rotation_deg, exposure (stops), contrast (1 = unchanged), saturation (100 = unchanged), temperature_k (6500 neutral, higher warmer), volume_db, pan -1..1, muted, fade_in_sec, fade_out_sec (audio), name, enabled.", "input_schema": obj(json!({
+        {"name": "set_clip", "description": "Change properties of a clip or title: opacity 0-1, position_x/position_y in canvas pixels from centre, scale_percent, rotation_deg, exposure (stops), contrast (1 = unchanged), saturation (100 = unchanged), temperature_k (6500 neutral, higher warmer), tint / highlights / shadows / vibrance (-100 to 100), volume_db, pan -1..1, muted, fade_in_sec, fade_out_sec (audio), name, enabled.", "input_schema": obj(json!({
             "item_id": item, "opacity": {"type": "number"}, "position_x": {"type": "number"}, "position_y": {"type": "number"}, "scale_percent": {"type": "number"}, "rotation_deg": {"type": "number"},
-            "exposure": {"type": "number"}, "contrast": {"type": "number"}, "saturation": {"type": "number"}, "temperature_k": {"type": "number"},
+            "exposure": {"type": "number"}, "contrast": {"type": "number"}, "saturation": {"type": "number"}, "temperature_k": {"type": "number"}, "tint": {"type": "number"}, "highlights": {"type": "number"}, "shadows": {"type": "number"}, "vibrance": {"type": "number"},
             "volume_db": {"type": "number"}, "pan": {"type": "number"}, "muted": {"type": "boolean"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"},
             "name": {"type": "string"}, "enabled": {"type": "boolean"}}), &["item_id"])},
         {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, volume (dB), pan. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},

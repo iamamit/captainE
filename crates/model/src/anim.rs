@@ -116,6 +116,10 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("contrast", "Contrast"),
     ("saturation", "Saturation"),
     ("temperature", "Temperature"),
+    ("tint", "Tint"),
+    ("highlights", "Highlights"),
+    ("shadows", "Shadows"),
+    ("vibrance", "Vibrance"),
     ("volume", "Volume"),
     ("pan", "Pan"),
     // titles only: percent of the characters shown

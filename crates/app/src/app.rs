@@ -201,6 +201,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Which curve of a Curves effect the editor shows: master, red, green, blue
+    pub curve_tab: usize,
     /// Multicam switching in progress
     pub multicam: Option<crate::multicam::Multicam>,
     /// Background jobs that need Apple's Vision framework
@@ -299,6 +301,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            curve_tab: 0,
             multicam: None,
             vision_jobs: Vec::new(),
             preset_secs: 0.6,

@@ -100,6 +100,7 @@ pub fn auto_correction(s: &ColorStats) -> ColorProps {
         contrast,
         saturation,
         temperature,
+        ..ColorProps::default()
     }
 }
 
@@ -122,6 +123,7 @@ pub fn match_correction(reference: &ColorStats, target: &ColorStats) -> ColorPro
         contrast,
         saturation,
         temperature,
+        ..ColorProps::default()
     }
 }
 

@@ -32,8 +32,8 @@ v10	Video	Text animators and animation presets	3	0.75	in/out animation presets (
 v11	Video	Adjustment layers	3	0.75	adjustment layer with the full effects stack, masks limit its reach, opacity mixes; applies to all tracks below
 v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V, rotate, fit and fill buttons
 v13	Video	AI background removal / rotoscoping	3	0.75	AI subject cut-out via Apple Vision (people, animals, objects; person mode): matte video cached, Subject matte effect with feather/choke/invert, background job, Copilot remove_background; macOS only, no manual refine strokes
-c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.5	4 controls
-c02	Color	Wheels, curves, HSL	4	0.5	lift/gamma/gain wheels, 4-curve editor, 6-band HSL as slider effects; no graphical wheels/curve drag, no secondaries/qualifiers
+c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.75	exposure, contrast, saturation, temperature, tint, highlights, shadows, vibrance (all keyframeable) plus Auto color
+c02	Color	Wheels, curves, HSL	4	0.75	draggable lift/gamma/gain colour wheels, drag-point curve editor for master/R/G/B, 6-band HSL; no qualifiers/secondaries
 c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, vectorscope, histogram over the viewer; fixed size
 c04	Color	LUTs	3	0.5	.cube 3D LUT with strength per clip; no 1D LUTs, no LUT browser
 c05	Color	Auto color and shot matching	2	0.75	auto colour from measured frames (exposure, contrast, cast, saturation) and shot matching to a reference clip; Copilot tools; no per-shot histogram match or skin-tone protection

@@ -62,9 +62,43 @@ fn grade(rgb: [f32; 3], c: &ColorProps) -> [f32; 3] {
             };
         }
     }
+    if c.tint != 0.0 {
+        // positive tint adds magenta: a little less green, a little more red and blue
+        let t = (c.tint / 100.0) as f32 * 0.3;
+        out[0] *= 2f32.powf(t * 0.5);
+        out[1] *= 2f32.powf(-t);
+        out[2] *= 2f32.powf(t * 0.5);
+    }
+    if c.highlights != 0.0 || c.shadows != 0.0 {
+        let y = (0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]).max(0.0);
+        let smooth = |a: f32, b: f32, x: f32| {
+            let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let w_shadow = 1.0 - smooth(0.0, 0.35, y);
+        let w_light = smooth(0.25, 1.0, y);
+        let stops =
+            1.5 * ((c.shadows / 100.0) as f32 * w_shadow + (c.highlights / 100.0) as f32 * w_light);
+        let g = 2f32.powf(stops);
+        for v in &mut out {
+            *v *= g;
+        }
+    }
     if c.saturation != 100.0 {
         let s = (c.saturation / 100.0) as f32;
         let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+        for v in &mut out {
+            *v = (y + (*v - y) * s).max(0.0);
+        }
+    }
+    if c.vibrance != 0.0 {
+        let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+        let (mx, mn) = (
+            out[0].max(out[1]).max(out[2]),
+            out[0].min(out[1]).min(out[2]),
+        );
+        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+        let s = 1.0 + (c.vibrance / 100.0) as f32 * (1.0 - sat);
         for v in &mut out {
             *v = (y + (*v - y) * s).max(0.0);
         }
@@ -419,5 +453,101 @@ mod tests {
             },
         );
         assert_eq!(c, Canvas::black(4, 4));
+    }
+}
+
+#[cfg(test)]
+mod grade_tests {
+    use captaine_model::{BlendMode, ColorProps, Transform, VideoProps};
+
+    use super::*;
+
+    /// One grey or tinted pixel, graded, as 8-bit RGB.
+    fn px(rgb: [u8; 3], color: ColorProps) -> [u8; 3] {
+        let f = Frame8::solid(2, 2, [rgb[0], rgb[1], rgb[2], 255]);
+        let mut c = Canvas::black(2, 2);
+        let props = VideoProps {
+            transform: Transform::default(),
+            color,
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+        };
+        draw_layer(&mut c, &f, &props);
+        let v = c.to_rgba8();
+        [v[0], v[1], v[2]]
+    }
+
+    #[test]
+    fn tint_moves_green_against_magenta() {
+        let grey = [128, 128, 128];
+        let magenta = px(
+            grey,
+            ColorProps {
+                tint: 80.0,
+                ..ColorProps::default()
+            },
+        );
+        let green = px(
+            grey,
+            ColorProps {
+                tint: -80.0,
+                ..ColorProps::default()
+            },
+        );
+        assert!(magenta[1] < grey[1] && magenta[0] > grey[0], "{magenta:?}");
+        assert!(green[1] > grey[1] && green[0] < grey[0], "{green:?}");
+    }
+
+    #[test]
+    fn shadows_and_highlights_work_on_their_own_ends_of_the_tone_range() {
+        let (dark, bright) = ([30, 30, 30], [235, 235, 235]);
+        let open = ColorProps {
+            shadows: 80.0,
+            ..ColorProps::default()
+        };
+        assert!(px(dark, open)[0] > dark[0] + 15, "shadows lifted");
+        assert!(
+            px(bright, open)[0].abs_diff(bright[0]) <= 2,
+            "highlights untouched: {:?}",
+            px(bright, open)
+        );
+        let recover = ColorProps {
+            highlights: -80.0,
+            ..ColorProps::default()
+        };
+        assert!(
+            px(bright, recover)[0] < bright[0] - 15,
+            "highlights pulled down"
+        );
+        assert!(
+            px(dark, recover)[0].abs_diff(dark[0]) <= 2,
+            "shadows untouched"
+        );
+    }
+
+    #[test]
+    fn vibrance_lifts_dull_colours_more_than_vivid_ones() {
+        let (dull, vivid) = ([140, 120, 110], [250, 40, 30]);
+        let v = ColorProps {
+            vibrance: 100.0,
+            ..ColorProps::default()
+        };
+        let gain = |c: [u8; 3]| {
+            let g = px(c, v);
+            let chroma =
+                |p: [u8; 3]| p.iter().max().unwrap().abs_diff(*p.iter().min().unwrap()) as f32;
+            chroma(g) / chroma(c)
+        };
+        assert!(
+            gain(dull) > gain(vivid) + 0.15,
+            "{} vs {}",
+            gain(dull),
+            gain(vivid)
+        );
+        assert_eq!(
+            px([100, 100, 100], v),
+            px([100, 100, 100], ColorProps::default()),
+            "grey stays grey"
+        );
     }
 }

@@ -6,6 +6,7 @@ pub mod branches_ui;
 pub mod clipboard;
 pub mod compare;
 pub mod copilot;
+pub mod effect_widgets;
 pub mod jobs;
 pub mod links;
 pub mod markers_ui;

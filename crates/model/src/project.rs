@@ -127,6 +127,18 @@ pub struct ColorProps {
     pub saturation: f64,
     /// Kelvin; 6500 = neutral, higher is warmer (more red, less blue), lower is cooler.
     pub temperature: f64,
+    /// -100 (green) to 100 (magenta); the other half of white balance.
+    #[serde(default)]
+    pub tint: f64,
+    /// -100 darkens the brightest areas (to recover them), 100 lifts them.
+    #[serde(default)]
+    pub highlights: f64,
+    /// -100 deepens the dark areas, 100 opens them up.
+    #[serde(default)]
+    pub shadows: f64,
+    /// Saturation that favours the dull colours and leaves the vivid ones alone (-100 to 100).
+    #[serde(default)]
+    pub vibrance: f64,
 }
 
 impl ColorProps {
@@ -144,6 +156,10 @@ impl Default for ColorProps {
             contrast: 1.0,
             saturation: 100.0,
             temperature: ColorProps::NEUTRAL_KELVIN,
+            tint: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            vibrance: 0.0,
         }
     }
 }
@@ -404,6 +420,10 @@ pub fn check_video(v: &VideoProps) -> Result<(), &'static str> {
         c.contrast,
         c.saturation,
         c.temperature,
+        c.tint,
+        c.highlights,
+        c.shadows,
+        c.vibrance,
     ];
     if !all.iter().all(|x| x.is_finite()) {
         return Err("non-finite property");
@@ -413,6 +433,12 @@ pub fn check_video(v: &VideoProps) -> Result<(), &'static str> {
     }
     if c.contrast < 0.0 || !(0.0..=400.0).contains(&c.saturation) || c.temperature <= 0.0 {
         return Err("color values out of range");
+    }
+    if ![c.tint, c.highlights, c.shadows, c.vibrance]
+        .iter()
+        .all(|v| v.is_finite() && (-100.0..=100.0).contains(v))
+    {
+        return Err("tint, highlights, shadows and vibrance are -100 to 100");
     }
     if t.scale.0 == 0.0 || t.scale.1 == 0.0 {
         return Err("scale cannot be zero");
@@ -761,6 +787,18 @@ pub fn video_with_anim(base: &VideoProps, anim: &Anim, t: i64) -> VideoProps {
     if let Some(x) = get("temperature") {
         v.color.temperature = x.max(1.0);
     }
+    if let Some(x) = get("tint") {
+        v.color.tint = x.clamp(-100.0, 100.0);
+    }
+    if let Some(x) = get("highlights") {
+        v.color.highlights = x.clamp(-100.0, 100.0);
+    }
+    if let Some(x) = get("shadows") {
+        v.color.shadows = x.clamp(-100.0, 100.0);
+    }
+    if let Some(x) = get("vibrance") {
+        v.color.vibrance = x.clamp(-100.0, 100.0);
+    }
     v
 }
 
@@ -789,6 +827,10 @@ pub fn base_value(video: &VideoProps, audio: Option<&AudioProps>, prop: &str) ->
         "contrast" => video.color.contrast,
         "saturation" => video.color.saturation,
         "temperature" => video.color.temperature,
+        "tint" => video.color.tint,
+        "highlights" => video.color.highlights,
+        "shadows" => video.color.shadows,
+        "vibrance" => video.color.vibrance,
         "volume" => audio?.gain_db,
         "pan" => audio?.pan,
         _ => return None,
@@ -807,6 +849,10 @@ pub fn set_base_value(video: &mut VideoProps, audio: &mut AudioProps, prop: &str
         "contrast" => video.color.contrast = value,
         "saturation" => video.color.saturation = value,
         "temperature" => video.color.temperature = value,
+        "tint" => video.color.tint = value,
+        "highlights" => video.color.highlights = value,
+        "shadows" => video.color.shadows = value,
+        "vibrance" => video.color.vibrance = value,
         "volume" => audio.gain_db = value,
         "pan" => audio.pan = value,
         _ => {}
@@ -835,6 +881,7 @@ pub fn check_anim(anim: &Anim, has_audio: bool) -> Result<(), &'static str> {
                 "contrast" => k.v >= 0.0,
                 "saturation" => (0.0..=400.0).contains(&k.v),
                 "temperature" => k.v > 0.0,
+                "tint" | "highlights" | "shadows" | "vibrance" => (-100.0..=100.0).contains(&k.v),
                 "scale" => k.v != 0.0,
                 _ => true,
             };
