@@ -40,6 +40,9 @@ pub fn pool_tab(app: &mut App, ui: &mut Ui) {
                     let kinds = [
                         Some(ShapeKind::Rectangle),
                         Some(ShapeKind::Ellipse),
+                        Some(ShapeKind::Polygon),
+                        Some(ShapeKind::Star),
+                        Some(ShapeKind::Line),
                         Some(ShapeKind::Solid),
                         None,
                     ];
@@ -80,6 +83,37 @@ fn layer_card(app: &mut App, ui: &mut Ui, kind: Option<ShapeKind>, w: f32) {
         }
         Some(ShapeKind::Solid) => {
             p.rect_filled(pic, 3.0, Color32::from_rgb(0x28, 0x28, 0x30));
+        }
+        Some(k @ (ShapeKind::Polygon | ShapeKind::Star)) => {
+            let (n, c, r) = (
+                if k == ShapeKind::Star { 10 } else { 6 },
+                pic.center(),
+                h * 0.3,
+            );
+            let pts: Vec<egui::Pos2> = (0..n)
+                .map(|i| {
+                    let a =
+                        std::f32::consts::TAU * i as f32 / n as f32 - std::f32::consts::FRAC_PI_2;
+                    let r = if k == ShapeKind::Star && i % 2 == 1 {
+                        r * 0.42
+                    } else {
+                        r
+                    };
+                    pos2(c.x + r * a.cos(), c.y + r * a.sin())
+                })
+                .collect();
+            p.add(egui::Shape::convex_polygon(
+                pts,
+                theme::ACCENT,
+                Stroke::NONE,
+            ));
+        }
+        Some(ShapeKind::Line) => {
+            p.rect_filled(
+                Rect::from_center_size(pic.center(), vec2(w * 0.6, h * 0.08)),
+                h * 0.04,
+                theme::ACCENT,
+            );
         }
         None => {
             // a pane of glass over the scene
@@ -181,6 +215,11 @@ fn layer_controls(app: &mut App, ui: &mut Ui, title: &Title, track_name: &str) {
         }
         if sh.kind == ShapeKind::Rectangle {
             row(ui, "Corner radius", &mut sh.corner, 0.0..=50.0, 0.0, "%");
+        }
+        if matches!(sh.kind, ShapeKind::Polygon | ShapeKind::Star) {
+            let mut n = sh.sides as f64;
+            row(ui, "Sides", &mut n, 3.0..=16.0, 5.0, "");
+            sh.sides = n.round() as u32;
         }
         if sh.kind != ShapeKind::Solid {
             row(ui, "Outline", &mut sh.outline, 0.0..=50.0, 0.0, " px");

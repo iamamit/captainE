@@ -629,6 +629,12 @@ pub enum ShapeKind {
     Ellipse,
     /// The whole frame in one colour
     Solid,
+    /// A regular polygon with `sides` corners (3 is a triangle) that fits the width and height
+    Polygon,
+    /// A star with `sides` points
+    Star,
+    /// A rounded bar as long as the width and as thick as the height
+    Line,
 }
 
 impl ShapeKind {
@@ -637,6 +643,9 @@ impl ShapeKind {
             ShapeKind::Rectangle => "Rectangle",
             ShapeKind::Ellipse => "Ellipse",
             ShapeKind::Solid => "Solid color",
+            ShapeKind::Polygon => "Polygon",
+            ShapeKind::Star => "Star",
+            ShapeKind::Line => "Line",
         }
     }
 }
@@ -654,6 +663,13 @@ pub struct Shape {
     pub corner: f64,
     pub outline: f64,
     pub outline_color: [u8; 4],
+    /// Corners of a polygon, points of a star
+    #[serde(default = "five")]
+    pub sides: u32,
+}
+
+fn five() -> u32 {
+    5
 }
 
 impl Shape {
@@ -670,6 +686,10 @@ impl Shape {
             corner: 0.0,
             outline: 0.0,
             outline_color: [255, 255, 255, 255],
+            sides: match kind {
+                ShapeKind::Polygon => 6,
+                _ => 5,
+            },
         }
     }
 
@@ -680,6 +700,9 @@ impl Shape {
         }
         if !(1.0..=400.0).contains(&self.width) || !(1.0..=400.0).contains(&self.height) {
             return Err("shape size must be 1-400 % of the frame");
+        }
+        if !(3..=16).contains(&self.sides) {
+            return Err("a polygon or star has 3 to 16 sides");
         }
         if !(0.0..=50.0).contains(&self.corner) || !(0.0..=50.0).contains(&self.outline) {
             return Err("shape corner and outline are 0-50 %");

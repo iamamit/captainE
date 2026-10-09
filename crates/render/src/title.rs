@@ -309,6 +309,30 @@ fn quote(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
     }
 }
 
+/// Signed distance from (x, y) to a polygon: negative inside (even-odd rule).
+fn polygon_distance(pts: &[(f32, f32)], x: f32, y: f32) -> f32 {
+    let (mut inside, mut best) = (false, f32::MAX);
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        if (a.1 > y) != (b.1 > y) && x < (b.0 - a.0) * (y - a.1) / (b.1 - a.1) + a.0 {
+            inside = !inside;
+        }
+        let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+        let l2 = ex * ex + ey * ey;
+        let t = if l2 == 0.0 {
+            0.0
+        } else {
+            (((x - a.0) * ex + (y - a.1) * ey) / l2).clamp(0.0, 1.0)
+        };
+        best = best.min((x - a.0 - t * ex).hypot(y - a.1 - t * ey));
+    }
+    if inside {
+        -best
+    } else {
+        best
+    }
+}
+
 /// A shape (or the whole frame in one colour) as a canvas-sized picture with smooth edges.
 pub fn render_shape(sh: &Shape, width: u32, height: u32) -> Frame8 {
     let mut f = Frame8::solid(width, height, [0, 0, 0, 0]);
@@ -325,6 +349,25 @@ pub fn render_shape(sh: &Shape, width: u32, height: u32) -> Frame8 {
     let (hx, hy) = (bw / 2.0, bh / 2.0);
     let radius = (sh.corner as f32 / 100.0) * bw.min(bh);
     let outline = (sh.outline as f32) * h / 1080.0;
+    // corners of a polygon or star, in pixels around the middle, first point straight up
+    let corners: Vec<(f32, f32)> = match sh.kind {
+        ShapeKind::Polygon => (0..sh.sides)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / sh.sides as f32
+                    - std::f32::consts::FRAC_PI_2;
+                (hx * a.cos(), hy * a.sin())
+            })
+            .collect(),
+        ShapeKind::Star => (0..sh.sides * 2)
+            .map(|i| {
+                let a =
+                    std::f32::consts::PI * i as f32 / sh.sides as f32 - std::f32::consts::FRAC_PI_2;
+                let r = if i % 2 == 0 { 1.0 } else { 0.42 };
+                (hx * r * a.cos(), hy * r * a.sin())
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     let mix = |a: [u8; 4], b: [u8; 4], t: f32| -> [f32; 4] {
         std::array::from_fn(|i| a[i] as f32 + (b[i] as f32 - a[i] as f32) * t)
     };
@@ -337,6 +380,13 @@ pub fn render_shape(sh: &Shape, width: u32, height: u32) -> Frame8 {
                 ShapeKind::Rectangle => {
                     let (qx, qy) = (px.abs() - (hx - radius), py.abs() - (hy - radius));
                     qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+                }
+                ShapeKind::Polygon | ShapeKind::Star => polygon_distance(&corners, px, py),
+                ShapeKind::Line => {
+                    // a capsule: the distance to the middle segment, minus the half thickness
+                    let half = hy.max(0.5);
+                    let reach = (hx - half).max(0.0);
+                    (px - px.clamp(-reach, reach)).hypot(py) - half
                 }
                 ShapeKind::Ellipse => {
                     let (a, b) = (hx.max(0.5), hy.max(0.5));
@@ -409,6 +459,46 @@ mod tests {
             }
         }
         b
+    }
+
+    #[test]
+    fn polygons_stars_and_lines_fill_the_right_places() {
+        let draw = |kind, sides: u32, w: f64, h: f64| {
+            let mut sh = Shape::new(kind);
+            sh.sides = sides;
+            sh.width = w;
+            sh.height = h;
+            sh.check().unwrap();
+            render_shape(&sh, 200, 200)
+        };
+        // a triangle points up: wide at the bottom, a point at the top
+        let tri = draw(ShapeKind::Polygon, 3, 60.0, 60.0);
+        assert_eq!(alpha(&tri, 100, 125), 255, "inside near the base");
+        assert!(alpha(&tri, 100, 75) > 0, "near the apex");
+        assert_eq!(alpha(&tri, 62, 75), 0, "outside the slanted side");
+        assert_eq!(alpha(&tri, 100, 20), 0, "above");
+        assert_eq!(alpha(&tri, 100, 100), 255);
+        // a star has a hollow between its points
+        let star = draw(ShapeKind::Star, 5, 80.0, 80.0);
+        assert_eq!(alpha(&star, 100, 100), 255, "the middle");
+        assert!(alpha(&star, 100, 25) > 200, "the top point");
+        assert_eq!(
+            alpha(&star, 128, 40),
+            0,
+            "between the top and the right point"
+        );
+        // a line is a rounded bar
+        let line = draw(ShapeKind::Line, 5, 80.0, 6.0);
+        assert_eq!(alpha(&line, 100, 100), 255);
+        assert_eq!(alpha(&line, 100, 120), 0);
+        assert_eq!(alpha(&line, 30, 100), 255, "reaches near both ends");
+        assert!(alpha(&line, 15, 100) < 255, "rounded end");
+        // too few or too many corners are refused
+        let mut bad = Shape::new(ShapeKind::Polygon);
+        bad.sides = 2;
+        assert!(bad.check().is_err());
+        bad.sides = 17;
+        assert!(bad.check().is_err());
     }
 
     #[test]
