@@ -49,6 +49,9 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 for (t, l, k) in [
                     (Tool::Select, "Select", "V"),
                     (Tool::Trim, "Trim", "T"),
+                    (Tool::Roll, "Roll", "N"),
+                    (Tool::Slip, "Slip", "Y"),
+                    (Tool::Slide, "Slide", "U"),
                     (Tool::Blade, "Blade", "B"),
                     (Tool::Hand, "Hand", "H"),
                     (Tool::Zoom, "Zoom", "Z"),
@@ -397,6 +400,49 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 app.drag = Drag::Pan {
                     start_scroll: app.scroll,
                 };
+            } else if matches!(app.tool, Tool::Roll | Tool::Slip | Tool::Slide) {
+                let under = clips.iter().find(|c| c.rect.contains(origin));
+                if let Some(c) = under {
+                    match app.tool {
+                        Tool::Roll => {
+                            // the cut nearest to the press: the clip's own start or end
+                            let near_start = origin.x - c.rect.left() < c.rect.right() - origin.x;
+                            let other = clips.iter().find(|o| {
+                                o.track == c.track
+                                    && if near_start {
+                                        o.start + o.dur == c.start
+                                    } else {
+                                        o.start == c.start + c.dur
+                                    }
+                            });
+                            if let Some(o) = other {
+                                let (left, right) = if near_start { (o, c) } else { (c, o) };
+                                app.drag = Drag::Roll {
+                                    left: left.id,
+                                    right: right.id,
+                                    delta: 0,
+                                };
+                            } else {
+                                app.toast("There is nothing on the other side of that cut", false);
+                            }
+                        }
+                        Tool::Slip if !c.is_gap => {
+                            app.select_with_links(c.id);
+                            app.drag = Drag::Slip {
+                                item: c.id,
+                                delta: 0,
+                            };
+                        }
+                        Tool::Slide if !c.is_gap => {
+                            app.select_with_links(c.id);
+                            app.drag = Drag::Slide {
+                                item: c.id,
+                                delta: 0,
+                            };
+                        }
+                        _ => {}
+                    }
+                }
             } else if matches!(app.tool, Tool::Select | Tool::Trim) {
                 if let Some(c) = hit(origin) {
                     if ui.input(|i| i.modifiers.shift) {
@@ -477,6 +523,43 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                         target_track: track,
                         target_start: start,
                     };
+                }
+                Drag::Roll { left, right, .. } => {
+                    if let (Some(l), Some(r)) = (
+                        clips.iter().find(|c| c.id == left),
+                        clips.iter().find(|c| c.id == right),
+                    ) {
+                        let t = do_snap(app, view.tick(pos.x), None, &mut snapped);
+                        let delta = (t - r.start).clamp(-(l.dur - 1), r.dur - 1);
+                        app.drag = Drag::Roll { left, right, delta };
+                    }
+                }
+                Drag::Slip { item, .. } => {
+                    let press_x = ui
+                        .input(|i| i.pointer.press_origin())
+                        .map_or(pos.x, |p| p.x);
+                    let delta = view.tick(pos.x) - view.tick(press_x);
+                    app.drag = Drag::Slip { item, delta };
+                }
+                Drag::Slide { item, .. } => {
+                    if let Some(c) = clips.iter().find(|c| c.id == item) {
+                        let prev = clips
+                            .iter()
+                            .find(|o| o.track == c.track && o.start + o.dur == c.start);
+                        let next = clips
+                            .iter()
+                            .find(|o| o.track == c.track && o.start == c.start + c.dur);
+                        let press_x = ui
+                            .input(|i| i.pointer.press_origin())
+                            .map_or(pos.x, |p| p.x);
+                        let raw = view.tick(pos.x) - view.tick(press_x);
+                        let lo = -prev.map_or(0, |p| p.dur - 1);
+                        let hi = next.map_or(0, |n| n.dur - 1);
+                        app.drag = Drag::Slide {
+                            item,
+                            delta: raw.clamp(lo, hi),
+                        };
+                    }
                 }
                 Drag::Trim { item, edge, .. } => {
                     if let Some(c) = clips.iter().find(|c| c.id == item) {
@@ -565,6 +648,35 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
+            }
+            Drag::Roll { left, right, delta } if delta != 0 => {
+                let d = app.time(delta);
+                app.do_plan(|p| edit::roll(p, left, right, d));
+            }
+            Drag::Slip { item, delta } if delta != 0 => {
+                // dragging right shows earlier footage, as in other editors
+                let d = app.time(-delta);
+                let mut ops = vec![Op::Slip { item, delta: d }];
+                if app.link_on {
+                    ops.extend(
+                        app.link_partners(item)
+                            .into_iter()
+                            .filter(|p| app.is_selected(*p))
+                            .map(|p| Op::Slip { item: p, delta: d }),
+                    );
+                }
+                if ops.len() == 1 {
+                    app.do_op(ops.remove(0));
+                } else {
+                    app.do_op(Op::Transaction {
+                        description: "Slip linked clips".into(),
+                        ops,
+                    });
+                }
+            }
+            Drag::Slide { item, delta } if delta != 0 => {
+                let d = app.time(delta);
+                app.do_plan(|p| edit::slide(p, item, d));
             }
             Drag::Trim { item, edge, delta } if delta != 0 => {
                 let d = app.time(delta);
@@ -802,11 +914,51 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 dim = false;
             }
         }
+        match &app.drag {
+            Drag::Roll { left, right, delta } if *left == c.id => {
+                rect.max.x = view.x(c.start + c.dur + delta);
+            }
+            Drag::Roll { left, right, delta } if *right == c.id => {
+                rect.min.x = view.x(c.start + delta);
+            }
+            Drag::Slide { item, delta } if *item == c.id => {
+                rect = rect.translate(vec2(view.x(c.start + delta) - view.x(c.start), 0.0));
+            }
+            Drag::Slide { item, delta } => {
+                // the neighbours give and take the time
+                if let Some(s) = clips.iter().find(|o| o.id == *item) {
+                    if s.track == c.track && c.start + c.dur == s.start {
+                        rect.max.x = view.x(c.start + c.dur + delta);
+                    } else if s.track == c.track && c.start == s.start + s.dur {
+                        rect.min.x = view.x(c.start + delta);
+                    }
+                }
+            }
+            _ => {}
+        }
         let selected = app.is_selected(c.id);
         match &item {
             Item::Clip(clip) => draw_clip(app, &body_painter, clip, rect, row, selected, dim),
             Item::Title(t) => draw_title(&body_painter, t, rect, selected, dim),
             Item::Gap(_) => {}
+        }
+    }
+    // the pending change of a roll, slip or slide, in frames
+    let pending = match &app.drag {
+        Drag::Roll { left, delta, .. } => Some(("Roll", *left, *delta)),
+        Drag::Slip { item, delta } => Some(("Slip", *item, -*delta)),
+        Drag::Slide { item, delta } => Some(("Slide", *item, *delta)),
+        _ => None,
+    };
+    if let Some((what, id, d)) = pending {
+        if let Some(c) = clips.iter().find(|c| c.id == id) {
+            body_painter.text(
+                pos2(c.rect.center().x, c.rect.top() - 2.0),
+                Align2::CENTER_BOTTOM,
+                format!("{what} {d:+} f"),
+                mono(11.0),
+                Color32::WHITE,
+            );
         }
     }
     // ghosts
@@ -915,7 +1067,12 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         match (&app.drag, app.tool) {
-            (Drag::Trim { .. }, _) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+            (Drag::Trim { .. } | Drag::Roll { .. } | Drag::Slip { .. } | Drag::Slide { .. }, _) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
+            (_, Tool::Roll | Tool::Slip | Tool::Slide) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn)
+            }
             (Drag::Clip { .. }, _) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
             (_, Tool::Hand) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
             (_, Tool::Blade) => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),

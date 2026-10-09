@@ -2071,3 +2071,81 @@ fn proxies_are_made_in_the_background_and_attached() {
     assert!(app(&h).proxies.busy.is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Trim every clip on V1 so each has 10 frames of spare footage on both sides.
+fn give_handles(h: &mut H) {
+    let ids: Vec<Id> = v1(app(h)).items.iter().map(|i| i.id()).collect();
+    for id in ids {
+        for (edge, d) in [(captaine_ops::Edge::In, 10), (captaine_ops::Edge::Out, -10)] {
+            let t = captaine_time::RationalTime::new(d, Rational::FPS_24);
+            assert!(app_mut(h).do_op(captaine_ops::Op::Trim {
+                item: id,
+                edge,
+                delta: t
+            }));
+        }
+    }
+    settle(h);
+}
+
+#[test]
+fn roll_slip_and_slide_tools_work_with_the_mouse() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    give_handles(&mut h);
+    let lay = layout(app(&h));
+    assert_eq!(lay, [(0, 76), (76, 76), (152, 76)]);
+    let src = |a: &App, i: usize| match &v1(a).items[i] {
+        Item::Clip(c) => c.source_start.value,
+        _ => panic!("clip"),
+    };
+    let start = [src(app(&h), 0), src(app(&h), 1), src(app(&h), 2)];
+    // roll: the cut between the first two clips moves 8 frames right (13.4 px)
+    app_mut(&mut h).tool = Tool::Roll;
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let cut = pos2(g.x(76.0 / 24.0), g.row_center(v1(app(&h)).id).unwrap());
+    drag(&mut h, cut, pos2(cut.x + 13.4, cut.y));
+    let lay = layout(app(&h));
+    let said: Vec<_> = app(&h).toasts.iter().map(|t| t.text.clone()).collect();
+    assert_eq!((lay[0], lay[1]), ((0, 84), (84, 68)), "{lay:?} {said:?}");
+    assert_eq!(lay[2], (152, 76), "the total length did not change");
+    assert_eq!(
+        src(app(&h), 1),
+        start[1] + 8,
+        "the right clip starts later in its footage"
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(layout(app(&h))[0], (0, 76));
+    // slip: drag the middle clip 10 px left = 6 frames later in its footage; position and length stay
+    app_mut(&mut h).tool = Tool::Slip;
+    let mid = clip_pos(app(&h), 1, 0.5);
+    drag(&mut h, mid, pos2(mid.x - 10.0, mid.y));
+    assert_eq!(layout(app(&h)), [(0, 76), (76, 76), (152, 76)]);
+    assert_eq!(src(app(&h), 1), start[1] + 6, "later footage");
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(src(app(&h), 1), start[1]);
+    // slide: the middle clip moves 8 frames right; the first grows, the third shrinks
+    app_mut(&mut h).tool = Tool::Slide;
+    let mid = clip_pos(app(&h), 1, 0.5);
+    drag(&mut h, mid, pos2(mid.x + 13.4, mid.y));
+    let lay = layout(app(&h));
+    assert_eq!(lay, [(0, 84), (84, 76), (160, 68)], "{lay:?}");
+    assert_eq!(src(app(&h), 1), start[1], "its own footage is untouched");
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(layout(app(&h)), [(0, 76), (76, 76), (152, 76)]);
+    // the keys pick the tools
+    h.key_press(Key::N);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Roll);
+    h.key_press(Key::Y);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Slip);
+    h.key_press(Key::U);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Slide);
+}

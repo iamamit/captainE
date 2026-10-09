@@ -21,6 +21,12 @@ use crate::{copilot, theme, timeline, ui, viewer};
 pub enum Tool {
     Select,
     Trim,
+    /// Move the cut between two clips
+    Roll,
+    /// Change which part of the source a clip shows
+    Slip,
+    /// Move a clip along its track, trading time with its neighbours
+    Slide,
     Blade,
     Hand,
     Zoom,
@@ -76,6 +82,22 @@ pub enum Drag {
         grab_ticks: i64,
         target_track: Id,
         target_start: i64,
+    },
+    /// Moving the cut between `left` and `right`; `delta` ticks pending.
+    Roll {
+        left: Id,
+        right: Id,
+        delta: i64,
+    },
+    /// Sliding what `item` shows through its fixed frame; `delta` ticks pending (right = earlier source).
+    Slip {
+        item: Id,
+        delta: i64,
+    },
+    /// Moving `item` along its track between its neighbours.
+    Slide {
+        item: Id,
+        delta: i64,
     },
     /// Dragging a clip edge; `delta` is the pending trim in ticks.
     Trim {

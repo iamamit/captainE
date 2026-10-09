@@ -1,7 +1,7 @@
 # id	area	feature	weight	status	note
 # status: 0 = absent, 0.25 = engine only or very partial, 0.5 = works but clearly short of Adobe, 0.75 = solid, 1 = at parity for a creator
 e01	Editing	Multi-track timeline; insert, overwrite, lift, extract, split, trim	5	1	
-e02	Editing	Ripple, roll, slip, slide with the mouse	4	0.5	engine and CLI only for roll/slide/slip; mouse does ripple trim
+e02	Editing	Ripple, roll, slip, slide with the mouse	4	0.75	mouse Roll (N), Slip (Y), Slide (U) tools with live preview and frame readout, plus ripple trim, linked clips follow, snapping; no dynamic JKL trimming, no trim-view window
 e03	Editing	Snapping, zoom, scrub, JKL shuttle	3	1	
 e04	Editing	Linked audio and video clips	4	0.75	separate audio into a linked audio-track clip; linked clips select, move (any track change), trim, cut and delete together; Link toggle; link/unlink; multi-selection moves as a group; no sync-offset badge
 e05	Editing	Multi-select, copy, paste, duplicate	4	0.75	shift-click multi-select, select all, copy/paste at playhead, duplicate (ripple), multi lift/ripple delete; no marquee or group drag

@@ -1130,6 +1130,9 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     for (k, t) in [
         (Key::V, Tool::Select),
         (Key::T, Tool::Trim),
+        (Key::N, Tool::Roll),
+        (Key::Y, Tool::Slip),
+        (Key::U, Tool::Slide),
         (Key::B, Tool::Blade),
         (Key::H, Tool::Hand),
         (Key::Z, Tool::Zoom),
