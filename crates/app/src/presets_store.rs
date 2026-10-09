@@ -6,11 +6,10 @@ use captaine_model::presets::Preset;
 use captaine_model::Effect;
 
 pub fn dir() -> PathBuf {
-    let home = std::env::var("CAPTAINE_PRESETS")
+    std::env::var("CAPTAINE_PRESETS")
         .map(PathBuf::from)
         .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".captaine/presets")))
-        .unwrap_or_else(|_| std::env::temp_dir().join("captaine-presets"));
-    home
+        .unwrap_or_else(|_| std::env::temp_dir().join("captaine-presets"))
 }
 
 /// File names are the preset name with anything odd turned into a dash.
