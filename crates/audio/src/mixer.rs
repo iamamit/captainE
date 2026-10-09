@@ -281,9 +281,9 @@ impl Mixer {
                     for f in side.chunks_exact(2) {
                         let level = f[0].abs().max(f[1].abs()) as f64;
                         env = if level > env {
-                            atk * env + (1.0 - atk) * level
+                            det_up * env + (1.0 - det_up) * level
                         } else {
-                            rel * env + (1.0 - rel) * level
+                            det_down * env + (1.0 - det_down) * level
                         };
                         let over = 20.0 * env.max(1e-9).log10() > d[0];
                         let target = if over { d[1] } else { 0.0 };

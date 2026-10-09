@@ -187,6 +187,47 @@ pub fn make_proxy(src: &Path, dst: &Path, max_height: u32) -> Result<(), MediaEr
     std::fs::rename(&tmp, dst).map_err(MediaError::Io)
 }
 
+/// Times (seconds from `from_secs`) where the picture changes abruptly: a cut. `threshold` is FFmpeg's
+/// scene score from 0 to 1; 0.3 catches hard cuts without reacting to camera movement.
+pub fn detect_scenes(
+    path: &str,
+    from_secs: f64,
+    dur_secs: f64,
+    threshold: f64,
+) -> Result<Vec<f64>, MediaError> {
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostdin", "-ss"])
+        .arg(format!("{:.6}", from_secs.max(0.0)))
+        .arg("-t")
+        .arg(format!("{:.6}", dur_secs.max(0.0)))
+        .arg("-i")
+        .arg(path)
+        .args(["-an", "-sn", "-vf"])
+        .arg(format!("select='gt(scene,{threshold})',showinfo"))
+        .args(["-f", "null", "-"])
+        .output()
+        .map_err(MediaError::Io)?;
+    if !out.status.success() {
+        return Err(MediaError::Tool(
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+                .to_string(),
+        ));
+    }
+    let log = String::from_utf8_lossy(&out.stderr);
+    let mut times: Vec<f64> = log
+        .lines()
+        .filter(|l| l.contains("Parsed_showinfo"))
+        .filter_map(|l| l.split("pts_time:").nth(1))
+        .filter_map(|r| r.split_whitespace().next())
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    times.sort_by(|a, b| a.total_cmp(b));
+    Ok(times)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,45 +287,4 @@ mod tests {
     fn rejects_empty() {
         assert!(parse_probe(r#"{"streams":[],"format":{}}"#).is_err());
     }
-}
-
-/// Times (seconds from `from_secs`) where the picture changes abruptly: a cut. `threshold` is FFmpeg's
-/// scene score from 0 to 1; 0.3 catches hard cuts without reacting to camera movement.
-pub fn detect_scenes(
-    path: &str,
-    from_secs: f64,
-    dur_secs: f64,
-    threshold: f64,
-) -> Result<Vec<f64>, MediaError> {
-    let out = Command::new("ffmpeg")
-        .args(["-hide_banner", "-nostdin", "-ss"])
-        .arg(format!("{:.6}", from_secs.max(0.0)))
-        .arg("-t")
-        .arg(format!("{:.6}", dur_secs.max(0.0)))
-        .arg("-i")
-        .arg(path)
-        .args(["-an", "-sn", "-vf"])
-        .arg(format!("select='gt(scene,{threshold})',showinfo"))
-        .args(["-f", "null", "-"])
-        .output()
-        .map_err(MediaError::Io)?;
-    if !out.status.success() {
-        return Err(MediaError::Tool(
-            String::from_utf8_lossy(&out.stderr)
-                .lines()
-                .last()
-                .unwrap_or("")
-                .to_string(),
-        ));
-    }
-    let log = String::from_utf8_lossy(&out.stderr);
-    let mut times: Vec<f64> = log
-        .lines()
-        .filter(|l| l.contains("Parsed_showinfo"))
-        .filter_map(|l| l.split("pts_time:").nth(1))
-        .filter_map(|r| r.split_whitespace().next())
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    times.sort_by(|a, b| a.total_cmp(b));
-    Ok(times)
 }
