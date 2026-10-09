@@ -25,3 +25,5 @@ After Effects (motion and effects, the useful core), Audition (audio) and Lumetr
   not mean the same polish, plugin ecosystem or speed.
 
 **Start (2026-10-09): 26.4%.** Target 75%.
+
+**Reached (2026-10-10): 75.2%** by `python3 tools/parity.py` (62 features, every counted feature built, tested and reachable from the window). Scorecard: `docs/parity.tsv`.
