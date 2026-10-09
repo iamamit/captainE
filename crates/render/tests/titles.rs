@@ -420,3 +420,94 @@ fn text_animation_presets_show_up_frame_by_frame() {
         "faded out by the last frame"
     );
 }
+
+#[test]
+fn a_sequence_plays_inside_another_and_follows_edits() {
+    // B: a red solid. A: a clip that plays B.
+    let rate = R;
+    let mut p = Project::new(ProjectSettings {
+        frame_rate: rate,
+        width: 640,
+        height: 360,
+        sample_rate: 48_000,
+    });
+    let solid = |rgb: [u8; 3]| {
+        let mut s = Title::generator(Id::new(), Some(ShapeKind::Solid), t(40));
+        s.shape = Some(Shape {
+            color: [rgb[0], rgb[1], rgb[2], 255],
+            ..Shape::new(ShapeKind::Solid)
+        });
+        s
+    };
+    let mut b = Timeline::new(Id::new(), "Inner", rate);
+    let mut vb = Track::new(Id::new(), "V1", TrackKind::Video);
+    vb.items.push(Item::Title(solid([255, 0, 0])));
+    b.tracks.push(Arc::new(vb));
+    let media = MediaRef::nested(&b, (640, 360));
+    assert_eq!(media.nested_timeline(), Some(b.id));
+    let mut a = Timeline::new(Id::new(), "Outer", rate);
+    let mut va = Track::new(Id::new(), "V1", TrackKind::Video);
+    va.items.push(Item::Gap(Gap {
+        id: Id::new(),
+        duration: t(10),
+    }));
+    va.items.push(Item::Clip(Clip::new(
+        Id::new(),
+        "inner",
+        media.id,
+        t(5),
+        t(20),
+    )));
+    a.tracks.push(Arc::new(va));
+    let (a_id, b_id) = (a.id, b.id);
+    p.media.insert(media.id, media);
+    p.timelines.insert(b_id, Arc::new(b));
+    p.timelines.insert(a_id, Arc::new(a));
+    p.validate().unwrap();
+    // before the clip: black; inside it: the inner sequence (shown from its tick 5)
+    let mut r = Renderer::new(&p, a_id, RenderOptions::default()).unwrap();
+    assert_eq!(px8(&r.render(3).unwrap(), 100, 100), [0, 0, 0]);
+    let c = px8(&r.render(15).unwrap(), 100, 100);
+    assert!(c[0] > 250 && c[1] < 5, "the inner sequence is red: {c:?}");
+    assert_eq!(
+        px8(&r.render(31).unwrap(), 100, 100),
+        [0, 0, 0],
+        "after the clip"
+    );
+    // editing the inner sequence changes the outer picture at once, through set_project
+    let mut p2 = p.clone();
+    {
+        let tl = p2.timeline_mut(b_id).unwrap();
+        tl.track_mut(0).items[0] = Item::Title(solid([0, 0, 255]));
+    }
+    r.set_project(&p2).unwrap();
+    let c = px8(&r.render(15).unwrap(), 100, 100);
+    assert!(c[2] > 250 && c[0] < 5, "now blue: {c:?}");
+    // a sequence cannot contain itself, directly or through another
+    let mut ed = Editor::new(p);
+    let outer_media = MediaRef::nested(ed.project().timeline(a_id).unwrap(), (640, 360));
+    ed.apply(
+        Author::User,
+        Op::AddMedia {
+            media: outer_media.clone(),
+        },
+    )
+    .unwrap();
+    let bad = Clip::new(Id::new(), "loop", outer_media.id, t(0), t(10));
+    let b_track = ed.project().timeline(b_id).unwrap().tracks[0].id;
+    let err = ed
+        .apply(
+            Author::User,
+            Op::InsertItem {
+                track: b_track,
+                index: 0,
+                item: Item::Clip(bad),
+            },
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("contain itself"), "{err}");
+    // and the inner sequence cannot be deleted while it plays inside the other
+    assert!(ed
+        .apply(Author::User, Op::RemoveTimeline { id: b_id })
+        .is_err());
+}

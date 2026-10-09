@@ -21,6 +21,13 @@ impl Id {
         self.0.simple().to_string()
     }
 
+    /// Read the 32-digit form written by [`Id::to_full_string`] (dashes are accepted too).
+    pub fn parse(s: &str) -> Result<Id, String> {
+        Uuid::parse_str(s)
+            .map(Id)
+            .map_err(|e| format!("not an id: {e}"))
+    }
+
     /// Deterministic id for tests and fixtures.
     pub fn from_u128(v: u128) -> Id {
         Id(Uuid::from_u128(v))

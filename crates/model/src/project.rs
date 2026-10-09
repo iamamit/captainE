@@ -53,6 +53,33 @@ fn yes() -> bool {
     true
 }
 
+/// Media paths that start with this are not files: they name another sequence of the project.
+pub const NESTED_PREFIX: &str = "captaine://timeline/";
+
+impl MediaRef {
+    /// A stand-in "media" that plays `timeline` (its picture and its sound) inside another sequence.
+    pub fn nested(timeline: &Timeline, canvas: (u32, u32)) -> MediaRef {
+        MediaRef {
+            id: Id::new(),
+            name: timeline.name.clone(),
+            path: format!("{NESTED_PREFIX}{}", timeline.id.to_full_string()),
+            duration: None,
+            has_audio: true,
+            width: canvas.0,
+            height: canvas.1,
+            has_video: true,
+            proxy: None,
+        }
+    }
+
+    /// The sequence this media plays, if it is one.
+    pub fn nested_timeline(&self) -> Option<Id> {
+        self.path
+            .strip_prefix(NESTED_PREFIX)
+            .and_then(|s| Id::parse(s).ok())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackKind {
     Video,
@@ -1146,6 +1173,54 @@ impl Project {
             .unwrap_or((self.settings.width, self.settings.height))
     }
 
+    /// A sequence that contains itself, directly or through others (which would never finish rendering).
+    pub fn nesting_cycle(&self) -> Option<Id> {
+        use std::collections::HashMap;
+        let mut edges: HashMap<Id, Vec<Id>> = HashMap::new();
+        for tl in self.timelines.values() {
+            for t in &tl.tracks {
+                for it in &t.items {
+                    if let Some(inner) = it
+                        .as_clip()
+                        .and_then(|c| self.media.get(&c.media))
+                        .and_then(|m| m.nested_timeline())
+                    {
+                        edges.entry(tl.id).or_default().push(inner);
+                    }
+                }
+            }
+        }
+        // depth-first with a path stack
+        fn visit(
+            n: Id,
+            edges: &std::collections::HashMap<Id, Vec<Id>>,
+            path: &mut Vec<Id>,
+            done: &mut std::collections::HashSet<Id>,
+        ) -> Option<Id> {
+            if path.contains(&n) {
+                return Some(n);
+            }
+            if !done.insert(n) {
+                return None;
+            }
+            path.push(n);
+            for m in edges.get(&n).into_iter().flatten() {
+                if let Some(c) = visit(*m, edges, path, done) {
+                    return Some(c);
+                }
+            }
+            path.pop();
+            None
+        }
+        let mut done = std::collections::HashSet::new();
+        for tl in self.timelines.keys() {
+            if let Some(c) = visit(*tl, &edges, &mut Vec::new(), &mut done) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
     pub fn media_in_use(&self, media: Id) -> bool {
         self.timelines.values().any(|tl| {
             tl.tracks.iter().any(|t| {
@@ -1238,6 +1313,16 @@ impl Project {
                             }
                         }
                     }
+                }
+            }
+        }
+        if let Some(c) = self.nesting_cycle() {
+            errs.push(format!("sequence {c} contains itself"));
+        }
+        for m in self.media.values() {
+            if let Some(t) = m.nested_timeline() {
+                if !self.timelines.contains_key(&t) && self.media_in_use(m.id) {
+                    errs.push(format!("{} plays a sequence that no longer exists", m.name));
                 }
             }
         }

@@ -1426,3 +1426,68 @@ fn auto_reframe_makes_a_vertical_copy_of_the_sequence() {
     settle(&mut h);
     assert_eq!(app(&h).project().timelines.len(), 1);
 }
+
+#[test]
+fn nesting_clips_into_a_sequence_and_stepping_into_it() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let outer = app(&h).timeline_id().unwrap();
+    let total = app(&h).duration_ticks();
+    let ids: Vec<Id> = v1(app(&h)).items.iter().take(2).map(|i| i.id()).collect();
+    let start = app(&h).project().clone();
+    app_mut(&mut h).select_only(&ids);
+    app_mut(&mut h).nest_selection();
+    settle(&mut h);
+    // one nested clip took the place of the two, and the length is unchanged
+    assert_eq!(app(&h).duration_ticks(), total);
+    let items: Vec<Item> = v1(app(&h)).items.clone();
+    let nested = items
+        .iter()
+        .find_map(|i| {
+            i.as_clip()
+                .filter(|c| app(&h).nested_sequence_of(c).is_some())
+        })
+        .expect("a nested clip")
+        .clone();
+    assert_eq!(nested.duration.value, 192, "two 4 s clips at 24 fps");
+    assert_eq!(app(&h).project().timelines.len(), 2);
+    app(&h).project().validate().unwrap();
+    // the pool lists the sequences and hides the nested stand-in from the footage
+    assert!(app(&h)
+        .project()
+        .media
+        .values()
+        .any(|m| m.nested_timeline().is_some()));
+    // step into it: the two original clips are there, back to back
+    app_mut(&mut h).select_only(&[nested.id]);
+    app_mut(&mut h).open_nested();
+    settle(&mut h);
+    assert_ne!(app(&h).timeline_id(), Some(outer));
+    let inside: Vec<(i64, i64)> = v1(app(&h))
+        .items
+        .iter()
+        .zip(v1(app(&h)).item_starts())
+        .map(|(i, s)| (s, i.duration().value))
+        .collect();
+    assert_eq!(inside, [(0, 96), (96, 96)]);
+    // go back, and put the inner sequence in a second time from the pool's Insert
+    app_mut(&mut h).set_active_timeline(outer);
+    settle(&mut h);
+    let inner = app(&h)
+        .sequences()
+        .into_iter()
+        .find(|s| s.0 != outer)
+        .unwrap()
+        .0;
+    app_mut(&mut h).playhead = app(&h).duration_ticks();
+    app_mut(&mut h).insert_sequence(inner, None);
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), total + 192);
+    // nothing is lost by undoing both
+    app_mut(&mut h).undo();
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(app(&h).project(), &start);
+}

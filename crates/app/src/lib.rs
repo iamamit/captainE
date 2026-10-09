@@ -9,6 +9,7 @@ pub mod copilot;
 pub mod jobs;
 pub mod links;
 pub mod markers_ui;
+pub mod nesting;
 pub mod scopes;
 pub mod sequences;
 pub mod source;

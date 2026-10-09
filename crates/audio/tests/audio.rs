@@ -644,3 +644,75 @@ fn music_ducks_under_dialogue_and_comes_back() {
         "ducked: {music_during} vs {before_plain}"
     );
 }
+
+#[test]
+fn a_nested_sequence_brings_its_sound_with_it() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let p = scratch("nested-tone.wav");
+    sine(&p, 440.0, 0.5, 6.0);
+    let mut f = fx();
+    let m = media(&mut f, &p);
+    // the inner sequence: a second timeline holding 2 s of the tone, starting 1 s into it
+    let inner = Id::new();
+    f.ed.apply(
+        Author::User,
+        Op::AddTimeline {
+            timeline: Timeline::new(inner, "Inner", Rational::FPS_30),
+        },
+    )
+    .unwrap();
+    let it = Id::new();
+    f.ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: inner,
+            index: 0,
+            track: Track::new(it, "A1", TrackKind::Audio),
+        },
+    )
+    .unwrap();
+    let c = clip(&m, 0.0, 60);
+    let op = edit::overwrite(f.ed.project(), it, t(30), c).unwrap(); // silence for 1 s, then the tone for 2 s
+    f.ed.apply(Author::User, op).unwrap();
+    // the outer one plays the inner from its start, placed at 1 s
+    let nested = MediaRef::nested(f.ed.project().timeline(inner).unwrap(), (0, 0));
+    f.ed.apply(
+        Author::User,
+        Op::AddMedia {
+            media: nested.clone(),
+        },
+    )
+    .unwrap();
+    let plain = Clip::new(Id::new(), "nested", nested.id, t(0), t(90));
+    let op = edit::overwrite(f.ed.project(), f.a1, t(30), plain).unwrap();
+    f.ed.apply(Author::User, op).unwrap();
+    let out = mix_of(&f, f.tl);
+    let level = |a: f64, b: f64| {
+        rms(
+            &out[(a * SR as f64) as usize * 2..(b * SR as f64) as usize * 2],
+            0,
+        )
+    };
+    assert!(level(0.1, 0.9) < 0.01, "before the nested clip: silence");
+    assert!(
+        level(1.2, 1.9) < 0.01,
+        "inside it, but the inner sequence is silent for its first second"
+    );
+    assert!(
+        (level(2.3, 3.8) - HALF).abs() < 0.02,
+        "then the inner tone: {}",
+        level(2.3, 3.8)
+    );
+    assert!(
+        out.len() / 2 <= 4 * SR as usize + 10,
+        "the mix ends where the nested clip ends"
+    );
+}
+
+fn mix_of(f: &Fx, tl: Id) -> Vec<f32> {
+    let mut m = Mixer::new(f.ed.project(), tl).unwrap();
+    let n = m.total_samples() as usize;
+    m.render(0, n).unwrap()
+}

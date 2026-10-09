@@ -65,6 +65,8 @@ pub struct Renderer {
     cache: FrameCache,
     readers: HashMap<Id, (VideoReader, u64)>,
     titles: HashMap<u64, Arc<Frame8>>,
+    /// Renderers of the sequences played inside this one
+    nested: HashMap<Id, Renderer>,
     /// Open matte videos (path -> reader), most recently used last
     mattes: HashMap<String, (VideoReader, u64)>,
     clock: u64,
@@ -86,6 +88,7 @@ impl Renderer {
             opts,
             readers: HashMap::new(),
             titles: HashMap::new(),
+            nested: HashMap::new(),
             mattes: HashMap::new(),
             clock: 0,
         })
@@ -98,6 +101,8 @@ impl Renderer {
             .ok_or(RenderError::NoTimeline(self.timeline))?;
         self.project = project.clone();
         self.index = index;
+        // sequences played inside this one follow the edit too; one that is gone is forgotten
+        self.nested.retain(|_, r| r.set_project(project).is_ok());
         Ok(())
     }
 
@@ -112,6 +117,9 @@ impl Renderer {
         frame: i64,
         back: bool,
     ) -> Result<Arc<Frame8>, RenderError> {
+        if let Some(inner) = self.project.media[&media].nested_timeline() {
+            return self.nested_frame(inner, frame);
+        }
         if let Some(f) = self.cache.get(media, frame) {
             return Ok(f);
         }
@@ -165,6 +173,22 @@ impl Renderer {
         let f = reader.frame(frame).map_err(RenderError::Decode)?;
         self.cache.insert(media, frame, f.clone());
         Ok(f)
+    }
+
+    /// The picture of another sequence of the project at its tick `tick`. Not cached: the sequence can
+    /// change between two renders, and its own decoders are already cached.
+    fn nested_frame(&mut self, timeline: Id, tick: i64) -> Result<Arc<Frame8>, RenderError> {
+        if !self.nested.contains_key(&timeline) {
+            let r = Renderer::new(&self.project, timeline, self.opts.clone())?;
+            self.nested.insert(timeline, r);
+        }
+        let r = self.nested.get_mut(&timeline).expect("just ensured");
+        let canvas = r.render(tick.max(0))?;
+        Ok(Arc::new(Frame8 {
+            width: canvas.width,
+            height: canvas.height,
+            rgba: canvas.to_rgba8(),
+        }))
     }
 
     /// Frame `index` of a matte video, or None if the file cannot be read.

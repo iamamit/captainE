@@ -333,7 +333,18 @@ impl App {
         self.sent_revision = None;
     }
 
+    /// Remember which sequence is being edited, so adding another one never changes it.
+    pub fn ensure_active(&mut self) {
+        let ok = self
+            .active_timeline
+            .is_some_and(|id| self.project().timeline(id).is_some());
+        if !ok {
+            self.active_timeline = self.project().timelines.keys().next().copied();
+        }
+    }
+
     pub fn do_op_as(&mut self, author: captaine_ops::Author, op: Op) -> bool {
+        self.ensure_active();
         match self.session.apply_as(author, op) {
             Ok(()) => {
                 self.dirty_since.get_or_insert_with(Instant::now);
@@ -349,6 +360,8 @@ impl App {
     pub fn replace_session(&mut self, session: Session, path: Option<PathBuf>) {
         self.pause();
         self.session = session;
+        self.active_timeline = None;
+        self.ensure_active();
         self.path = path;
         self.selected_clip = None;
         self.selected_media = None;
@@ -365,6 +378,7 @@ impl App {
 
     /// The whole project was swapped for another version (branch switch, merge): refresh everything that was derived from it.
     pub fn session_changed(&mut self) {
+        self.ensure_active();
         self.sent_revision = None;
         self.last_requested = None;
         self.preview_override = None;
@@ -634,7 +648,7 @@ impl App {
             .project()
             .media
             .values()
-            .filter(|m| !self.queued_media.contains(&m.id))
+            .filter(|m| !self.queued_media.contains(&m.id) && m.nested_timeline().is_none())
             .cloned()
             .collect();
         for m in todo {
@@ -896,6 +910,7 @@ impl App {
     pub fn update(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
+        self.ensure_active();
         self.advance_playback();
         self.poll_vision_jobs();
         self.update_meters(ctx);

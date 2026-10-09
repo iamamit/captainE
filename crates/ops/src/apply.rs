@@ -52,6 +52,9 @@ type Result<T> = std::result::Result<T, OpError>;
 pub fn apply(project: &Project, op: &Op) -> Result<(Project, Op)> {
     let mut p = project.clone();
     let inverse = apply_in_place(&mut p, op)?;
+    if p.nesting_cycle().is_some() {
+        return Err(OpError::OutOfRange("a sequence cannot contain itself"));
+    }
     debug_assert_eq!(p.validate(), Ok(()), "op {op:?} broke an invariant");
     Ok((p, inverse))
 }
@@ -169,6 +172,15 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             Ok(Op::RemoveTimeline { id: timeline.id })
         }
         Op::RemoveTimeline { id } => {
+            let used_inside = p
+                .media
+                .values()
+                .any(|m| m.nested_timeline() == Some(*id) && p.media_in_use(m.id));
+            if used_inside {
+                return Err(OpError::OutOfRange(
+                    "this sequence is used inside another one",
+                ));
+            }
             let tl = p
                 .timelines
                 .remove(id)

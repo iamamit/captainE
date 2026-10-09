@@ -1220,14 +1220,54 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                     ui.add_space(6.0);
                     bins(app, ui);
                     ui.add_space(6.0);
+                    sequences_list(app, ui);
                     grid(app, ui);
                 });
         });
 }
 
+/// The project's sequences: insert one into the current sequence, or step into it.
+fn sequences_list(app: &mut App, ui: &mut Ui) {
+    let seqs = app.sequences();
+    if seqs.len() < 2 {
+        return;
+    }
+    let cur = app.timeline_id();
+    ui.label(RichText::new("Sequences").size(12.0).color(theme::MUTED));
+    for (id, name) in seqs {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new(&name).size(12.0).color(if Some(id) == cur {
+                Color32::WHITE
+            } else {
+                theme::MUTED
+            }));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if Some(id) != cur {
+                    if chip(ui, "Open", false, true).clicked() {
+                        app.set_active_timeline(id);
+                    }
+                    if chip(ui, "Insert", false, true)
+                        .on_hover_text("Put this sequence in the current one at the playhead")
+                        .clicked()
+                    {
+                        app.insert_sequence(id, None);
+                    }
+                }
+            });
+        });
+    }
+    ui.add_space(6.0);
+}
+
 fn bins(app: &mut App, ui: &mut Ui) {
     let (mut footage, mut audio) = (0, 0);
-    for m in app.project().media.values() {
+    for m in app
+        .project()
+        .media
+        .values()
+        .filter(|m| m.nested_timeline().is_none())
+    {
         if m.has_video {
             footage += 1;
         } else {
@@ -1263,6 +1303,7 @@ fn grid(app: &mut App, ui: &mut Ui) {
         .project()
         .media
         .values()
+        .filter(|m| m.nested_timeline().is_none())
         .filter(|m| q.is_empty() || m.name.to_lowercase().contains(&q))
         .filter(|m| match app.bin {
             Bin::All => true,

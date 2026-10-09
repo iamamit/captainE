@@ -18,6 +18,8 @@ struct MixClip {
     effects: Vec<Effect>,
     /// threshold dB, reduction dB, attack ms, release ms of an Auto duck effect
     duck: Option<[f64; 4]>,
+    /// The sequence this clip plays, when it nests one instead of reading a file
+    nested: Option<Id>,
     path: String,
     /// where the clip starts and how long it is, in output samples
     start: i64,
@@ -48,6 +50,9 @@ pub struct Mixer {
     /// number of tracks in the timeline
     tracks: usize,
     windows: HashMap<(Id, i64), Arc<Vec<f32>>>,
+    /// The project, for building mixers of nested sequences
+    project: Project,
+    nested: HashMap<Id, Mixer>,
     /// follower state of each ducked clip: (level, dB of reduction), carried from block to block
     ducks: HashMap<Id, (f64, f64)>,
 }
@@ -111,6 +116,7 @@ impl Mixer {
                         .iter()
                         .find(|e| e.enabled && e.kind == captaine_model::EffectKind::Ducking)
                         .map(|e| [e.params[0], e.params[1], e.params[2], e.params[3]]),
+                    nested: m.nested_timeline(),
                     path: m.path.clone(),
                     start: s,
                     len: e - s,
@@ -187,6 +193,8 @@ impl Mixer {
             total,
             tracks: tl.tracks.len(),
             windows: HashMap::new(),
+            project: project.clone(),
+            nested: HashMap::new(),
             ducks: HashMap::new(),
         })
     }
@@ -216,7 +224,23 @@ impl Mixer {
         } else {
             c.src_secs + from as f64 * c.speed / sr
         };
-        let mut pcm = decode_filtered(&c.path, secs, n, self.sample_rate, 2, c.speed, c.reverse)?;
+        let mut pcm = match c.nested {
+            Some(inner) if c.speed == 1.0 && !c.reverse => {
+                // the sound of another sequence, from the moment this clip starts in it
+                let offset = (c.src_secs * sr).round() as i64 + from;
+                if !self.nested.contains_key(&inner) {
+                    let m = Mixer::new(&self.project, inner)?;
+                    self.nested.insert(inner, m);
+                }
+                self.nested
+                    .get_mut(&inner)
+                    .expect("just ensured")
+                    .render(offset.max(0), n)?
+            }
+            Some(_) => vec![0.0; n * 2],
+            None => decode_filtered(&c.path, secs, n, self.sample_rate, 2, c.speed, c.reverse)?,
+        };
+        let c = &self.clips[ci];
         apply_audio_effects(&mut pcm, self.sample_rate, &c.effects);
         let pcm = Arc::new(pcm);
         self.windows.insert((id, w), pcm.clone());

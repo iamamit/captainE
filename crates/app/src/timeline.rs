@@ -632,6 +632,18 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
+    if resp.double_clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if let Some(c) = hit(pos) {
+                let nested = app
+                    .clip_by_id(c.id)
+                    .and_then(|(clip, ..)| app.nested_sequence_of(&clip));
+                if let Some(t) = nested {
+                    app.set_active_timeline(t);
+                }
+            }
+        }
+    }
     if resp.secondary_clicked() {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             app.ctx_tick = view.tick(pos.x).max(0);
