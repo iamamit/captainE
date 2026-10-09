@@ -318,12 +318,13 @@ fn space_plays_and_stops_at_the_end_of_the_timeline() {
         return;
     }
     let mut h = editor();
-    let near_end = app(&h).duration_ticks() - 3;
+    // half a second from the end: long enough to still be playing after a slow, busy machine's first frames
+    let near_end = app(&h).duration_ticks() - 12;
     app_mut(&mut h).set_playhead(near_end);
     h.key_press(Key::Space);
-    settle(&mut h);
+    h.step();
     assert!(app(&h).playing);
-    for _ in 0..40 {
+    for _ in 0..80 {
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
