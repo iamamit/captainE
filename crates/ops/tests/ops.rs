@@ -39,6 +39,7 @@ fn editor() -> Editor {
         name: "m.mov".into(),
         path: "/m.mov".into(),
         duration: Some(t(1000)),
+        has_audio: true,
     };
     ed.apply(Author::User, Op::AddMedia { media }).unwrap();
     ed.apply(
@@ -224,6 +225,7 @@ fn trim_in_with_different_media_rate() {
         name: "m".into(),
         path: "/m".into(),
         duration: Some(src(240)),
+        has_audio: true,
     };
     ed.apply(Author::User, Op::AddMedia { media }).unwrap();
     ed.apply(

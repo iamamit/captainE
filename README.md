@@ -7,7 +7,8 @@ A video editor built from scratch that combines:
 - **A built-in AI co-editor** (codit, like Copilot in VS Code) that edits through the same commands a person uses,
 - **Git-style branches** for edits: work on a branch, compare it with another branch side by side, merge.
 
-Status: **research and planning only** (started 2026-10-01). No code yet.
+Status: **early code** (planning started 2026-10-01, coding 2026-10-09). The engine core exists and is tested;
+there is no GUI yet. See [Building](#building) for what runs today.
 
 ## Documents
 
@@ -35,3 +36,21 @@ Status: **research and planning only** (started 2026-10-01). No code yet.
   undo model and lessons carry over; in CaptainE the agent is native instead of driving another app.
 - **video-template-engine** (`iamamit/video-template-engine`): reusable motion-graphics templates. CaptainE's motion
   graphics layer should load these templates directly.
+
+## Building
+
+Needs Rust (stable) and FFmpeg (`ffmpeg`/`ffprobe` on PATH) for probing and rendering.
+
+```
+cargo test                      # unit, fuzz and real-ffmpeg render tests
+cargo run -p captaine-cli -- --help
+```
+
+| Crate | Role |
+|---|---|
+| `time` | `Rational`, `RationalTime`, `TimeRange`, SMPTE timecode incl. drop-frame |
+| `model` | Immutable project: media pool, timelines, tracks, clips, gaps; stable ids; copy-on-write snapshots |
+| `ops` | Invertible operations (insert, ripple delete, split/join, ripple trim, replace, transaction), `Editor` with undo/redo and history |
+| `media` | Probe files (ffprobe for now) |
+| `export` | Render the first video track through an FFmpeg filter graph (stand-in for the GPU renderer) |
+| `cli` | `captaine init/import/add/split/remove/trim/undo/redo/show/log/render`; project file = settings + op log |

@@ -14,3 +14,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 captaine-time = { path = "crates/time" }
 captaine-model = { path = "crates/model" }
+captaine-ops = { path = "crates/ops" }
+captaine-media = { path = "crates/media" }
+captaine-export = { path = "crates/export" }
+clap = { version = "4", features = ["derive"] }

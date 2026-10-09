@@ -1,0 +1,17 @@
+[package]
+name = "captaine-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_export"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+
+[dev-dependencies]
+captaine-media.workspace = true
+captaine-ops.workspace = true

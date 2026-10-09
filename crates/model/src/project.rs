@@ -33,6 +33,8 @@ pub struct MediaRef {
     pub path: String,
     /// Length at the media's native rate, when probed. Used to bound trims.
     pub duration: Option<RationalTime>,
+    #[serde(default)]
+    pub has_audio: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,6 +335,7 @@ mod tests {
                 name: "a.mov".into(),
                 path: "/a.mov".into(),
                 duration: Some(RationalTime::new(300, Rational::FPS_30)),
+                has_audio: true,
             },
         );
         let mut tl = Timeline::new(Id::from_u128(2), "main", Rational::FPS_30);
