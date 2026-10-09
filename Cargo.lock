@@ -843,6 +843,7 @@ dependencies = [
 name = "captaine-vision"
 version = "0.0.1"
 dependencies = [
+ "png 0.17.16",
  "serde_json",
 ]
 

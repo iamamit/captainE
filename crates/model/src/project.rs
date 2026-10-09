@@ -1024,6 +1024,34 @@ impl Timeline {
         Arc::make_mut(&mut self.tracks[index])
     }
 
+    /// A copy that can live beside this one: new ids on the timeline, its tracks, items and markers.
+    pub fn duplicate(&self, name: impl Into<String>) -> Timeline {
+        let mut copy = self.clone();
+        copy.id = Id::new();
+        copy.name = name.into();
+        copy.tracks = self
+            .tracks
+            .iter()
+            .map(|t| {
+                let mut t: Track = (**t).clone();
+                t.id = Id::new();
+                for it in t.items.iter_mut() {
+                    match it {
+                        Item::Clip(c) => c.id = Id::new(),
+                        Item::Title(x) => x.id = Id::new(),
+                        Item::Gap(g) => g.id = Id::new(),
+                    }
+                }
+                Arc::new(t)
+            })
+            .collect();
+        for m in &mut copy.markers {
+            m.id = Id::new();
+        }
+        copy.markers.sort_by_key(|m| (m.tick, m.id));
+        copy
+    }
+
     pub fn duration(&self) -> RationalTime {
         let ticks = self
             .tracks

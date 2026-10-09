@@ -138,6 +138,14 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                                 app.duplicate_sequence();
                                 ui.close();
                             }
+                            ui.menu_button("Auto Reframe To", |ui| {
+                                for (label, w, h) in crate::vision_jobs::REFRAMES {
+                                    if ui.button(label).clicked() {
+                                        app.auto_reframe(label, (w, h));
+                                        ui.close();
+                                    }
+                                }
+                            });
                             if ui.button("Rename Sequence…").clicked() {
                                 app.rename_sequence = cur.map(|id| (id, name.clone()));
                                 ui.close();

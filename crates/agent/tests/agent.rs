@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 26);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 28);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),

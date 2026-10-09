@@ -27,7 +27,7 @@ v05	Video	Chroma key	4	0.5	chroma key with tolerance/softness/spill; no matte vi
 v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0.5	blur, sharpen, vignette, mirror, crop, pixelate (CPU)
 v07	Video	Effects stack, inspector, presets	4	0.5	ordered stack on clips with on/off/remove and sliders; no presets, no keyframed effect params, clips only
 v08	Video	Stabilization	3	0	
-v09	Video	Motion tracking	2	0	
+v09	Video	Motion tracking	2	0.75	object tracking through Apple Vision attaches a title or shape to the moving subject (position keyframes; Copilot tool); one box, no manual track editing, no multi-point or planar tracking
 v10	Video	Text animators and animation presets	3	0.75	in/out animation presets (fade, slides, pop, zoom, typewriter) for titles and layers as editable keyframes; Copilot animate_title; no per-letter or word animators
 v11	Video	Adjustment layers	3	0.75	adjustment layer with the full effects stack, masks limit its reach, opacity mixes; applies to all tracks below
 v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V, rotate, fit and fill buttons
@@ -49,7 +49,7 @@ i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0.75	local Whisp
 i02	AI	Edit by transcript, filler-word removal	4	0.75	Transcript tab: click words to select, cut words, remove filler words (also Copilot); cuts ripple closed
 i03	AI	Scene detection and auto-cut	3	0.75	scene detection splits a clip at hard cuts (menu + Copilot split_at_scenes)
 i04	AI	Natural-language editing assistant	4	0.75	Claude agent and local skills
-i05	AI	Auto-reframe to vertical and other aspect ratios	3	0	
+i05	AI	Auto-reframe to vertical and other aspect ratios	3	0.75	auto-reframe a sequence to 9:16, 1:1 or 4:5 as a new sequence with its own frame size; faces, then main subject, then attention steer a smoothed pan; Copilot reframe_sequence
 i06	AI	Generative fill, extend, text-to-video	1	0	out of scope; counted so the score is honest
 d01	Delivery	Export H.264, HEVC, ProRes	5	1	
 d02	Delivery	Export presets, queue, background export	4	0.75	8 presets, format picker, in/out range, background queue with progress + cancel, per-job project snapshot; no per-preset resolution/bitrate settings

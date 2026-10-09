@@ -1374,3 +1374,59 @@ fn remove_background_runs_in_the_background_and_lands_as_one_effect() {
         _ => false,
     });
 }
+
+#[test]
+fn auto_reframe_makes_a_vertical_copy_of_the_sequence() {
+    if !have_ffmpeg() || captaine_vision::unavailable().is_some() {
+        return;
+    }
+    let mut h = editor();
+    let original = app(&h).timeline_id().unwrap();
+    let originals = v1(app(&h)).items.len();
+    app_mut(&mut h).auto_reframe("Vertical 9:16", (9, 16));
+    for _ in 0..2400 {
+        h.step();
+        if app(&h).vision_jobs.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(app(&h).vision_jobs.is_empty(), "the reframe finished");
+    let now = app(&h).timeline().unwrap().clone();
+    assert_ne!(now.id, original, "the new sequence is the active one");
+    assert_eq!(
+        now.canvas,
+        Some((720, 1280)),
+        "9:16 from the project's short side (720)"
+    );
+    assert!(now.name.contains("9:16"));
+    assert_eq!(
+        app(&h).project().canvas(original),
+        (1280, 720),
+        "the original is untouched"
+    );
+    let clips: Vec<Clip> = now
+        .tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter_map(|i| i.as_clip().cloned())
+        .collect();
+    assert_eq!(
+        clips.len(),
+        originals + 0 * 1 + (clips.len() - originals),
+        "clips came across"
+    );
+    let video: Vec<&Clip> = clips
+        .iter()
+        .filter(|c| c.video.transform.scale.0 > 1.5)
+        .collect();
+    assert!(
+        video.len() >= 3,
+        "every video clip was scaled up to fill the tall frame"
+    );
+    app(&h).project().validate().unwrap();
+    // one undo takes the whole thing back
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(app(&h).project().timelines.len(), 1);
+}

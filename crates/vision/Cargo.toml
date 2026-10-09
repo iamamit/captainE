@@ -11,3 +11,4 @@ name = "captaine_vision"
 
 [dependencies]
 serde_json.workspace = true
+png.workspace = true

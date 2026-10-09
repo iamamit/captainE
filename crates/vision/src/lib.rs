@@ -258,3 +258,48 @@ pub fn matte_video(
     }
     Ok(())
 }
+
+/// The box (fractions of the frame) around everything the matte calls subject, or None when the picture is empty.
+fn matte_box(path: &Path) -> Option<Rect> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let channels = info.color_type.samples();
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            if buf[(y * w + x) * channels] > 128 {
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    (x1 >= x0 && y1 >= y0).then(|| {
+        [
+            x0 as f64 / w as f64,
+            y0 as f64 / h as f64,
+            (x1 - x0 + 1) as f64 / w as f64,
+            (y1 - y0 + 1) as f64 / h as f64,
+        ]
+    })
+}
+
+/// The box around the main subject in each frame, found by lifting it out of the background.
+pub fn subjects(frames: &Path) -> Result<Vec<Option<Rect>>, String> {
+    let scratch = Scratch::new("subjects")?;
+    matte_frames(frames, &scratch.0, MatteMode::Subject)?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&scratch.0)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "png"))
+        .collect();
+    files.sort();
+    Ok(files.iter().map(|f| matte_box(f)).collect())
+}

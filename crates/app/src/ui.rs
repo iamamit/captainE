@@ -1610,6 +1610,26 @@ fn subject_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
             ui.label(RichText::new("Working…").size(11.0).color(theme::MUTED));
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        let both = {
+            let ids = app.selection_ids();
+            ids.len() >= 2
+                && app.timeline().is_some_and(|t| {
+                    t.tracks
+                        .iter()
+                        .flat_map(|tr| tr.items.iter())
+                        .any(|i| i.as_title().is_some() && ids.contains(&i.id()))
+                })
+        };
+        if chip(ui, "Attach title to subject", false, both && !busy)
+            .on_hover_text(
+                "Shift-click a title as well, then the title follows what is moving in this clip",
+            )
+            .clicked()
+        {
+            app.track_attach_selected();
+        }
+    });
     ui.label(
         RichText::new("Runs on this Mac with Apple's vision model. The cut-out is an effect: switch it off or tune Feather and Choke.")
             .size(10.5)

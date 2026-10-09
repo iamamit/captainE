@@ -4,7 +4,9 @@
 //! operations a person uses, and what it did comes back as **one suggested edit** (an `Op::Transaction`) that
 //! the user can preview, apply or discard. Only project *metadata* and analysis results are sent to the model,
 //! never pictures or sound.
+#![recursion_limit = "1024"]
 
+mod follow;
 mod http;
 mod loop_;
 mod matte;
@@ -13,6 +15,7 @@ mod silence;
 mod speech;
 mod tools;
 
+pub use follow::{reframe, track_attach};
 pub use http::{AnthropicTransport, Credentials, Transport};
 pub use loop_::{run, AgentConfig, AgentError, AgentRequest, AgentResult, ChatTurn, Event};
 pub use matte::remove_background;

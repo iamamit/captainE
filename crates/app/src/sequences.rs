@@ -2,33 +2,14 @@
 
 use std::sync::Arc;
 
-use captaine_model::{Id, Item, Timeline, Track, TrackKind};
+use captaine_model::{Id, Timeline, Track, TrackKind};
 use captaine_ops::Op;
 
 use crate::app::App;
 
-/// A copy of `tl` that can live beside it: new ids on the timeline, its tracks and every item.
+/// A copy of `tl` that can live beside it: new ids on the timeline, its tracks, items and markers.
 pub fn duplicate(tl: &Timeline, name: String) -> Timeline {
-    let mut copy = tl.clone();
-    copy.id = Id::new();
-    copy.name = name;
-    copy.tracks = tl
-        .tracks
-        .iter()
-        .map(|t| {
-            let mut t: Track = (**t).clone();
-            t.id = Id::new();
-            for it in t.items.iter_mut() {
-                match it {
-                    Item::Clip(c) => c.id = Id::new(),
-                    Item::Title(x) => x.id = Id::new(),
-                    Item::Gap(g) => g.id = Id::new(),
-                }
-            }
-            Arc::new(t)
-        })
-        .collect();
-    copy
+    tl.duplicate(name)
 }
 
 impl App {

@@ -323,6 +323,8 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "attach_title_to_subject" => self.attach_title_tool(input),
+            "reframe_sequence" => self.reframe_tool(input),
             "remove_background" => self.remove_background_tool(input),
             "animate_title" => self.animate_title(input),
             "add_marker" => self.add_marker_tool(input),
@@ -970,6 +972,71 @@ impl ToolBox {
         self.describe(clip.id)
     }
 
+    fn attach_title_tool(&mut self, input: &Value) -> R {
+        let (clip, media, cs) = self.clip_with_media(req_text(input, "clip_id")?)?;
+        let (item, _, ts) = self.find_item(req_text(input, "title_id")?)?;
+        let Item::Title(title) = item else {
+            return Err("title_id must be a title or a layer".into());
+        };
+        let tl = self.timeline()?.id;
+        let canvas = self.project().canvas(tl);
+        let ops =
+            crate::follow::track_attach(&clip, &media, &title, cs, ts, canvas, self.fps(), None)?;
+        let n = ops.len();
+        self.commit(Op::Transaction {
+            description: "Copilot: attach title to subject".into(),
+            ops,
+        })?;
+        Ok(json!({"ok": true, "tracks_written": n, "title": title.name}).to_string())
+    }
+
+    fn reframe_tool(&mut self, input: &Value) -> R {
+        let aspect = req_text(input, "aspect")?;
+        let (label, ratio) = match aspect {
+            "9:16" => ("9:16", (9u32, 16u32)),
+            "1:1" => ("1:1", (1, 1)),
+            "4:5" => ("4:5", (4, 5)),
+            other => return Err(format!("aspect is 9:16, 1:1 or 4:5, not '{other}'")),
+        };
+        let cur = self.timeline()?.clone();
+        let s = &self.project().settings;
+        let short = s.width.min(s.height).max(2);
+        let even = |v: f64| ((v.round() as u32).max(2)) & !1;
+        let canvas = (
+            even(short as f64),
+            even(short as f64 * ratio.1 as f64 / ratio.0 as f64),
+        );
+        let mut copy = cur.duplicate(format!("{} ({label})", cur.name));
+        copy.canvas = Some(canvas);
+        let mut ops = vec![Op::AddTimeline {
+            timeline: copy.clone(),
+        }];
+        let fps = self.fps();
+        for track in copy.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
+            for item in &track.items {
+                let Item::Clip(c) = item else { continue };
+                let Some(m) = self
+                    .project()
+                    .media
+                    .get(&c.media)
+                    .filter(|m| m.has_video)
+                    .cloned()
+                else {
+                    continue;
+                };
+                ops.extend(crate::follow::reframe(c, &m, canvas, fps)?);
+            }
+        }
+        self.commit(Op::Transaction {
+            description: format!("Copilot: reframe to {label}"),
+            ops,
+        })?;
+        Ok(
+            json!({"ok": true, "new_sequence": copy.name, "frame": [canvas.0, canvas.1]})
+                .to_string(),
+        )
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1177,6 +1244,8 @@ pub fn tool_definitions() -> Value {
         {"name": "remove_marker", "description": "Remove a marker by its id (see get_timeline) or its exact name.", "input_schema": obj(json!({"marker_id": {"type": "string"}}), &["marker_id"])},
         {"name": "animate_title", "description": "Animate how a title or layer comes on (direction in) or goes off (out) with a preset: fade, slide_up, slide_down, slide_left, slide_right, pop, zoom, typewriter (in only). duration_sec is how long the move takes (default 0.6).", "input_schema": obj(json!({"item_id": item, "preset": {"type": "string"}, "direction": {"type": "string", "enum": ["in", "out"]}, "duration_sec": {"type": "number"}}), &["item_id", "preset"])},
         {"name": "remove_background", "description": "Cut the subject out of its background using Apple's on-device vision model (Mac only): the background becomes transparent, so whatever is on the tracks below shows through. mode 'subject' (default: people, animals, objects) or 'person'. Takes a few seconds per second of footage.", "input_schema": obj(json!({"item_id": item, "mode": {"type": "string", "enum": ["subject", "person"]}}), &["item_id"])},
+        {"name": "attach_title_to_subject", "description": "Make a title (or shape layer) follow the main moving subject of a video clip, by tracking it with Apple's vision model (Mac only). Writes position keyframes on the title.", "input_schema": obj(json!({"clip_id": item, "title_id": item}), &["clip_id", "title_id"])},
+        {"name": "reframe_sequence", "description": "Make a copy of the sequence in another aspect ratio (9:16 vertical, 1:1 square or 4:5 portrait): every video clip is scaled to fill the new frame and panned to keep its subject (a face if there is one) in view. Mac only; takes a few seconds per clip.", "input_schema": obj(json!({"aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5"]}}), &["aspect"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},
