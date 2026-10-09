@@ -409,7 +409,7 @@ fn grain(f: &mut Frame8, amount: f64, size: f64, colour: f64, phase: u64) {
             let weight = 1.0 - (lum * 2.0 - 1.0).abs() * 0.6;
             for c in 0..3 {
                 let tint =
-                    ((hash(n ^ (c as u64 + 1) * 0x9e37) & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
+                    ((hash(n ^ ((c as u64 + 1) * 0x9e37)) & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
                 let v = base * (1.0 - colour) + tint * colour;
                 let d = v * amount * 0.35 * weight * 255.0;
                 f.rgba[i + c] = (f.rgba[i + c] as f64 + d).round().clamp(0.0, 255.0) as u8;
