@@ -315,3 +315,109 @@ pub fn lut_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     v.sort_by_key(|p| p.file_name().map(|n| n.to_ascii_lowercase()));
     v
 }
+
+/// Where a new corner goes: on the outline, after the edge nearest to `p` (all in percent).
+pub fn polygon_insert(pts: &mut Vec<(f64, f64)>, p: (f64, f64)) {
+    if pts.len() >= 64 {
+        return;
+    }
+    let mut best = (f64::MAX, 0);
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+        let l2 = ex * ex + ey * ey;
+        let t = if l2 == 0.0 {
+            0.0
+        } else {
+            (((p.0 - a.0) * ex + (p.1 - a.1) * ey) / l2).clamp(0.0, 1.0)
+        };
+        let d = ((p.0 - a.0 - t * ex).powi(2) + (p.1 - a.1 - t * ey).powi(2)).sqrt();
+        if d < best.0 {
+            best = (d, i);
+        }
+    }
+    pts.insert(best.1 + 1, p);
+}
+
+/// A small canvas to draw a mask on: drag corners, click the outline to add one, right-click a corner to remove it.
+pub fn polygon_editor(ui: &mut Ui, e: &mut Effect) -> (bool, bool) {
+    let mut pts = captaine_model::parse_polygon(&e.text)
+        .unwrap_or_else(|| vec![(25.0, 25.0), (75.0, 25.0), (75.0, 75.0), (25.0, 75.0)]);
+    let (mut changed, mut done) = (e.text.is_empty(), e.text.is_empty());
+    let w = ui.available_width().min(240.0);
+    let size = vec2(w, w * 9.0 / 16.0);
+    let (rect, bg) = ui.allocate_exact_size(size, Sense::click());
+    let to_screen = |p: (f64, f64)| {
+        pos2(
+            rect.left() + rect.width() * p.0 as f32 / 100.0,
+            rect.top() + rect.height() * p.1 as f32 / 100.0,
+        )
+    };
+    ui.painter().rect_filled(rect, 3.0, theme::FIELD);
+    let outline: Vec<Pos2> = pts.iter().map(|&p| to_screen(p)).collect();
+    ui.painter().add(Shape::convex_polygon(
+        outline.clone(),
+        Color32::from_rgba_unmultiplied(0x4f, 0x8c, 0xf5, 50),
+        Stroke::new(1.4, Color32::from_rgb(0x4f, 0x8c, 0xf5)),
+    ));
+    bg.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            "Mask outline: click to add a corner",
+        )
+    });
+    let mut remove = None;
+    for i in 0..pts.len() {
+        let pos = to_screen(pts[i]);
+        let resp = ui.interact(
+            Rect::from_center_size(pos, vec2(14.0, 14.0)),
+            ui.id().with(("mask-point", i)),
+            Sense::click_and_drag(),
+        );
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Slider,
+                true,
+                format!("Mask corner {}", i + 1),
+            )
+        });
+        if resp.dragged() {
+            if let Some(m) = resp.interact_pointer_pos() {
+                pts[i] = (
+                    ((m.x - rect.left()) / rect.width() * 100.0).clamp(0.0, 100.0) as f64,
+                    ((m.y - rect.top()) / rect.height() * 100.0).clamp(0.0, 100.0) as f64,
+                );
+                changed = true;
+            }
+        }
+        if resp.drag_stopped() {
+            done = true;
+        }
+        if resp.secondary_clicked() && pts.len() > 3 {
+            remove = Some(i);
+        }
+        ui.painter().circle_filled(pos, 4.0, Color32::WHITE);
+        ui.painter()
+            .circle_stroke(pos, 4.0, Stroke::new(1.0, Color32::BLACK));
+    }
+    if let Some(i) = remove {
+        pts.remove(i);
+        changed = true;
+        done = true;
+    } else if bg.clicked() {
+        if let Some(m) = bg.interact_pointer_pos() {
+            let p = (
+                ((m.x - rect.left()) / rect.width() * 100.0) as f64,
+                ((m.y - rect.top()) / rect.height() * 100.0) as f64,
+            );
+            polygon_insert(&mut pts, p);
+            changed = true;
+            done = true;
+        }
+    }
+    if changed {
+        e.text = captaine_model::polygon_text(&pts);
+    }
+    (changed, done)
+}

@@ -79,7 +79,7 @@ pub fn apply_effects_at(
             EffectKind::Curves => curves(&mut out, p),
             EffectKind::Hsl => hsl(&mut out, p),
             EffectKind::Lut => lut(&mut out, &e.text, p[0] / 100.0),
-            EffectKind::Mask => mask(&mut out, p),
+            EffectKind::Mask => mask(&mut out, p, &e.text),
             EffectKind::Matte => {
                 if let Some(Some(m)) = mattes.get(i) {
                     subject_matte(&mut out, m, p[0] >= 0.5, p[1] * k, p[2] * k);
@@ -478,8 +478,14 @@ fn posterize(f: &mut Frame8, levels: u32) {
 }
 
 /// Keep the picture only inside (or, inverted, outside) a rectangle or ellipse with a soft edge.
-fn mask(f: &mut Frame8, p: &[f64]) {
+fn mask(f: &mut Frame8, p: &[f64], text: &str) {
     let (w, h) = (f.width as f64, f.height as f64);
+    if p[0] >= 1.5 {
+        if let Some(poly) = captaine_model::parse_polygon(text) {
+            polygon_mask(f, &poly, (p[6] / 100.0 * w.min(h)).max(0.5), p[7] >= 0.5);
+        }
+        return;
+    }
     let (cx, cy) = (p[1] / 100.0 * w, p[2] / 100.0 * h);
     let (hw, hh) = (p[3] / 100.0 * w / 2.0, p[4] / 100.0 * h / 2.0);
     let (sin, cos) = p[5].to_radians().sin_cos();
@@ -504,6 +510,58 @@ fn mask(f: &mut Frame8, p: &[f64]) {
                 inside = 1.0 - inside;
             }
             let i = (y * f.width as usize + x) * 4;
+            f.rgba[i + 3] = (f.rgba[i + 3] as f64 * inside).round() as u8;
+        }
+    }
+}
+
+/// Keep what is inside the polygon (points in percent), with a soft edge `feather` pixels wide.
+fn polygon_mask(f: &mut Frame8, poly: &[(f64, f64)], feather: f64, invert: bool) {
+    let (w, h) = (f.width as usize, f.height as usize);
+    let pts: Vec<(f64, f64)> = poly
+        .iter()
+        .map(|(x, y)| (x / 100.0 * w as f64, y / 100.0 * h as f64))
+        .collect();
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(x, y) in &pts {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    let reach = feather;
+    for y in 0..h {
+        for x in 0..w {
+            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+            let far = px < x0 - reach || px > x1 + reach || py < y0 - reach || py > y1 + reach;
+            let mut inside = if far {
+                0.0
+            } else {
+                // even-odd crossing count and the distance to the nearest edge
+                let (mut crossings, mut best) = (false, f64::MAX);
+                for i in 0..pts.len() {
+                    let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                    if (a.1 > py) != (b.1 > py) && px < (b.0 - a.0) * (py - a.1) / (b.1 - a.1) + a.0
+                    {
+                        crossings = !crossings;
+                    }
+                    let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+                    let l2 = ex * ex + ey * ey;
+                    let t = if l2 == 0.0 {
+                        0.0
+                    } else {
+                        (((px - a.0) * ex + (py - a.1) * ey) / l2).clamp(0.0, 1.0)
+                    };
+                    best = best
+                        .min(((px - a.0 - t * ex).powi(2) + (py - a.1 - t * ey).powi(2)).sqrt());
+                }
+                let dist = if crossings { -best } else { best };
+                (0.5 - dist / feather).clamp(0.0, 1.0)
+            };
+            if invert {
+                inside = 1.0 - inside;
+            }
+            let i = (y * w + x) * 4;
             f.rgba[i + 3] = (f.rgba[i + 3] as f64 * inside).round() as u8;
         }
     }
@@ -1282,6 +1340,38 @@ mod tests {
         let soft = apply_effects(&f, &[e]).unwrap();
         let edge = px(&soft, 10, 50)[3];
         assert!(edge > 20 && edge < 235, "{edge}");
+    }
+
+    #[test]
+    fn a_drawn_polygon_mask_keeps_its_inside() {
+        let f = Frame8::solid(100, 100, [200, 100, 50, 255]);
+        let mut m = Effect::new(EffectKind::Mask);
+        m.params[0] = 2.0;
+        m.params[6] = 0.0;
+        // a triangle: apex at the top middle, base along the bottom
+        m.text = "50,10 90,90 10,90".into();
+        assert!(m.check().is_ok());
+        let r = apply_effects(&f, &[m.clone()]).unwrap();
+        assert_eq!(px(&r, 50, 60)[3], 255, "inside");
+        assert_eq!(px(&r, 50, 85)[3], 255, "inside near the base");
+        assert_eq!(px(&r, 15, 20)[3], 0, "outside, left of the apex");
+        assert_eq!(px(&r, 85, 20)[3], 0);
+        assert_eq!(px(&r, 50, 5)[3], 0, "above the apex");
+        // inverted
+        m.params[7] = 1.0;
+        let inv = apply_effects(&f, &[m.clone()]).unwrap();
+        assert_eq!((px(&inv, 50, 60)[3], px(&inv, 15, 20)[3]), (0, 255));
+        // a soft edge gives partial alpha right on the outline
+        m.params[7] = 0.0;
+        m.params[6] = 10.0;
+        let soft = apply_effects(&f, &[m.clone()]).unwrap();
+        let edge = px(&soft, 50, 11)[3];
+        assert!(edge > 20 && edge < 235, "{edge}");
+        // a drawn mask without enough points is refused
+        m.text = "10,10 20,20".into();
+        assert!(m.check().is_err());
+        m.text.clear();
+        assert!(m.check().is_err());
     }
 
     fn alpha(f: &Frame8, x: u32, y: u32) -> u8 {

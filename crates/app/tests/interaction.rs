@@ -1923,3 +1923,68 @@ fn the_lut_browser_lists_cube_files_by_name() {
     assert!(captaine_app::effect_widgets::lut_files(&dir.join("missing")).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_new_mask_corner_goes_on_the_nearest_edge() {
+    use captaine_app::effect_widgets::polygon_insert;
+    let mut sq = vec![(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)];
+    polygon_insert(&mut sq, (50.0, 10.0));
+    assert_eq!(sq[1], (50.0, 10.0), "between the first two corners");
+    polygon_insert(&mut sq, (10.0, 50.0));
+    assert_eq!(
+        *sq.last().unwrap(),
+        (10.0, 50.0),
+        "after the last, closing the shape"
+    );
+    let text = polygon_text(&sq);
+    assert_eq!(parse_polygon(&text).unwrap().len(), 6);
+    let mut many: Vec<(f64, f64)> = (0..64).map(|i| (i as f64, 0.0)).collect();
+    polygon_insert(&mut many, (5.0, 5.0));
+    assert_eq!(many.len(), 64, "at most 64 corners");
+}
+
+#[test]
+fn a_mask_can_be_drawn_with_the_mouse() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let id = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    let mut m = Effect::new(EffectKind::Mask);
+    m.params[0] = 2.0;
+    m.text = "25,25 75,25 75,75 25,75".into();
+    app_mut(&mut h).do_op(captaine_ops::Op::SetEffects {
+        item: id,
+        effects: vec![m],
+    });
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    let fx = |a: &App| a.clip_by_id(id).unwrap().0.effects;
+    h.get_by_label("Mask corner 1").scroll_to_me();
+    settle(&mut h);
+    let p = h.get_by_label("Mask corner 1").rect().center();
+    drag(&mut h, p, pos2(p.x - 20.0, p.y - 10.0));
+    let pts = captaine_model::parse_polygon(&fx(app(&h))[0].text).unwrap();
+    assert_eq!(pts.len(), 4);
+    assert!(
+        pts[0].0 < 20.0 && pts[0].1 < 25.0,
+        "corner moved out: {pts:?}"
+    );
+    assert_eq!(pts[2], (75.0, 75.0), "the others stayed");
+    // clicking the canvas adds a corner, undo takes it away
+    let r = h.get_by_label("Mask outline: click to add a corner").rect();
+    click(&mut h, pos2(r.center().x, r.top() + 4.0));
+    let pts = captaine_model::parse_polygon(&fx(app(&h))[0].text).unwrap();
+    assert_eq!(pts.len(), 5);
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(
+        captaine_model::parse_polygon(&fx(app(&h))[0].text)
+            .unwrap()
+            .len(),
+        4
+    );
+}

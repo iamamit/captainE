@@ -1997,6 +1997,25 @@ pub fn effects_stack(
                 });
                 &[]
             }
+            EffectKind::Mask => {
+                ui.horizontal(|ui| {
+                    for (k, name) in ["Rectangle", "Ellipse", "Draw"].into_iter().enumerate() {
+                        if chip(ui, name, e.params[0].round() as usize == k, true).clicked() {
+                            e.params[0] = k as f64;
+                            changed = true;
+                            done = true;
+                        }
+                    }
+                });
+                if e.params[0] >= 1.5 {
+                    let (c, d) = crate::effect_widgets::polygon_editor(ui, e);
+                    changed |= c;
+                    done |= d;
+                    &[0, 1, 2, 3, 4, 5]
+                } else {
+                    &[0]
+                }
+            }
             EffectKind::Curves => {
                 ui.horizontal(|ui| {
                     for (k, name) in ["Master", "Red", "Green", "Blue"].into_iter().enumerate() {

@@ -278,9 +278,9 @@ static HSL: [ParamDef; 18] = [
     p("Magenta sat", 0.0, 200.0, 100.0, 0),
     p("Magenta lum", -50.0, 50.0, 0.0, 0),
 ];
-// shape 0 = rectangle, 1 = ellipse; centre and size in % of the frame; feather in % of the shorter side
+// shape 0 = rectangle, 1 = ellipse, 2 = free-drawn polygon (points in the effect's text); centre and size in % of the frame; feather in % of the shorter side
 static MASK: [ParamDef; 8] = [
-    p("Shape", 0.0, 1.0, 1.0, 0),
+    p("Shape", 0.0, 2.0, 1.0, 0),
     p("Center x", 0.0, 100.0, 50.0, 1),
     p("Center y", 0.0, 100.0, 50.0, 1),
     p("Width", 1.0, 200.0, 60.0, 1),
@@ -429,6 +429,12 @@ impl Effect {
                 return Err("effect parameter out of range");
             }
         }
+        if self.kind == EffectKind::Mask
+            && self.params[0] >= 1.5
+            && parse_polygon(&self.text).is_none()
+        {
+            return Err("a drawn mask needs 3 to 64 points, as 'x,y x,y x,y' in percent");
+        }
         if self.kind == EffectKind::Crop
             && (self.params[0] + self.params[2] >= 100.0
                 || self.params[1] + self.params[3] >= 100.0)
@@ -437,6 +443,31 @@ impl Effect {
         }
         Ok(())
     }
+}
+
+/// The corners of a drawn mask: `x,y x,y ...` in percent of the frame, 3 to 64 of them.
+pub fn parse_polygon(text: &str) -> Option<Vec<(f64, f64)>> {
+    let pts: Option<Vec<(f64, f64)>> = text
+        .split_whitespace()
+        .map(|w| {
+            let (x, y) = w.split_once(',')?;
+            let (x, y): (f64, f64) = (x.parse().ok()?, y.parse().ok()?);
+            (x.is_finite()
+                && y.is_finite()
+                && (-100.0..=200.0).contains(&x)
+                && (-100.0..=200.0).contains(&y))
+            .then_some((x, y))
+        })
+        .collect();
+    pts.filter(|p| (3..=64).contains(&p.len()))
+}
+
+pub fn polygon_text(points: &[(f64, f64)]) -> String {
+    points
+        .iter()
+        .map(|(x, y)| format!("{x:.2},{y:.2}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn check_effects(effects: &[Effect]) -> Result<(), &'static str> {
