@@ -21,6 +21,7 @@ pub struct VideoReader {
     height: u32,
     fps: Rational,
     path: String,
+    hw: bool,
     /// index of the frame the stream will deliver next
     next: i64,
     last: Option<Arc<Frame8>>,
@@ -38,21 +39,31 @@ impl VideoReader {
         fps: Rational,
         start: i64,
     ) -> Result<VideoReader, String> {
+        VideoReader::open_with(path, width, height, fps, start, false)
+    }
+
+    /// Like [`open`](Self::open); `hw` asks FFmpeg for the platform's hardware decoder (macOS VideoToolbox),
+    /// which it quietly replaces with software decoding for formats the hardware cannot do.
+    pub fn open_with(
+        path: &str,
+        width: u32,
+        height: u32,
+        fps: Rational,
+        start: i64,
+        hw: bool,
+    ) -> Result<VideoReader, String> {
         if !Path::new(path).exists() {
             return Err(format!("media file not found: {path}"));
         }
         // half a frame early so accurate seeking lands on frame `start`
         let secs = ((start as f64 - 0.5) / fps.as_f64()).max(0.0);
-        let mut child = Command::new("ffmpeg")
-            .args([
-                "-v",
-                "error",
-                "-nostdin",
-                "-ss",
-                &format!("{secs:.6}"),
-                "-i",
-                path,
-            ])
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin"]);
+        if hw && cfg!(target_os = "macos") {
+            cmd.args(["-hwaccel", "videotoolbox"]);
+        }
+        let mut child = cmd
+            .args(["-ss", &format!("{secs:.6}"), "-i", path])
             .args([
                 "-an",
                 "-sn",
@@ -73,6 +84,7 @@ impl VideoReader {
             height,
             fps,
             path: path.to_string(),
+            hw,
             next: start,
             last: None,
             eof: false,
@@ -101,7 +113,14 @@ impl VideoReader {
                     return Ok(last.clone());
                 }
             }
-            *self = VideoReader::open(&self.path, self.width, self.height, self.fps, index)?;
+            *self = VideoReader::open_with(
+                &self.path,
+                self.width,
+                self.height,
+                self.fps,
+                index,
+                self.hw,
+            )?;
         }
         let mut scratch = Vec::new();
         while self.next <= index && !self.eof {

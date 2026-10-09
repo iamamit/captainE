@@ -55,7 +55,7 @@ d01	Delivery	Export H.264, HEVC, ProRes	5	1
 d02	Delivery	Export presets, queue, background export	4	0	
 d03	Delivery	Hardware-accelerated encode	3	0	
 d04	Delivery	Range export, audio only, GIF, image sequence, alpha	3	0	
-d05	Delivery	Real-time playback of 4K and long timelines	5	0.25	CPU compositor
+d05	Delivery	Real-time playback of 4K and long timelines	5	0.5	scaled decode: 4K clip previews at ~100 fps; stacks and effects still CPU
 d06	Delivery	Color management and HDR	3	0.25	
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
 u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.5	

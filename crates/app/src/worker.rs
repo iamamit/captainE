@@ -95,7 +95,8 @@ fn run(rx: Receiver<Req>, tx: Sender<Frame>, ctx: egui::Context) {
             }
         }
         if let Some((p, tl)) = project {
-            let scaled = preview_project(&p, (PREVIEW_WIDTH / p.settings.width as f64).min(1.0));
+            let scale = (PREVIEW_WIDTH / p.settings.width as f64).min(1.0);
+            let scaled = preview_project(&p, scale);
             let same_timeline = current.as_ref().is_some_and(|(_, t)| *t == tl);
             let reused = match (&mut renderer, same_timeline) {
                 (Some(r), true) => r.set_project(&scaled).is_ok(),

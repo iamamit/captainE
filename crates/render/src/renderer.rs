@@ -34,6 +34,11 @@ pub struct RenderOptions {
     pub cache_bytes: usize,
     /// Open decoder processes kept alive at once
     pub max_readers: usize,
+    /// Decode pictures at this fraction of their size (1.0 = full). Previews use the canvas scale, which
+    /// moves far fewer pixels through the decoder pipe; export leaves it at 1.0.
+    pub decode_scale: f64,
+    /// Use the platform's hardware video decoder. Not bit-exact with software decoding, so never for export.
+    pub hw_decode: bool,
 }
 
 impl Default for RenderOptions {
@@ -42,6 +47,8 @@ impl Default for RenderOptions {
             use_proxy: false,
             cache_bytes: 512 << 20,
             max_readers: 8,
+            decode_scale: 1.0,
+            hw_decode: false,
         }
     }
 }
@@ -116,7 +123,15 @@ impl Renderer {
                     .expect("non-empty");
                 self.readers.remove(&oldest);
             }
-            let r = VideoReader::open(&path, w, h, fps, frame).map_err(RenderError::Decode)?;
+            // previews decode at the size they will be shown, not the size of the file
+            let even = |v: u32| (((v as f64 * self.opts.decode_scale).round() as u32).max(2)) & !1;
+            let (w, h) = if self.opts.decode_scale < 1.0 {
+                (even(w), even(h))
+            } else {
+                (w, h)
+            };
+            let r = VideoReader::open_with(&path, w, h, fps, frame, self.opts.hw_decode)
+                .map_err(RenderError::Decode)?;
             self.readers.insert(clip, (r, self.clock));
         }
         let (reader, used) = self.readers.get_mut(&clip).expect("just ensured");

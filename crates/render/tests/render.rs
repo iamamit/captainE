@@ -262,3 +262,30 @@ fn missing_media_file_is_a_clear_error() {
         "{err}"
     );
 }
+
+#[test]
+fn decoding_at_a_fraction_of_the_size_still_picks_the_right_frames() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let path = scratch("counter_scaled.mp4");
+    counter_video(&path, 60);
+    let mut f = fixture((96, 54));
+    let m = add_media(&mut f, &path);
+    f.ed.apply(
+        Author::User,
+        edit::append(f.ed.project(), f.v1, clip(&m, 10, 30)),
+    )
+    .unwrap();
+    let opts = RenderOptions {
+        decode_scale: 0.5,
+        ..RenderOptions::default()
+    };
+    let shown = preview_project(f.ed.project(), 0.5);
+    let mut r = Renderer::new(&shown, f.tl, opts).unwrap();
+    assert_eq!(r.size(), (48, 26)); // the canvas shrank with the preview
+    for tick in [0, 1, 2, 15, 7, 29] {
+        let canvas = r.render(tick).unwrap();
+        assert_eq!(frame_no(grey_of(&canvas, 24, 13)), 10 + tick, "tick {tick}");
+    }
+}
