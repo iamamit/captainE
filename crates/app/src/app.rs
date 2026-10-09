@@ -141,6 +141,9 @@ pub struct App {
     pub search: String,
     pub selected_media: Option<Id>,
     pub selected_clip: Option<Id>,
+    /// Other items selected together with `selected_clip` (shift-click)
+    pub extra_selected: Vec<Id>,
+    pub clipboard: Vec<crate::clipboard::Copied>,
     pub snap: bool,
     pub pps: f32,
     pub scroll: f32,
@@ -213,6 +216,8 @@ impl App {
             search: String::new(),
             selected_media: None,
             selected_clip: None,
+            extra_selected: Vec::new(),
+            clipboard: Vec::new(),
             snap: true,
             pps: 40.0,
             scroll: 0.0,
@@ -707,6 +712,7 @@ impl App {
             if self.selected_clip.is_some() && self.selected_span().is_none() {
                 self.selected_clip = None;
             }
+            self.prune_selection();
         }
         if self.playhead != self.program_tick || self.last_requested != Some(self.playhead) {
             let busy = self.worker.in_flight >= 2;

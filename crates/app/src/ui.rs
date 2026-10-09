@@ -778,6 +778,10 @@ pub fn split_at_playhead(app: &mut App) {
 }
 
 pub fn lift_selection(app: &mut App) {
+    if app.selection_ids().len() > 1 {
+        app.delete_selection(false);
+        return;
+    }
     if let (Some(a), Some(b)) = (app.mark_in, app.mark_out) {
         if app.selected_clip.is_none() {
             let Some(tl) = app.timeline_id() else { return };
@@ -794,6 +798,10 @@ pub fn lift_selection(app: &mut App) {
 }
 
 pub fn extract_selection(app: &mut App) {
+    if app.selection_ids().len() > 1 {
+        app.delete_selection(true);
+        return;
+    }
     if let (Some(a), Some(b)) = (app.mark_in, app.mark_out) {
         if app.selected_clip.is_none() {
             let Some(tl) = app.timeline_id() else { return };
@@ -897,6 +905,18 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     }
     if pressed(Modifiers::COMMAND, Key::B) {
         split_at_playhead(app);
+    }
+    if pressed(Modifiers::COMMAND, Key::C) {
+        app.copy_selection();
+    }
+    if pressed(Modifiers::COMMAND, Key::V) {
+        app.paste_at(app.playhead);
+    }
+    if pressed(Modifiers::COMMAND, Key::D) {
+        app.duplicate_selection();
+    }
+    if pressed(Modifiers::COMMAND, Key::A) {
+        app.select_all();
     }
     if pressed(Modifiers::SHIFT, Key::F) {
         freeze_frame(app);

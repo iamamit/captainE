@@ -336,7 +336,11 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 };
             } else if matches!(app.tool, Tool::Select | Tool::Trim) {
                 if let Some(c) = hit(origin) {
-                    app.selected_clip = Some(c.id);
+                    if ui.input(|i| i.modifiers.shift) {
+                        app.toggle_selected(c.id);
+                    } else if !app.is_selected(c.id) {
+                        app.select_only(&[c.id]);
+                    }
                     let edge_px = if app.tool == Tool::Trim {
                         EDGE_PX + 4.0
                     } else {
@@ -476,7 +480,12 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                         app.scroll = anchor - (pos.x - view.left) / app.pps;
                     }
                     _ => {
-                        app.selected_clip = hit(pos).map(|c| c.id);
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        match (hit(pos), shift) {
+                            (Some(c), true) => app.toggle_selected(c.id),
+                            (Some(c), false) => app.select_only(&[c.id]),
+                            (None, _) => app.select_only(&[]),
+                        }
                         if app.selected_clip.is_some() {
                             app.inspector_tab = InspectorTab::Inspector;
                         }
@@ -625,7 +634,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 dim = false;
             }
         }
-        let selected = app.selected_clip == Some(c.id);
+        let selected = app.is_selected(c.id);
         match &item {
             Item::Clip(clip) => draw_clip(app, &body_painter, clip, rect, row, selected, dim),
             Item::Title(t) => draw_title(&body_painter, t, rect, selected, dim),
@@ -1034,7 +1043,32 @@ fn draw_ruler(app: &App, p: &Painter, ruler: Rect, view: &View) {
 }
 
 fn clip_menu(app: &mut App, ui: &mut egui::Ui) {
-    let has = app.selected().is_some();
+    let has = app.selected().is_some() || app.selected_title().is_some();
+    if ui
+        .add_enabled(has, egui::Button::new("Copy   ⌘C"))
+        .clicked()
+    {
+        app.copy_selection();
+        ui.close();
+    }
+    if ui
+        .add_enabled(
+            !app.clipboard.is_empty(),
+            egui::Button::new("Paste at Playhead   ⌘V"),
+        )
+        .clicked()
+    {
+        app.paste_at(app.playhead);
+        ui.close();
+    }
+    if ui
+        .add_enabled(has, egui::Button::new("Duplicate   ⌘D"))
+        .clicked()
+    {
+        app.duplicate_selection();
+        ui.close();
+    }
+    ui.separator();
     if ui.add_enabled(has, egui::Button::new("Lift   ⌫")).clicked() {
         ui::lift_selection(app);
         ui.close();

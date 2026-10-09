@@ -4,7 +4,7 @@ e01	Editing	Multi-track timeline; insert, overwrite, lift, extract, split, trim	
 e02	Editing	Ripple, roll, slip, slide with the mouse	4	0.5	engine and CLI only for roll/slide/slip; mouse does ripple trim
 e03	Editing	Snapping, zoom, scrub, JKL shuttle	3	1	
 e04	Editing	Linked audio and video clips	4	0	
-e05	Editing	Multi-select, copy, paste, duplicate	4	0	
+e05	Editing	Multi-select, copy, paste, duplicate	4	0.75	shift-click multi-select, select all, copy/paste at playhead, duplicate (ripple), multi lift/ripple delete; no marquee or group drag
 e06	Editing	Undo, redo, history	5	1	also branches
 e07	Editing	Track controls: lock, solo, mute, target, add and remove	3	0.5	hide/mute and add exist
 e08	Editing	Nested sequences / compound clips	3	0	

@@ -791,3 +791,67 @@ fn mixer_tab_lists_tracks_and_audio_effects_can_be_added() {
     assert!(h.get_all_by_label("Master").count() >= 1);
     h.get_by_label_contains("Levels follow playback");
 }
+
+#[test]
+fn multi_select_copy_paste_duplicate_and_delete() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let ids = |a: &App| -> Vec<Id> {
+        v1(a)
+            .items
+            .iter()
+            .filter(|i| i.is_content())
+            .map(|i| i.id())
+            .collect()
+    };
+    let originals = ids(app(&h));
+    assert_eq!(originals.len(), 3);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut h);
+    assert_eq!(app(&h).selection_ids().len(), 3);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+    settle(&mut h);
+    // paste after the end of the timeline: three more clips with new ids, one undo step
+    let end = app(&h).duration_ticks();
+    app_mut(&mut h).playhead = end;
+    let history = app(&h).session.editor.history().len();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    settle(&mut h);
+    let after = ids(app(&h));
+    assert_eq!(after.len(), 6);
+    assert!(
+        after[3..].iter().all(|i| !originals.contains(i)),
+        "fresh ids"
+    );
+    assert_eq!(app(&h).session.editor.history().len(), history + 1);
+    assert_eq!(
+        app(&h).selection_ids(),
+        after[3..].to_vec(),
+        "the pasted items are selected"
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(ids(app(&h)), originals);
+    // duplicate the middle clip: the copy slots in after it and pushes c along
+    app_mut(&mut h).select_only(&[originals[1]]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    settle(&mut h);
+    let dup = ids(app(&h));
+    assert_eq!(dup.len(), 4);
+    assert_eq!(
+        (dup[0], dup[1], dup[3]),
+        (originals[0], originals[1], originals[2])
+    );
+    // lift two at once
+    app_mut(&mut h).select_only(&[dup[0], dup[3]]);
+    let total = app(&h).duration_ticks();
+    h.key_press(Key::Backspace);
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), total, "lifting leaves gaps");
+    assert_eq!(ids(app(&h)).len(), 2);
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(ids(app(&h)).len(), 4);
+}

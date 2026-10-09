@@ -3,6 +3,7 @@
 pub mod app;
 pub mod audio;
 pub mod branches_ui;
+pub mod clipboard;
 pub mod compare;
 pub mod copilot;
 pub mod jobs;
