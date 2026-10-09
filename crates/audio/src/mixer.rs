@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use captaine_model::{Id, Item, Project};
+use captaine_model::{value_at, Id, Item, Keyframe, Project};
 use captaine_time::{Rational, RationalTime, Rounding};
 
 use crate::decode::decode_pcm;
@@ -18,8 +18,12 @@ struct MixClip {
     len: i64,
     /// seconds into the source file at the clip's first sample
     src_secs: f64,
-    gain: f32,
+    gain_db: f64,
+    track_db: f64,
     pan: f64,
+    /// Keyframes of volume (dB) and pan, times in output samples from the start of the clip
+    vol_keys: Vec<Keyframe>,
+    pan_keys: Vec<Keyframe>,
     fade_in: i64,
     fade_out: i64,
 }
@@ -33,6 +37,22 @@ pub struct Mixer {
     clips: Vec<MixClip>,
     total: i64,
     windows: HashMap<(Id, i64), Arc<Vec<f32>>>,
+}
+
+/// Left and right gain for a clip at `gain`, balanced by `pan` (-1 left .. 1 right): unity in the middle.
+fn left_right(gain: f32, pan: f64) -> (f32, f32) {
+    (
+        gain * if pan > 0.0 {
+            (pan * std::f64::consts::FRAC_PI_2).cos() as f32
+        } else {
+            1.0
+        },
+        gain * if pan < 0.0 {
+            (-pan * std::f64::consts::FRAC_PI_2).cos() as f32
+        } else {
+            1.0
+        },
+    )
 }
 
 fn db_to_gain(db: f64) -> f32 {
@@ -67,8 +87,27 @@ impl Mixer {
                     start: s,
                     len: e - s,
                     src_secs: c.source_start.to_seconds_f64(),
-                    gain: db_to_gain(c.audio.gain_db + track.gain_db),
+                    gain_db: c.audio.gain_db,
+                    track_db: track.gain_db,
                     pan: c.audio.pan,
+                    vol_keys: c
+                        .anim
+                        .keys("volume")
+                        .iter()
+                        .map(|k| Keyframe {
+                            t: to_samples(k.t),
+                            ..*k
+                        })
+                        .collect(),
+                    pan_keys: c
+                        .anim
+                        .keys("pan")
+                        .iter()
+                        .map(|k| Keyframe {
+                            t: to_samples(k.t),
+                            ..*k
+                        })
+                        .collect(),
                     fade_in: to_samples(c.audio.fade_in),
                     fade_out: to_samples(c.audio.fade_out),
                 });
@@ -118,22 +157,13 @@ impl Mixer {
             if a >= b {
                 continue;
             }
-            let (gain, pan, fi, fo) = {
+            let (fi, fo) = (self.clips[ci].fade_in, self.clips[ci].fade_out);
+            let animated =
+                !self.clips[ci].vol_keys.is_empty() || !self.clips[ci].pan_keys.is_empty();
+            let (mut gl, mut gr) = {
                 let c = &self.clips[ci];
-                (c.gain, c.pan, c.fade_in, c.fade_out)
+                left_right(db_to_gain(c.gain_db + c.track_db), c.pan)
             };
-            let (gl, gr) = (
-                gain * if pan > 0.0 {
-                    (pan * std::f64::consts::FRAC_PI_2).cos() as f32
-                } else {
-                    1.0
-                },
-                gain * if pan < 0.0 {
-                    (-pan * std::f64::consts::FRAC_PI_2).cos() as f32
-                } else {
-                    1.0
-                },
-            );
             let mut pos = a - cs; // clip-relative
             let stop = b - cs;
             while pos < stop {
@@ -141,6 +171,12 @@ impl Mixer {
                 let win = self.window(ci, w)?;
                 let w_end = ((w + 1) * wl).min(stop);
                 for p in pos..w_end {
+                    if animated {
+                        let c = &self.clips[ci];
+                        let db = value_at(&c.vol_keys, p).unwrap_or(c.gain_db);
+                        let pan = value_at(&c.pan_keys, p).unwrap_or(c.pan).clamp(-1.0, 1.0);
+                        (gl, gr) = left_right(db_to_gain(db + c.track_db), pan);
+                    }
                     let mut g = 1.0f32;
                     if p < fi {
                         g = p as f32 / fi as f32;

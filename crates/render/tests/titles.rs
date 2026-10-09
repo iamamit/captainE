@@ -164,3 +164,47 @@ fn layers_report_titles() {
     assert!(matches!(&layers[0], Layer::Title(t) if t.local_tick == 6));
     assert!(layers_at(&p, tl, &idx, 5).is_empty());
 }
+
+#[test]
+fn keyframed_properties_change_the_picture_frame_by_frame() {
+    let mut x = lower_third(48);
+    // fade up over the first second while sliding 200 px to the right, then hold
+    x.anim.set_track(
+        "opacity",
+        vec![Keyframe::new(0, 0.0), Keyframe::new(24, 100.0)],
+    );
+    x.anim.set_track(
+        "position.x",
+        vec![Keyframe::new(0, 0.0), Keyframe::new(24, 200.0)],
+    );
+    let (p, tl) = project_with(x);
+    let mut r = Renderer::new(&p, tl, RenderOptions::default()).unwrap();
+    let peak = |c: &Canvas| {
+        c.data
+            .chunks(4)
+            .map(|p| p[0].max(p[1]).max(p[2]))
+            .fold(0.0f32, f32::max)
+    };
+    let right_edge = |c: &Canvas| {
+        let (w, h) = (c.width as usize, c.height as usize);
+        (0..w)
+            .rev()
+            .find(|x| (0..h).any(|y| c.data[(y * w + x) * 4] > 0.002))
+            .unwrap_or(0)
+    };
+    // the title starts at tick 24 (after the gap)
+    let f0 = r.render(24).unwrap();
+    let f12 = r.render(24 + 12).unwrap();
+    let f24 = r.render(24 + 24).unwrap();
+    let f40 = r.render(24 + 40).unwrap();
+    assert!(peak(&f0) < 0.01, "invisible at its first frame");
+    assert!(peak(&f12) > 0.2 && peak(&f12) < peak(&f24), "half way up");
+    assert!(
+        peak(&f24) > 0.9 && (peak(&f40) - peak(&f24)).abs() < 1e-6,
+        "full, then held"
+    );
+    // it slides: the right edge of the ink moves right by about the animated distance (canvas 640 wide = 0.5 scale of 1280)
+    let (e12, e24) = (right_edge(&f12), right_edge(&f24));
+    assert!(e24 > e12 + 20, "moving right: {e12} -> {e24}");
+    assert_eq!(right_edge(&f40), e24, "and stopped");
+}

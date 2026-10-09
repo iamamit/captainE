@@ -43,6 +43,8 @@ pub struct ClipLayer<'a> {
     pub media: &'a MediaRef,
     /// Frame number in the media at its own frame rate
     pub source_frame: i64,
+    /// Ticks since the clip began (animation time)
+    pub local_tick: i64,
     pub track: usize,
 }
 
@@ -106,6 +108,7 @@ pub fn layers_at<'a>(
                     clip,
                     media,
                     source_frame: clip.source_start.value + offset,
+                    local_tick: tick - start,
                     track: *ti,
                 }));
             }

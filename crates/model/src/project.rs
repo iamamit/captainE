@@ -4,6 +4,7 @@ use std::sync::Arc;
 use captaine_time::{Rational, RationalTime};
 use serde::{Deserialize, Serialize};
 
+use crate::anim::{is_property, Anim};
 use crate::Id;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -179,6 +180,9 @@ pub struct Clip {
     pub video: VideoProps,
     #[serde(default)]
     pub audio: AudioProps,
+    /// Keyframes, by property (times relative to the start of the clip)
+    #[serde(default, skip_serializing_if = "Anim::is_empty")]
+    pub anim: Anim,
 }
 
 impl Clip {
@@ -197,6 +201,7 @@ impl Clip {
             duration,
             enabled: true,
             video: VideoProps::default(),
+            anim: Anim::default(),
             audio: AudioProps::default(),
         }
     }
@@ -247,7 +252,7 @@ impl Clip {
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the clip");
         }
-        Ok(())
+        check_anim(&self.anim, true)
     }
 }
 
@@ -314,6 +319,9 @@ pub struct Title {
     pub video: VideoProps,
     /// Fades in ticks of the timeline rate (opacity ramps at both ends)
     pub fade_in: i64,
+    /// Keyframes, by property (times relative to the start of the title)
+    #[serde(default, skip_serializing_if = "Anim::is_empty")]
+    pub anim: Anim,
     pub fade_out: i64,
 }
 
@@ -334,6 +342,7 @@ impl Title {
             style: TitleStyle::new(template),
             video: VideoProps::default(),
             fade_in: 0,
+            anim: Anim::default(),
             fade_out: 0,
         }
     }
@@ -347,7 +356,133 @@ impl Title {
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the title");
         }
-        Ok(())
+        check_anim(&self.anim, false)
+    }
+}
+
+/// `base` with every property that has keyframes replaced by its animated value at `t`.
+pub fn video_with_anim(base: &VideoProps, anim: &Anim, t: i64) -> VideoProps {
+    if anim.is_empty() {
+        return *base;
+    }
+    let mut v = *base;
+    let get = |p: &str| anim.value(p, t);
+    if let Some(x) = get("position.x") {
+        v.transform.position.0 = x;
+    }
+    if let Some(x) = get("position.y") {
+        v.transform.position.1 = x;
+    }
+    if let Some(x) = get("scale") {
+        v.transform.scale = (x / 100.0, x / 100.0);
+    }
+    if let Some(x) = get("rotation") {
+        v.transform.rotation_deg = x;
+    }
+    if let Some(x) = get("opacity") {
+        v.opacity = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if let Some(x) = get("exposure") {
+        v.color.exposure = x;
+    }
+    if let Some(x) = get("contrast") {
+        v.color.contrast = x.max(0.0);
+    }
+    if let Some(x) = get("saturation") {
+        v.color.saturation = x.clamp(0.0, 400.0);
+    }
+    if let Some(x) = get("temperature") {
+        v.color.temperature = x.max(1.0);
+    }
+    v
+}
+
+/// `base` with animated volume and pan applied at `t`.
+pub fn audio_with_anim(base: &AudioProps, anim: &Anim, t: i64) -> AudioProps {
+    let mut a = *base;
+    if let Some(x) = anim.value("volume", t) {
+        a.gain_db = x;
+    }
+    if let Some(x) = anim.value("pan", t) {
+        a.pan = x.clamp(-1.0, 1.0);
+    }
+    a
+}
+
+/// The value a property has when it is not animated, in the units animation uses
+/// (scale and opacity are percentages).
+pub fn base_value(video: &VideoProps, audio: Option<&AudioProps>, prop: &str) -> Option<f64> {
+    Some(match prop {
+        "position.x" => video.transform.position.0,
+        "position.y" => video.transform.position.1,
+        "scale" => video.transform.scale.0 * 100.0,
+        "rotation" => video.transform.rotation_deg,
+        "opacity" => video.opacity * 100.0,
+        "exposure" => video.color.exposure,
+        "contrast" => video.color.contrast,
+        "saturation" => video.color.saturation,
+        "temperature" => video.color.temperature,
+        "volume" => audio?.gain_db,
+        "pan" => audio?.pan,
+        _ => return None,
+    })
+}
+
+/// Range and name checks for an item's keyframes.
+pub fn check_anim(anim: &Anim, has_audio: bool) -> Result<(), &'static str> {
+    for (prop, keys) in &anim.0 {
+        if !is_property(prop) {
+            return Err("unknown animated property");
+        }
+        if !has_audio && matches!(prop.as_str(), "volume" | "pan") {
+            return Err("this item has no sound to animate");
+        }
+        for k in keys {
+            if !k.v.is_finite() {
+                return Err("keyframe values must be finite numbers");
+            }
+            let ok = match prop.as_str() {
+                "opacity" => (0.0..=100.0).contains(&k.v),
+                "pan" => (-1.0..=1.0).contains(&k.v),
+                "contrast" => k.v >= 0.0,
+                "saturation" => (0.0..=400.0).contains(&k.v),
+                "temperature" => k.v > 0.0,
+                "scale" => k.v != 0.0,
+                _ => true,
+            };
+            if !ok {
+                return Err("keyframe value out of range");
+            }
+            if let crate::Interp::Bezier(a, b, c, d) = k.interp {
+                if ![a, b, c, d].iter().all(|x| x.is_finite())
+                    || !(0.0..=1.0).contains(&a)
+                    || !(0.0..=1.0).contains(&c)
+                {
+                    return Err("bezier control points must be finite with x in 0..=1");
+                }
+            }
+        }
+        if keys.windows(2).any(|w| w[0].t >= w[1].t) {
+            return Err("keyframes must be in strictly increasing time order");
+        }
+    }
+    Ok(())
+}
+
+impl Clip {
+    /// Picture properties at `local` ticks into the clip, with keyframes applied.
+    pub fn video_at(&self, local: i64) -> VideoProps {
+        video_with_anim(&self.video, &self.anim, local)
+    }
+
+    pub fn audio_at(&self, local: i64) -> AudioProps {
+        audio_with_anim(&self.audio, &self.anim, local)
+    }
+}
+
+impl Title {
+    pub fn video_at(&self, local: i64) -> VideoProps {
+        video_with_anim(&self.video, &self.anim, local)
     }
 }
 
@@ -678,6 +813,7 @@ mod tests {
             enabled: true,
             video: VideoProps::default(),
             audio: AudioProps::default(),
+            anim: Default::default(),
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

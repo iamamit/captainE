@@ -180,7 +180,7 @@ impl Renderer {
                     clip: c.clip.id,
                     media: c.media.id,
                     frame: c.source_frame,
-                    props: c.clip.video,
+                    props: c.clip.video_at(c.local_tick),
                 },
                 Layer::Title(t) => {
                     let dur = t.title.duration.value;
@@ -191,7 +191,7 @@ impl Renderer {
                     if t.title.fade_out > 0 && dur - t.local_tick <= t.title.fade_out {
                         k = k.min((dur - t.local_tick) as f64 / t.title.fade_out as f64);
                     }
-                    let mut props = t.title.video;
+                    let mut props = t.title.video_at(t.local_tick);
                     props.opacity *= k;
                     Want::Title {
                         title: t.title.clone(),

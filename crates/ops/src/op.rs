@@ -1,4 +1,6 @@
-use captaine_model::{AudioProps, Id, Item, MediaRef, Timeline, Title, Track, VideoProps};
+use captaine_model::{
+    AudioProps, Id, Item, Keyframe, MediaRef, Timeline, Title, Track, VideoProps,
+};
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +111,12 @@ pub enum Op {
         item: Id,
         title: Title,
     },
+    /// Replace the keyframes of one property of a clip or title (empty list: remove the animation).
+    SetAnimTrack {
+        item: Id,
+        prop: String,
+        keys: Vec<Keyframe>,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -149,6 +157,13 @@ impl Op {
             Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
             Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
             Op::SetTitle { item, .. } => format!("Edit title {item}"),
+            Op::SetAnimTrack { item, prop, keys } => {
+                if keys.is_empty() {
+                    format!("Remove {prop} animation of {item}")
+                } else {
+                    format!("Animate {prop} of {item} ({} keys)", keys.len())
+                }
+            }
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

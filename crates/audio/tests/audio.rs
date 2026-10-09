@@ -326,3 +326,80 @@ fn waveform_peaks_of_a_file() {
         .iter()
         .all(|p| p.max > 0.45 && p.max < 0.55 && p.min < -0.45));
 }
+
+#[test]
+fn animated_volume_and_pan_sweep_through_the_mix() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let p = scratch("sweep.wav");
+    sine(&p, 440.0, 0.5, 6.0);
+    let mut f = fx();
+    let m = media(&mut f, &p);
+    let id = place(&mut f, 0, 0, clip(&m, 0.0, 120)); // 4 s at 30 fps
+    let k = |t: i64, v: f64| Keyframe::new(t, v);
+    // volume: -60 dB up to 0 dB over the clip; pan: hard left to hard right
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "volume".into(),
+            keys: vec![k(0, -60.0), k(120, 0.0)],
+        },
+    )
+    .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "pan".into(),
+            keys: vec![k(0, -1.0), k(120, 1.0)],
+        },
+    )
+    .unwrap();
+    let out = mix(&f);
+    let sr = SR as usize;
+    let slice = |a: f64, b: f64| &out[(a * sr as f64) as usize * 2..(b * sr as f64) as usize * 2];
+    let (early, late) = (slice(0.05, 0.25), slice(3.75, 3.95));
+    assert!(
+        rms(late, 0) + rms(late, 1) > 20.0 * (rms(early, 0) + rms(early, 1)),
+        "it gets much louder"
+    );
+    assert!(
+        rms(early, 0) > 5.0 * rms(early, 1),
+        "early on it is in the left channel"
+    );
+    assert!(
+        rms(late, 1) > 5.0 * rms(late, 0),
+        "and ends up in the right"
+    );
+    // half way the volume is -30 dB: about 3% of full level
+    let mid = slice(1.9, 2.1);
+    let full = HALF; // rms of the unprocessed 0.5-amplitude sine
+    let loud = rms(mid, 0).max(rms(mid, 1));
+    assert!(
+        loud > full * 0.02 && loud < full * 0.06,
+        "mid level {loud} vs {full}"
+    );
+    // with the keys removed it is back to a flat, centred clip
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "volume".into(),
+            keys: vec![],
+        },
+    )
+    .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "pan".into(),
+            keys: vec![],
+        },
+    )
+    .unwrap();
+    let flat = mix(&f);
+    assert!((rms(&flat, 0) - HALF).abs() < 0.003 && (rms(&flat, 1) - HALF).abs() < 0.003);
+}

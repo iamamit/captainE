@@ -277,6 +277,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                             fade_out: 0,
                             ..c.audio
                         },
+                        anim: c.anim.window(0, at.value),
                         ..c.clone()
                     };
                     let r = Clip {
@@ -288,6 +289,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                             fade_out: c.audio.fade_out.min(rest.value),
                             ..c.audio
                         },
+                        anim: c.anim.window(at.value, c.duration.value),
                         ..c.clone()
                     };
                     (Item::Clip(l), Item::Clip(r))
@@ -297,6 +299,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         duration: *at,
                         fade_in: t.fade_in.min(at.value),
                         fade_out: 0,
+                        anim: t.anim.window(0, at.value),
                         ..t.clone()
                     };
                     let r = Title {
@@ -304,6 +307,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         duration: rest,
                         fade_in: 0,
                         fade_out: t.fade_out.min(rest.value),
+                        anim: t.anim.window(at.value, t.duration.value),
                         ..t.clone()
                     };
                     (Item::Title(l), Item::Title(r))
@@ -381,9 +385,20 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         fade_out: b.audio.fade_out,
                         ..a.audio
                     };
+                    let anim = a.anim.joined(a.duration.value, &b.anim);
+                    // only two halves of one animation may be joined back into it
+                    let total = a.duration.value + b.duration.value;
+                    if anim.window(0, a.duration.value) != a.anim
+                        || anim.window(a.duration.value, total) != b.anim
+                    {
+                        return Err(OpError::NotJoinable(
+                            "the two clips are animated differently",
+                        ));
+                    }
                     Item::Clip(Clip {
                         duration: arith(a.duration.checked_add(b.duration))?,
                         audio,
+                        anim,
                         ..a.clone()
                     })
                 }
@@ -397,9 +412,19 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                     {
                         return Err(OpError::NotJoinable("titles differ"));
                     }
+                    let anim = a.anim.joined(a.duration.value, &b.anim);
+                    let total = a.duration.value + b.duration.value;
+                    if anim.window(0, a.duration.value) != a.anim
+                        || anim.window(a.duration.value, total) != b.anim
+                    {
+                        return Err(OpError::NotJoinable(
+                            "the two titles are animated differently",
+                        ));
+                    }
                     Item::Title(Title {
                         duration: arith(a.duration.checked_add(b.duration))?,
                         fade_out: b.fade_out,
+                        anim,
                         ..a.clone()
                     })
                 }
@@ -465,10 +490,16 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         fade_out: fo,
                         ..c.audio
                     };
+                    // trimming the front moves the clip's start, so its animation moves with the picture
+                    let anim = match edge {
+                        Edge::In => c.anim.shifted(-delta.value),
+                        Edge::Out => c.anim.clone(),
+                    };
                     let new = Item::Clip(Clip {
                         source_start: start,
                         duration,
                         audio,
+                        anim,
                         ..c.clone()
                     });
                     let mut undo = vec![Op::SetRange {
@@ -482,7 +513,13 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                             audio: c.audio,
                         });
                     }
-                    let inverse = if undo.len() == 1 {
+                    let inverse = if !c.anim.is_empty() {
+                        // keyframes were moved too: only the whole old clip puts everything back exactly
+                        Op::ReplaceRaw {
+                            item: *item,
+                            with: old.clone(),
+                        }
+                    } else if undo.len() == 1 {
                         undo.remove(0)
                     } else {
                         Op::Transaction {
@@ -498,10 +535,15 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         Edge::Out => arith(t.duration.checked_add(*delta))?,
                     };
                     let (fi, fo) = fit_fades(t.fade_in, t.fade_out, duration.value);
+                    let anim = match edge {
+                        Edge::In => t.anim.shifted(-delta.value),
+                        Edge::Out => t.anim.clone(),
+                    };
                     let new = Item::Title(Title {
                         duration,
                         fade_in: fi,
                         fade_out: fo,
+                        anim,
                         ..t.clone()
                     });
                     // exact undo: put the whole old title back
@@ -704,6 +746,35 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             Ok(Op::SetProxy {
                 media: *media,
                 proxy: prev,
+            })
+        }
+        Op::SetAnimTrack { item, prop, keys } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let (new, prev) = match p.item(loc).expect("located").clone() {
+                Item::Clip(c) => {
+                    let prev = c.anim.keys(prop).to_vec();
+                    let mut anim = c.anim.clone();
+                    anim.set_track(prop, keys.clone());
+                    (Item::Clip(Clip { anim, ..c }), prev)
+                }
+                Item::Title(t) => {
+                    let prev = t.anim.keys(prop).to_vec();
+                    let mut anim = t.anim.clone();
+                    anim.set_track(prop, keys.clone());
+                    (Item::Title(Title { anim, ..t }), prev)
+                }
+                Item::Gap(_) => return Err(OpError::NotFound("clip", *item)),
+            };
+            check_item(p, rate, &new)?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::SetAnimTrack {
+                item: *item,
+                prop: prop.clone(),
+                keys: prev,
             })
         }
         Op::SetEnabled { item, enabled } => {
