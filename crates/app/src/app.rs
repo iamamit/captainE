@@ -126,6 +126,7 @@ pub struct ExportDialog {
 }
 
 pub struct App {
+    pub ctx: Context,
     pub session: Session,
     pub path: Option<PathBuf>,
     pub dirty_since: Option<Instant>,
@@ -182,6 +183,7 @@ impl App {
     pub fn new(ctx: &Context, session: Session, path: Option<PathBuf>) -> App {
         theme::apply(ctx);
         let mut app = App {
+            ctx: ctx.clone(),
             session,
             path,
             dirty_since: None,

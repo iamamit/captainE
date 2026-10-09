@@ -26,14 +26,44 @@ pub struct Suggestion {
 
 type Analysis = Result<(String, Option<Suggestion>), String>;
 
+/// Builds a model connection for one request.
+pub type TransportFactory =
+    std::sync::Arc<dyn Fn() -> Box<dyn captaine_agent::Transport> + Send + Sync>;
+
+/// Messages from a background analysis or agent run.
+pub enum Work {
+    /// a progress line (a tool the agent is calling)
+    Step(String),
+    Done(Box<Analysis>),
+}
+
 #[derive(Default)]
 pub struct State {
     pub messages: Vec<Msg>,
     pub input: String,
     pub suggestion: Option<Suggestion>,
-    working: Option<Receiver<Analysis>>,
+    working: Option<Receiver<Work>>,
     greeted: bool,
+    /// Progress lines of the run in flight
+    pub steps: Vec<String>,
+    /// What was asked in the run in flight, kept for the conversation history
+    pending_user: String,
+    history: Vec<captaine_agent::ChatTurn>,
+    /// Whether an API key is available (checked at start and when it changes)
+    key: Option<Option<String>>,
+    pub key_input: String,
+    /// Supplies the model connection instead of the Anthropic API (tests use a scripted one).
+    pub transport: Option<TransportFactory>,
 }
+
+impl State {
+    /// A request is in flight (Claude or a local analysis).
+    pub fn is_working(&self) -> bool {
+        self.working.is_some()
+    }
+}
+
+const GREETING_CLAUDE: &str = "Hi! Tell me what to do with the timeline: tighten a clip, add a title, fix the colour, rebalance the sound. I'll make the edits as a suggestion you can preview, apply or discard. Select a clip first if you mean a specific one.";
 
 const GREETING: &str = "Hi! I run a few built-in skills for now (the AI agent isn't connected yet). Select a clip and try: remove silences, warm up the colour, add a 12-frame fade-in.";
 
@@ -43,17 +73,34 @@ pub fn show(app: &mut App, ctx: &Context) {
     }
     if !app.copilot.greeted {
         app.copilot.greeted = true;
+        let connected = api_key(app).is_some() || app.copilot.transport.is_some();
         app.copilot.messages.push(Msg {
             user: false,
-            text: GREETING.into(),
+            text: if connected { GREETING_CLAUDE } else { GREETING }.into(),
         });
     }
-    // collect a finished background analysis
+    // collect progress and results from the background run
     if let Some(rx) = &app.copilot.working {
-        if let Ok(done) = rx.try_recv() {
+        let events: Vec<Work> = rx.try_iter().collect();
+        let mut finished = None;
+        for e in events {
+            match e {
+                Work::Step(s) => app.copilot.steps.push(s),
+                Work::Done(d) => finished = Some(*d),
+            }
+        }
+        if let Some(done) = finished {
             app.copilot.working = None;
+            app.copilot.steps.clear();
+            let asked = std::mem::take(&mut app.copilot.pending_user);
             match done {
                 Ok((text, sug)) => {
+                    if !asked.is_empty() {
+                        app.copilot.history.push(captaine_agent::ChatTurn {
+                            user: asked,
+                            assistant: text.clone(),
+                        });
+                    }
                     app.copilot.messages.push(Msg { user: false, text });
                     app.copilot.suggestion = sug;
                 }
@@ -66,6 +113,9 @@ pub fn show(app: &mut App, ctx: &Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
     }
+    let has_key = api_key(app).is_some() || app.copilot.transport.is_some();
+    let mut connect: Option<String> = None;
+    let mut disconnect = false;
     let width = 300.0;
     let pos = pos2(
         app.central_rect.right() - width - 16.0,
@@ -121,7 +171,8 @@ pub fn show(app: &mut App, ctx: &Context) {
                                         ui.painter().circle_filled(d.center(), 3.0, theme::OK);
                                         ui.label(
                                             RichText::new(format!(
-                                                "{} · {target}",
+                                                "{} · {} · {target}",
+                                                if has_key { "Claude" } else { "Local skills" },
                                                 if app.copilot.working.is_some() {
                                                     "Working…"
                                                 } else {
@@ -180,6 +231,13 @@ pub fn show(app: &mut App, ctx: &Context) {
                                     for m in &app.copilot.messages {
                                         bubble(ui, m);
                                     }
+                                    if app.copilot.working.is_some() {
+                                        let n = app.copilot.steps.len();
+                                        for s in app.copilot.steps.iter().skip(n.saturating_sub(4)) {
+                                            ui.label(RichText::new(format!("· {s}")).font(mono(10.0)).color(theme::MUTED));
+                                        }
+                                        ui.label(RichText::new("Working…").size(11.0).color(theme::MUTED));
+                                    }
                                     if let Some(s) = &app.copilot.suggestion {
                                         suggestion_card(
                                             ui,
@@ -193,18 +251,45 @@ pub fn show(app: &mut App, ctx: &Context) {
                                 });
                             ui.add_space(6.0);
                             ui.horizontal_wrapped(|ui| {
-                                for (label, text) in [
-                                    ("Remove silences", "remove silences"),
-                                    ("Warm colours", "warm up the colour"),
-                                    ("Add fades", "add a 12-frame fade in and fade out"),
-                                ] {
-                                    if chip(ui, label, false, app.copilot.working.is_none())
-                                        .clicked()
-                                    {
+                                let chips: [(&str, &str); 3] = if has_key {
+                                    [
+                                        ("Remove silences", "Remove the silences from the selected clip"),
+                                        ("Warm colours", "Warm up the colour of the selected clip a little"),
+                                        ("Add a title", "Add a lower third at the playhead that says the name of the selected clip"),
+                                    ]
+                                } else {
+                                    [
+                                        ("Remove silences", "remove silences"),
+                                        ("Warm colours", "warm up the colour"),
+                                        ("Add fades", "add a 12-frame fade in and fade out"),
+                                    ]
+                                };
+                                for (label, text) in chips {
+                                    if chip(ui, label, false, app.copilot.working.is_none()).clicked() {
                                         send = Some(text.to_string());
                                     }
                                 }
                             });
+                            if !has_key {
+                                ui.add_space(6.0);
+                                egui::Frame::new()
+                                    .fill(theme::PANEL_DARK)
+                                    .corner_radius(6.0)
+                                    .inner_margin(egui::Margin::same(8))
+                                    .show(ui, |ui| {
+                                        ui.label(RichText::new("Connect Claude").strong().size(11.5));
+                                        ui.label(RichText::new("for free-form requests. Paste an Anthropic API key (kept in ~/.captaine, readable only by you) or set ANTHROPIC_API_KEY. Only project structure and analysis results are sent, never your footage.").size(10.0).color(theme::MUTED));
+                                        ui.horizontal(|ui| {
+                                            let w = ui.available_width() - 52.0;
+                                            ui.add_sized([w, 24.0], egui::TextEdit::singleline(&mut app.copilot.key_input).password(true).hint_text("sk-ant-…").margin(egui::Margin::symmetric(6, 4)));
+                                            if ui.add_enabled(!app.copilot.key_input.trim().is_empty(), egui::Button::new("Save").min_size(vec2(44.0, 24.0))).clicked() {
+                                                connect = Some(std::mem::take(&mut app.copilot.key_input));
+                                            }
+                                        });
+                                    });
+                            } else if ui.add(egui::Button::new(RichText::new("Disconnect Claude").size(10.0).color(theme::FAINT)).frame(false)).clicked() {
+                                disconnect = true;
+                            }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 let w = ui.available_width() - 62.0;
@@ -235,6 +320,23 @@ pub fn show(app: &mut App, ctx: &Context) {
         });
     if close {
         app.show_copilot = false;
+    }
+    if let Some(k) = connect {
+        match captaine_agent::Credentials::save(&k) {
+            Ok(()) => {
+                app.copilot.key = None;
+                app.toast("Connected: Copilot will now use Claude", false);
+            }
+            Err(e) => app.toast(format!("could not save the key: {e}"), true),
+        }
+    }
+    if disconnect {
+        captaine_agent::Credentials::forget();
+        app.copilot.key = None;
+        app.toast(
+            "Claude disconnected; Copilot is using its local skills",
+            false,
+        );
     }
     if let Some(text) = send {
         ask(app, text);
@@ -366,7 +468,27 @@ fn frames_before(text: &str, word: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
+/// The key for Claude, if there is one (looked up once and again after it changes).
+fn api_key(app: &mut App) -> Option<String> {
+    if app.copilot.key.is_none() {
+        app.copilot.key = Some(captaine_agent::Credentials::load());
+    }
+    app.copilot.key.clone().flatten()
+}
+
+/// Handle a request: Claude when a key is set, the built-in skills otherwise.
 pub fn ask(app: &mut App, text: String) {
+    if app.copilot.transport.is_some() {
+        return ask_claude(app, text, String::new());
+    }
+    match api_key(app) {
+        Some(key) => ask_claude(app, text, key),
+        None => ask_local(app, text),
+    }
+}
+
+/// The built-in rule-based skills (no network).
+pub fn ask_local(app: &mut App, text: String) {
     let t = text.to_lowercase();
     app.copilot.messages.push(Msg {
         user: true,
@@ -463,7 +585,9 @@ pub fn ask(app: &mut App, text: String) {
         let (project, clip2, ctx) = (app.project().clone(), clip.clone(), ());
         let _ = (ctx, start);
         std::thread::spawn(move || {
-            let _ = tx.send(remove_silences(&project, &clip2, &m, fps));
+            let _ = tx.send(Work::Done(Box::new(remove_silences(
+                &project, &clip2, &m, fps,
+            ))));
         });
         return;
     }
@@ -506,23 +630,8 @@ fn remove_silences(
     media: &MediaRef,
     fps: f64,
 ) -> Result<(String, Option<Suggestion>), String> {
-    const PAD: f64 = 0.12;
-    let src = clip.source_start.to_seconds_f64();
-    let dur = clip.duration.value as f64 / fps;
-    let found = captaine_audio::find_silences(&media.path, src, dur, -42.0, 0.45)
-        .map_err(|e| e.to_string())?;
-    let mut cuts: Vec<(i64, i64)> = found
-        .iter()
-        .filter(|(a, b)| b - a - 2.0 * PAD >= 0.15)
-        .map(|(a, b)| {
-            (
-                ((a + PAD) * fps).round() as i64,
-                ((b - PAD) * fps).round() as i64,
-            )
-        })
-        .filter(|(a, b)| *a > 0 && *b < clip.duration.value && b > a)
-        .collect();
-    if cuts.is_empty() {
+    let (ops, removed) = captaine_agent::remove_silences(clip, media, fps, -42.0, 0.45, 0.12)?;
+    if ops.is_empty() {
         return Ok((
             format!(
                 "I didn't find any silences longer than half a second in {}.",
@@ -531,38 +640,118 @@ fn remove_silences(
             None,
         ));
     }
-    // work from the end so earlier cut points stay valid; each split leaves the original clip as the left piece
-    cuts.reverse();
-    let mut ops = Vec::new();
-    for (a, b) in &cuts {
-        let mid = Id::new();
-        ops.push(Op::Split {
-            item: clip.id,
-            at: RationalTime::new(*b, clip.duration.rate),
-            new_id: Id::new(),
-        });
-        ops.push(Op::Split {
-            item: clip.id,
-            at: RationalTime::new(*a, clip.duration.rate),
-            new_id: mid,
-        });
-        ops.push(Op::RemoveItem { item: mid });
-    }
     let op = Op::Transaction {
         description: "Copilot: remove silences".into(),
         ops,
     };
     // make sure it really applies before offering it
     apply(project, &op).map_err(|e| e.to_string())?;
-    let removed: f64 = cuts.iter().map(|(a, b)| (b - a) as f64 / fps).sum();
+    let total: f64 = removed.iter().map(|(a, b)| b - a).sum();
+    let n = removed.len();
     Ok((
-        format!("I found {} silent stretch{} in {} ({removed:.1} s in total). Cutting them leaves a short pause either side.", cuts.len(), if cuts.len() == 1 { "" } else { "es" }, clip.name),
+        format!("I found {n} silent stretch{} in {} ({total:.1} s in total). Cutting them leaves a short pause either side.", if n == 1 { "" } else { "es" }, clip.name),
         Some(Suggestion {
             title: "Remove silences".into(),
-            body: format!("Cut {} gap{} from {}, tightening it by {removed:.1} s.", cuts.len(), if cuts.len() == 1 { "" } else { "s" }, clip.name),
+            body: format!("Cut {n} gap{} from {}, tightening it by {total:.1} s.", if n == 1 { "" } else { "s" }, clip.name),
             op,
         }),
     ))
 }
 
-use captaine_time::RationalTime;
+/// Ask Claude. Runs on a background thread; progress and the result arrive through `copilot.working`.
+fn ask_claude(app: &mut App, text: String, key: String) {
+    app.copilot.messages.push(Msg {
+        user: true,
+        text: text.clone(),
+    });
+    // a pending suggestion is kept: Claude builds on top of it, and the result replaces it
+    let base_ops: Vec<Op> = match app.copilot.suggestion.take() {
+        Some(Suggestion {
+            op: Op::Transaction { ops, .. },
+            ..
+        }) => ops,
+        Some(s) => vec![s.op],
+        None => Vec::new(),
+    };
+    app.set_preview(None);
+    let (tx, rx) = channel();
+    app.copilot.working = Some(rx);
+    app.copilot.steps.clear();
+    app.copilot.pending_user = text.clone();
+    let project = app.project().clone();
+    let (selection, playhead) = (app.selected_clip, app.playhead as f64 / app.fps());
+    let history = app.copilot.history.clone();
+    let ctx = app.ctx.clone();
+    let factory = app.copilot.transport.clone();
+    std::thread::spawn(move || {
+        let transport: Box<dyn captaine_agent::Transport> = match factory {
+            Some(f) => f(),
+            None => Box::new(captaine_agent::AnthropicTransport::new(key)),
+        };
+        let cfg = captaine_agent::AgentConfig::default();
+        let req = captaine_agent::AgentRequest {
+            project: &project,
+            selection,
+            playhead_secs: playhead,
+            history: &history,
+            text: &text,
+            base_ops: &base_ops,
+        };
+        let result = captaine_agent::run(
+            transport.as_ref(),
+            &cfg,
+            &req,
+            &mut |captaine_agent::Event::Step(s)| {
+                let _ = tx.send(Work::Step(s));
+                ctx.request_repaint();
+            },
+        );
+        let done = result.map_err(|e| e.to_string()).map(|r| {
+            let reply = if r.reply.is_empty() {
+                "Done.".to_string()
+            } else {
+                r.reply.clone()
+            };
+            (reply, suggestion_from(&text, &base_ops, &r))
+        });
+        let _ = tx.send(Work::Done(Box::new(done)));
+        ctx.request_repaint();
+    });
+}
+
+/// One suggestion out of the pending ops plus what the agent just did (none if nothing changed at all).
+fn suggestion_from(
+    request: &str,
+    base: &[Op],
+    r: &captaine_agent::AgentResult,
+) -> Option<Suggestion> {
+    let mut ops: Vec<Op> = base.to_vec();
+    ops.extend(r.new_ops.iter().cloned());
+    if ops.is_empty() {
+        return None;
+    }
+    let short: String = request.chars().take(48).collect();
+    let title = if base.is_empty() {
+        short
+    } else {
+        "Copilot edit".to_string()
+    };
+    let n = ops.len();
+    Some(Suggestion {
+        title,
+        body: format!(
+            "{} change{}: {}",
+            n,
+            if n == 1 { "" } else { "s" },
+            if r.reply.is_empty() {
+                "see the timeline preview"
+            } else {
+                &r.reply
+            }
+        ),
+        op: Op::Transaction {
+            description: format!("Copilot: {request}"),
+            ops,
+        },
+    })
+}

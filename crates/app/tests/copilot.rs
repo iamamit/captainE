@@ -112,7 +112,7 @@ fn removes_silences_through_the_command_layer() {
     {
         let a = h.state_mut().as_mut().unwrap();
         a.selected_clip = first_clip(a);
-        copilot::ask(a, "please remove silences".into());
+        copilot::ask_local(a, "please remove silences".into());
     }
     run_until(&mut h, |a| a.copilot.suggestion.is_some());
     let sug = app(&h).copilot.suggestion.clone().unwrap();
@@ -153,7 +153,7 @@ fn colour_and_fade_requests_become_one_undoable_edit() {
         let a = h.state_mut().as_mut().unwrap();
         // no selection: it asks for one instead of guessing
         a.selected_clip = None;
-        copilot::ask(a, "warm up the colour".into());
+        copilot::ask_local(a, "warm up the colour".into());
         assert!(a.copilot.suggestion.is_none());
         assert!(a
             .copilot
@@ -163,7 +163,7 @@ fn colour_and_fade_requests_become_one_undoable_edit() {
             .text
             .contains("Select a clip"));
         a.selected_clip = first_clip(a);
-        copilot::ask(a, "Warm up the colour and add a 12-frame fade in".into());
+        copilot::ask_local(a, "Warm up the colour and add a 12-frame fade in".into());
         sug = a.copilot.suggestion.clone().expect("a suggestion");
     }
     let Op::Transaction { ops, .. } = &sug.op else {
@@ -193,6 +193,268 @@ fn colour_and_fade_requests_become_one_undoable_edit() {
     assert_eq!(a.selected().unwrap().0.audio.fade_in, 0);
     assert_eq!(a.selected().unwrap().0.video.color.temperature, 6500.0);
     // unknown requests explain what is possible
-    copilot::ask(a, "make it feel nostalgic".into());
+    copilot::ask_local(a, "make it feel nostalgic".into());
     assert!(a.copilot.messages.last().unwrap().text.contains("I can"));
+}
+
+// ---- the Claude path, with a scripted model ------------------------------------------------------
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use captaine_agent::Transport;
+use serde_json::{json, Value};
+
+struct Script {
+    responses: Mutex<VecDeque<Result<Value, String>>>,
+    seen: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Transport for Script {
+    fn send(&self, body: &Value) -> Result<Value, String> {
+        self.seen.lock().unwrap().push(body.clone());
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err("script exhausted".into()))
+    }
+}
+
+fn tool(id: &str, name: &str, input: Value) -> Result<Value, String> {
+    Ok(
+        json!({"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}),
+    )
+}
+
+fn say(text: &str) -> Result<Value, String> {
+    Ok(json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}))
+}
+
+/// Make the Copilot talk to `responses` instead of the Anthropic API.
+fn script(h: &mut H, responses: Vec<Result<Value, String>>) -> Arc<Mutex<Vec<Value>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (s2, queue) = (
+        seen.clone(),
+        Arc::new(Mutex::new(VecDeque::from(responses))),
+    );
+    let a = h.state_mut().as_mut().unwrap();
+    a.copilot.transport = Some(Arc::new(move || -> Box<dyn Transport> {
+        Box::new(Script {
+            responses: Mutex::new(std::mem::take(&mut *queue.lock().unwrap())),
+            seen: s2.clone(),
+        })
+    }));
+    seen
+}
+
+fn settled(a: &App) -> bool {
+    !a.copilot.messages.is_empty() && a.copilot.suggestion.is_some()
+}
+
+#[test]
+fn claude_edits_show_up_as_a_suggestion_you_can_preview_and_apply() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let clip = first_clip(app(&h)).unwrap();
+    let seen = script(
+        &mut h,
+        vec![
+            tool("a", "get_timeline", json!({})),
+            tool(
+                "b",
+                "add_title",
+                json!({"text": "Talking head", "subtitle": "Take 1", "at_sec": 0.5, "duration_sec": 2}),
+            ),
+            tool(
+                "c",
+                "set_clip",
+                json!({"item_id": clip.to_string(), "temperature_k": 7600}),
+            ),
+            say("Added a lower third at 0.5 s and warmed the clip."),
+        ],
+    );
+    {
+        let a = h.state_mut().as_mut().unwrap();
+        a.selected_clip = Some(clip);
+        copilot::ask(a, "put a title on this and warm it up".into());
+        assert!(a.copilot.messages.last().unwrap().user);
+    }
+    run_until(&mut h, settled);
+    let a = app(&h);
+    assert_eq!(
+        a.copilot.messages.last().unwrap().text,
+        "Added a lower third at 0.5 s and warmed the clip."
+    );
+    let sug = a.copilot.suggestion.clone().unwrap();
+    assert!(sug.body.starts_with("2 changes"), "{}", sug.body);
+    // nothing has been applied yet
+    assert!(a
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .all(|t| t.items.iter().all(|i| i.as_title().is_none())));
+    assert_eq!(a.selected().unwrap().0.video.color.temperature, 6500.0);
+    // the model was told about the selection and the request
+    let first = seen.lock().unwrap()[0].clone();
+    let user = first["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        user.contains("put a title on this and warm it up") && user.contains(&clip.to_string()),
+        "{user}"
+    );
+
+    // preview in the viewer, then apply as the agent
+    {
+        let a = h.state_mut().as_mut().unwrap();
+        let (p, _) = captaine_ops::apply(a.project(), &sug.op).unwrap();
+        a.set_preview(Some(p));
+    }
+    h.step();
+    let a = h.state_mut().as_mut().unwrap();
+    a.set_preview(None);
+    assert!(a.do_op_as(captaine_ops::Author::Agent("copilot".into()), sug.op));
+    assert!(a
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .any(|t| t.items.iter().any(|i| i.as_title().is_some())));
+    assert_eq!(a.selected().unwrap().0.video.color.temperature, 7600.0);
+    a.undo();
+    assert_eq!(a.selected().unwrap().0.video.color.temperature, 6500.0);
+}
+
+#[test]
+fn a_follow_up_builds_on_the_pending_suggestion_and_remembers_the_conversation() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let clip = first_clip(app(&h)).unwrap();
+    // turn one
+    script(
+        &mut h,
+        vec![
+            tool(
+                "a",
+                "set_clip",
+                json!({"item_id": clip.to_string(), "opacity": 0.5}),
+            ),
+            say("Made it half transparent."),
+        ],
+    );
+    {
+        let a = h.state_mut().as_mut().unwrap();
+        a.selected_clip = Some(clip);
+        copilot::ask(a, "make it half transparent".into());
+    }
+    run_until(&mut h, settled);
+    // turn two, with a fresh script: it must see the first change as already done
+    let seen = script(
+        &mut h,
+        vec![
+            tool("b", "get_timeline", json!({})),
+            tool(
+                "c",
+                "set_clip",
+                json!({"item_id": clip.to_string(), "saturation": 60}),
+            ),
+            say("Also muted the colour."),
+        ],
+    );
+    {
+        let a = h.state_mut().as_mut().unwrap();
+        copilot::ask(a, "and desaturate it".into());
+    }
+    run_until(&mut h, |a| {
+        !a.copilot.is_working()
+            && a.copilot
+                .messages
+                .last()
+                .is_some_and(|m| m.text == "Also muted the colour.")
+    });
+    let reqs = seen.lock().unwrap().clone();
+    let msgs = reqs[0]["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["content"], "make it half transparent");
+    assert_eq!(msgs[1]["content"], "Made it half transparent.");
+    let tl = reqs[1]["messages"][4]["content"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        tl.contains("\"opacity\":0.5"),
+        "the model sees the pending change: {tl}"
+    );
+    // one combined suggestion covering both turns
+    let sug = app(&h).copilot.suggestion.clone().unwrap();
+    assert!(sug.body.starts_with("2 changes"), "{}", sug.body);
+    let a = h.state_mut().as_mut().unwrap();
+    assert!(a.do_op_as(captaine_ops::Author::Agent("copilot".into()), sug.op));
+    let c = a.selected().unwrap().0;
+    assert_eq!((c.video.opacity, c.video.color.saturation), (0.5, 60.0));
+    // and one undo undoes both
+    a.undo();
+    let c = a.selected().unwrap().0;
+    assert_eq!((c.video.opacity, c.video.color.saturation), (1.0, 100.0));
+}
+
+#[test]
+fn model_failures_are_explained_in_the_chat() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    script(
+        &mut h,
+        vec![Err("the API key was rejected (HTTP 401)".into())],
+    );
+    {
+        let a = h.state_mut().as_mut().unwrap();
+        copilot::ask(a, "do something".into());
+    }
+    run_until(&mut h, |a| {
+        !a.copilot.is_working()
+            && a.copilot
+                .messages
+                .iter()
+                .any(|m| m.text.contains("rejected"))
+    });
+    let a = app(&h);
+    assert!(a.copilot.suggestion.is_none());
+    assert!(a
+        .copilot
+        .messages
+        .last()
+        .unwrap()
+        .text
+        .starts_with("That didn't work"));
+}
+
+#[test]
+fn with_no_key_the_local_skills_answer_and_nothing_goes_to_the_network() {
+    if !have_ffmpeg() {
+        return;
+    }
+    // point HOME somewhere empty and clear the env key so this holds on any machine
+    let home = std::env::temp_dir().join(format!("captaine-nokey-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+    let mut h = editor();
+    let a = h.state_mut().as_mut().unwrap();
+    a.selected_clip = first_clip(a);
+    copilot::ask(a, "warm up the colour".into());
+    assert!(
+        a.copilot.suggestion.is_some(),
+        "the local skill answered immediately"
+    );
+    assert!(!a.copilot.is_working());
 }

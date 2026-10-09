@@ -28,3 +28,5 @@ egui = "0.36"
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
 rfd = "0.17"
 cpal = "0.18"
+captaine-agent = { path = "crates/agent" }
+ureq = "3"

@@ -88,3 +88,25 @@ searches this index, then looks at specific frames only when needed.
 
 - An eval suite of real requests on fixture projects (from the codit skills plan), scored on the resulting diff and
   measurements. Run on every change to prompts, skills, tools or models.
+
+## Status (2026-10-09): built
+
+`crates/agent` implements the loop below for the **Edit-on-a-scratch-copy** variant (branches do not exist yet):
+
+- **Tools** (13, in `tools.rs`) wrap the same ops and gestures a person's actions produce: `get_timeline`, `list_media`,
+  `find_silences` (read-only); `split`, `delete_item`, `trim_item`, `move_item`, `add_clip`, `set_clip`, `add_title`,
+  `edit_title`, `remove_silences`, `set_track`. Times are seconds; ids are the short ids shown by `get_timeline`.
+- **The agent never touches the real project.** It edits a scratch `Editor`; everything it did comes back as one
+  `Op::Transaction` the user can preview in the viewer, apply (author `Agent("copilot")`, one undo step) or discard.
+  A follow-up request builds on a still-pending suggestion.
+- **Verification before offering:** the combined ops are applied to the real project once more and refused if they
+  do not apply.
+- **Privacy:** only project structure (names, times, properties) and analysis results (silence ranges) are sent.
+  No pictures, no sound, no file contents. The key comes from `ANTHROPIC_API_KEY` or `~/.captaine/anthropic_key`
+  (mode 600), never from a project file. Model: `claude-sonnet-5-5`, override with `CAPTAINE_MODEL`.
+- **Without a key** the panel falls back to built-in rule-based skills, so it is never dead.
+- **Tests:** a scripted model drives the whole loop (tool errors and recovery, history, pending edits, step limit,
+  cut-off replies); the HTTP transport is tested against a local fake server (headers, 401/429/500, bad JSON);
+  one `#[ignore]`d test talks to the real API.
+- **Not built yet:** transcripts and beat detection (so no "edit by what was said" or "sync to music"), skills as
+  playbooks, evals, working on a real branch (needs `vcs`).

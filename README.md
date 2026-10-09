@@ -58,6 +58,7 @@ cargo run -p captaine-cli -- --help
 | `audio` | Decode, mixer (gain, pan, fades), EBU R128 loudness, waveform peaks |
 | `export` | Render + mix + encode (H.264, HEVC, ProRes); byte-identical across runs |
 | `project` | Project file = settings + operation log, replayed into an `Editor` |
+| `agent` | The Claude co-editor: 13 tools over the ops layer, the agent loop, the Anthropic transport |
 | `app` | **The editor window** (egui): media pool, viewer, inspector, timeline, Copilot |
 | `cli` | `captaine` binary: `init import add split remove lift move trim roll slide slip tidy set track undo redo show log proxy thumbs waveform frame loudness render` |
 

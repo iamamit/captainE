@@ -28,7 +28,7 @@ screenshot above is produced. Qt/QML (docs/10) stays the fallback if egui's text
 | Program viewer: picture, timecode chip, dashed outline of the selected clip's transform, transport, Mark In/Out | Done |
 | Inspector: Transform, Color, Audio, Blend, Metadata | Done and live. Drag a slider and it is one undo step. **Speed** is shown disabled (no speed changes in the engine yet) |
 | Timeline: tracks, clips with waveforms, ruler, playhead, snapping, zoom/scroll, Select/Trim/Blade/Hand/Zoom, Lift, Extract | Done. **Link** and **Markers** are shown disabled |
-| Copilot panel | Panel and flow done; it runs **local skills** (remove silences, warm/cool/brighten/darken/black-and-white, fades) through the same ops as a person. The LLM agent of docs/08 is not connected |
+| Copilot panel | **Done, two modes.** With an Anthropic API key (paste it in the panel, or set `ANTHROPIC_API_KEY`) it is the Claude agent of docs/08: free-form requests, live tool progress, one suggestion to Preview / Apply / Discard, follow-ups that build on it. Without a key it runs built-in local skills (remove silences, colour, fades) so it still works offline. Not tried against the live API from this machine (no key here); the loop is tested end to end with a scripted model |
 | Title clips (the purple "Lower Third" in the mockup) | **Done.** Lower Third, Centered and Caption templates; Titles tab, inspector (text, size, colours, fades, transform), move/trim/cut like clips, burned into exports |
 | Keyframe diamonds in the inspector | Not built (no keyframes in the engine yet) |
 
