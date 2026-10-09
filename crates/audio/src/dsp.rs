@@ -209,7 +209,7 @@ const N: usize = 2048;
 const HOP: usize = N / 4;
 
 /// In-place iterative radix-2 FFT.
-fn fft(re: &mut [f32], im: &mut [f32], inverse: bool) {
+pub(crate) fn fft(re: &mut [f32], im: &mut [f32], inverse: bool) {
     let n = re.len();
     let mut j = 0;
     for i in 1..n {

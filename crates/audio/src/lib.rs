@@ -8,6 +8,7 @@ mod decode;
 mod dsp;
 mod loudness;
 mod mixer;
+mod sync;
 mod waveform;
 
 pub use analyze::{find_silences, silences_in};
@@ -15,4 +16,5 @@ pub use decode::{decode_pcm, AudioError};
 pub use dsp::apply_audio_effects;
 pub use loudness::{measure, Loudness};
 pub use mixer::Mixer;
+pub use sync::{find_offset, Alignment};
 pub use waveform::{media_peaks, peaks, Peak};

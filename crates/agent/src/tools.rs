@@ -323,6 +323,8 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "sync_by_audio" => self.sync_tool(input),
+            "multicam_cut" => self.multicam_tool(input),
             "auto_color" => self.auto_color_tool(input),
             "match_color" => self.match_color_tool(input),
             "stabilize" => self.stabilize_tool(input),
@@ -1076,6 +1078,76 @@ impl ToolBox {
         Ok(json!({"ok": true, "exposure": r2(color.exposure), "contrast": r2(color.contrast), "saturation": r2(color.saturation), "temperature_k": color.temperature.round()}).to_string())
     }
 
+    fn sync_tool(&mut self, input: &Value) -> R {
+        let ids: Vec<&str> = input
+            .get("item_ids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if ids.len() < 2 {
+            return Err(
+                "give at least two clips: the first is the one the others line up with".into(),
+            );
+        }
+        let (first, fm, first_start) = self.clip_with_media(ids[0])?;
+        let fps = self.fps();
+        let mut moved = Vec::new();
+        for key in &ids[1..] {
+            let (c, m, _) = self.clip_with_media(key)?;
+            let (_, track, current) = self.find_item(key)?;
+            let window = (first.duration.value.min(c.duration.value) as f64 / fps).clamp(2.0, 40.0);
+            let al = captaine_audio::find_offset(
+                &fm.path,
+                first.source_start.to_seconds_f64(),
+                &m.path,
+                c.source_start.to_seconds_f64(),
+                window,
+                30.0,
+            )
+            .map_err(|e| e.to_string())?;
+            if al.confidence < 3.5 {
+                moved.push(json!({"clip": c.name, "moved": false, "reason": "no clear match in the sound"}));
+                continue;
+            }
+            let new_start = (first_start + (al.offset_secs * fps).round() as i64).max(0);
+            if new_start != current {
+                let at = RationalTime::new(new_start, self.rate());
+                self.plan(|p| edit::move_item(p, c.id, track, at))?;
+            }
+            moved.push(json!({"clip": c.name, "moved": new_start != current, "to_sec": r2(self.secs(new_start)), "confidence": r2(al.confidence)}));
+        }
+        Ok(json!({"ok": true, "clips": moved}).to_string())
+    }
+
+    fn multicam_tool(&mut self, input: &Value) -> R {
+        let names: Vec<String> = input
+            .get("angle_tracks")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if names.len() < 2 {
+            return Err(
+                "angle_tracks lists the track names of the camera angles, at least two".into(),
+            );
+        }
+        let mut angles = Vec::new();
+        for n in &names {
+            angles.push(self.find_track(n)?.id);
+        }
+        let angle = req_num(input, "angle")? as usize;
+        if angle == 0 || angle > angles.len() {
+            return Err(format!("angle is 1 to {}", angles.len()));
+        }
+        let at = self.time(req_num(input, "at_sec")?);
+        self.plan(|p| edit::multicam_cut(p, &angles, angle - 1, at))?;
+        Ok(json!({"ok": true, "now_showing": names[angle - 1]}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1288,6 +1360,8 @@ pub fn tool_definitions() -> Value {
         {"name": "stabilize", "description": "Steady shaky handheld footage: the part of the file the clip plays is analysed and re-rendered smoothed (a new, slightly zoomed copy of that stretch is made and the clip is pointed at it). smoothing is how many frames the camera path is averaged over (default 15; 30 for a walking shot). Takes about real time.", "input_schema": obj(json!({"item_id": item, "smoothing": {"type": "number"}}), &["item_id"])},
         {"name": "auto_color", "description": "Measure a few frames of a clip and set its exposure, contrast, saturation and colour temperature to a balanced look (fixes under- or over-exposure, a colour cast and flat colour; a gentle move, not a style). Replaces the clip's basic colour settings.", "input_schema": obj(json!({"item_id": item}), &["item_id"])},
         {"name": "match_color", "description": "Make a clip look like another one (same brightness, colour balance and colour) by setting its basic colour settings from a comparison of frames of both. item_id is the clip to change, reference_id the one to match.", "input_schema": obj(json!({"item_id": item, "reference_id": item}), &["item_id", "reference_id"])},
+        {"name": "sync_by_audio", "description": "Line up clips shot of the same event by their sound. The first clip stays; the others are moved in time so their sound matches it. Clips with no clear match are left alone and reported.", "input_schema": obj(json!({"item_ids": {"type": "array", "items": {"type": "string"}}}), &["item_ids"])},
+        {"name": "multicam_cut", "description": "Multicam switching: cut every camera-angle track at a time and show only one angle from there on. angle_tracks are the track names in angle order; angle is 1-based. Call it once at the start (angle 1 at the first clip's time) and then at each switch.", "input_schema": obj(json!({"angle_tracks": {"type": "array", "items": {"type": "string"}}, "angle": {"type": "number"}, "at_sec": {"type": "number"}}), &["angle_tracks", "angle", "at_sec"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

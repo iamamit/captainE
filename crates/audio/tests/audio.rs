@@ -716,3 +716,109 @@ fn mix_of(f: &Fx, tl: Id) -> Vec<f32> {
     let n = m.total_samples() as usize;
     m.render(0, n).unwrap()
 }
+
+#[test]
+fn recordings_of_one_event_are_lined_up_by_their_sound() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let dir = scratch("sync-src.wav");
+    // 30 s of gated noise: bursts at irregular times, a signature no other stretch shares
+    let gate = "if(gt(sin(t*3.1)+sin(t*7.3)+sin(t*1.7)+sin(t*0.53)\\,1.1)\\,1\\,0.04)";
+    let src = format!("anoisesrc=d=30:c=white:a=0.6:s=7,volume='{gate}':eval=frame");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &src,
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_s16le"
+        ])
+        .arg(&dir)
+        .status()
+        .unwrap()
+        .success());
+    let cut = |name: &str, from: f64, noise: f64| {
+        let out = scratch(name);
+        let filter = format!("[0:a]atrim=start={from}:duration=22,asetpts=PTS-STARTPTS[x];anoisesrc=d=22:c=pink:a={noise}:s=3[n];[x][n]amix=inputs=2:normalize=0");
+        assert!(Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-i"])
+            .arg(&dir)
+            .args([
+                "-filter_complex",
+                &filter,
+                "-ar",
+                "48000",
+                "-c:a",
+                "pcm_s16le"
+            ])
+            .arg(&out)
+            .status()
+            .unwrap()
+            .success());
+        out
+    };
+    let a = cut("sync-a.wav", 0.0, 0.01);
+    let b = cut("sync-b.wav", 2.37, 0.05); // started 2.37 s into the action, and with more background noise
+    let al = find_offset(
+        a.to_str().unwrap(),
+        0.0,
+        b.to_str().unwrap(),
+        0.0,
+        18.0,
+        10.0,
+    )
+    .unwrap();
+    assert!(
+        (al.offset_secs - 2.37).abs() < 0.02,
+        "b has to move 2.37 s later: {al:?}"
+    );
+    assert!(al.confidence > 4.0, "{al:?}");
+    // the other way round, the sign flips
+    let back = find_offset(
+        b.to_str().unwrap(),
+        0.0,
+        a.to_str().unwrap(),
+        0.0,
+        18.0,
+        10.0,
+    )
+    .unwrap();
+    assert!((back.offset_secs + 2.37).abs() < 0.02, "{back:?}");
+    // unrelated sound is a weak match
+    let other = scratch("sync-other.wav");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=d=22:c=brown:a=0.4:s=99",
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_s16le"
+        ])
+        .arg(&other)
+        .status()
+        .unwrap()
+        .success());
+    let weak = find_offset(
+        a.to_str().unwrap(),
+        0.0,
+        other.to_str().unwrap(),
+        0.0,
+        18.0,
+        10.0,
+    )
+    .unwrap();
+    assert!(weak.confidence < al.confidence * 0.8, "{weak:?} vs {al:?}");
+}

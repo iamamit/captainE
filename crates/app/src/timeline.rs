@@ -70,6 +70,17 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.snap = !app.snap;
                 }
+                if let Some(mc) = app.multicam.as_ref().map(|m| m.angles.len()) {
+                    ui.label(RichText::new("Multicam").size(12.0).color(theme::ACCENT));
+                    for k in 0..mc {
+                        if chip(ui, &format!("Cut to {}", k + 1), false, true).clicked() {
+                            app.multicam_cut(k, None);
+                        }
+                    }
+                    if chip(ui, "Done", false, true).clicked() {
+                        app.end_multicam();
+                    }
+                }
                 if toggle_text(ui, "Link", app.link_on, true)
                     .on_hover_text("Linked clips are selected and edited together")
                     .clicked()

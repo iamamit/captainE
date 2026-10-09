@@ -199,6 +199,46 @@ pub fn insert_item(project: &Project, track: Id, at: RationalTime, item: Item) -
     Ok(pl.finish("Insert"))
 }
 
+/// Multicam: cut every angle track at `at` and show only angle `chosen` from there on (the other angles'
+/// pieces are switched off). `angles` are the tracks holding the camera angles, in angle order.
+pub fn multicam_cut(
+    project: &Project,
+    angles: &[Id],
+    chosen: usize,
+    at: RationalTime,
+) -> Result<Op> {
+    let Some(&keep) = angles.get(chosen) else {
+        return Err(OpError::OutOfRange("there is no such camera angle"));
+    };
+    let mut pl = Planner::new(project);
+    let (rate, _) = pl.track(keep)?;
+    if at.rate != rate {
+        return Err(OpError::BadDuration(keep));
+    }
+    for a in angles {
+        pl.ensure_cut(*a, at.value)?;
+    }
+    // the piece that starts at the cut on each angle: on for the chosen one, off for the rest
+    for a in angles {
+        let (_, t) = pl.track(*a)?;
+        let starts = t.item_starts();
+        let hit = t
+            .items
+            .iter()
+            .zip(&starts)
+            .find(|(it, st)| **st == at.value && it.is_content())
+            .map(|(it, _)| it.id());
+        if let Some(item) = hit {
+            let enabled = *a == keep;
+            pl.push(Op::SetEnabled { item, enabled })?;
+        }
+    }
+    if pl.ops.is_empty() {
+        return Err(OpError::OutOfRange("no angle has a clip at this time"));
+    }
+    Ok(pl.finish("Multicam cut"))
+}
+
 /// Append at the end of the track.
 pub fn append(project: &Project, track: Id, clip: Clip) -> Op {
     let index = project

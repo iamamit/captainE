@@ -1575,3 +1575,77 @@ fn auto_color_and_match_color_from_the_inspector() {
         "the reference is untouched"
     );
 }
+
+#[test]
+fn multicam_switches_angles_with_the_number_keys() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    // the same clip as two "cameras": V1 already has a, b, c; put a copy of a on V2
+    let a_media = app(&h)
+        .project()
+        .media
+        .values()
+        .find(|m| m.name == "a.mp4")
+        .unwrap()
+        .id;
+    let v2 = track_named(app(&h), "V2").id;
+    app_mut(&mut h).place_media(a_media, Some(v2), Some(0));
+    settle(&mut h);
+    let cam1 = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    let cam2 = track_named_clips(app(&h), "V2")[0].id;
+    app_mut(&mut h).select_only(&[cam1, cam2]);
+    app_mut(&mut h).start_multicam();
+    settle(&mut h);
+    assert!(app(&h).multicam.is_some());
+    let enabled = |a: &App, track: &str, at: i64| -> Option<bool> {
+        let t = track_named(a, track);
+        t.items
+            .iter()
+            .zip(t.item_starts())
+            .find(|(_, s)| *s == at)
+            .and_then(|(i, _)| i.as_clip().map(|c| c.enabled))
+    };
+    assert_eq!(
+        (enabled(app(&h), "V1", 0), enabled(app(&h), "V2", 0)),
+        (Some(true), Some(false)),
+        "starts on angle 1"
+    );
+    // cut to angle 2 at 1 s, back to 1 at 2 s
+    app_mut(&mut h).playhead = 24;
+    h.key_press(Key::Num2);
+    settle(&mut h);
+    app_mut(&mut h).playhead = 48;
+    h.key_press(Key::Num1);
+    settle(&mut h);
+    assert_eq!(
+        (enabled(app(&h), "V1", 24), enabled(app(&h), "V2", 24)),
+        (Some(false), Some(true))
+    );
+    assert_eq!(
+        (enabled(app(&h), "V1", 48), enabled(app(&h), "V2", 48)),
+        (Some(true), Some(false))
+    );
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(app(&h).multicam.is_none());
+    // clips that already line up are left exactly as they are (no empty undo step)
+    let before = app(&h).project().clone();
+    app_mut(&mut h).select_only(&[cam1, cam2]);
+    app_mut(&mut h).sync_selected_by_audio();
+    assert_eq!(app(&h).project(), &before);
+    // each cut is one undo step: the two cuts, then the start
+    let log = app(&h).session.editor.history().len();
+    app_mut(&mut h).undo();
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(
+        enabled(app(&h), "V1", 24),
+        None,
+        "the cuts are gone ({log})"
+    );
+}

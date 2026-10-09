@@ -201,6 +201,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Multicam switching in progress
+    pub multicam: Option<crate::multicam::Multicam>,
     /// Background jobs that need Apple's Vision framework
     pub vision_jobs: Vec<crate::vision_jobs::VisionJob>,
     /// Length of the in and out animations of titles, seconds
@@ -297,6 +299,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            multicam: None,
             vision_jobs: Vec::new(),
             preset_secs: 0.6,
             link_on: true,

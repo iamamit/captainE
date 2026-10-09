@@ -976,6 +976,27 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     }
     let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
     let none = Modifiers::NONE;
+    if app.multicam.is_some() {
+        let keys = [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+        ];
+        for (i, k) in keys.into_iter().enumerate() {
+            if pressed(none, k) {
+                app.multicam_cut(i, None);
+            }
+        }
+        if pressed(none, Key::Escape) {
+            app.end_multicam();
+        }
+    }
     if app.source.open {
         // the source monitor has its own marks and its own frame stepping
         if pressed(none, Key::I) {

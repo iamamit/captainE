@@ -507,3 +507,70 @@ fn insert_ripples_and_cuts_what_is_under_it() {
         ]
     );
 }
+
+#[test]
+fn multicam_cuts_switch_between_angles_and_undo_as_one_step() {
+    let mut ed = editor();
+    // three cameras on three tracks, all rolling for 90 frames from time zero
+    let mut tl = ed
+        .project()
+        .timelines
+        .values()
+        .next()
+        .unwrap()
+        .as_ref()
+        .clone();
+    tl.tracks.push(std::sync::Arc::new(Track::new(
+        id(5),
+        "V3",
+        TrackKind::Video,
+    )));
+    let tlid = tl.id;
+    ed.apply(Author::User, Op::RemoveTimeline { id: tlid })
+        .unwrap();
+    ed.apply(Author::User, Op::AddTimeline { timeline: tl })
+        .unwrap();
+    for (i, track) in [V1, V2, 5].into_iter().enumerate() {
+        put(&mut ed, track, clip(20 + i as u128, 0, 90));
+    }
+    let angles = [id(V1), id(V2), id(5)];
+    let before = ed.snapshot();
+    // start on camera 1, cut to camera 2 at frame 30, camera 3 at 60, back to camera 1 at 75
+    for (chosen, at) in [(0usize, 0i64), (1, 30), (2, 60), (0, 75)] {
+        run(&mut ed, |p| edit::multicam_cut(p, &angles, chosen, t(at)));
+    }
+    // each track is now four pieces; exactly one angle is on in each stretch
+    let on = |track: u128, start: i64| -> bool {
+        let (tl, ti) = ed.project().find_track(id(track)).unwrap();
+        let tr = &ed.project().timeline(tl).unwrap().tracks[ti];
+        tr.items
+            .iter()
+            .zip(tr.item_starts())
+            .find(|(_, s)| *s == start)
+            .and_then(|(i, _)| i.as_clip().map(|c| c.enabled))
+            .unwrap()
+    };
+    for track in [V1, V2, 5] {
+        let (tl, ti) = ed.project().find_track(id(track)).unwrap();
+        assert_eq!(
+            ed.project().timeline(tl).unwrap().tracks[ti].items.len(),
+            4,
+            "cut at 30, 60 and 75"
+        );
+    }
+    for (start, who) in [(0, V1), (30, V2), (60, 5), (75, V1)] {
+        for track in [V1, V2, 5] {
+            assert_eq!(on(track, start), track == who, "track {track} at {start}");
+        }
+    }
+    // the picture never leaves a hole and the sources run on unbroken
+    assert_eq!(clip_at(&ed, V2, 30).source_start, t(30));
+    ed.project().validate().unwrap();
+    // an angle that does not exist, and a time past the end
+    assert!(edit::multicam_cut(ed.project(), &angles, 7, t(10)).is_err());
+    assert!(edit::multicam_cut(ed.project(), &angles, 0, t(500)).is_err());
+    for _ in 0..4 {
+        assert!(ed.undo());
+    }
+    assert_eq!(ed.project(), &before);
+}
