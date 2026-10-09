@@ -19,7 +19,7 @@ pub fn split_at_scenes(
     let speed = if clip.retime.freeze {
         return Err("a frozen clip has no scenes".into());
     } else {
-        clip.retime.speed
+        clip.retime.mean_speed()
     };
     let span = clip.source_span() as f64 / clip.source_start.rate.as_f64();
     let found = captaine_media::detect_scenes(&media.path, src, span, threshold)

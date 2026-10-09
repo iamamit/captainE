@@ -142,7 +142,7 @@ impl Mixer {
                     len: e - s,
                     src_secs: c.source_start.to_seconds_f64(),
                     span_secs: c.source_span() as f64 / c.source_start.rate.as_f64(),
-                    speed: c.retime.speed,
+                    speed: c.retime.mean_speed(),
                     reverse: c.retime.reverse,
                     gain_db: c.audio.gain_db,
                     track_db: track.gain_db,
@@ -182,7 +182,8 @@ impl Mixer {
                                 to_samples(start) - to_samples(start - d / 2),
                                 to_samples(start + (d - d / 2)) - to_samples(start),
                             );
-                            let simple = |x: &Clip| !x.retime.reverse && x.retime.speed == 1.0;
+                            let simple =
+                                |x: &Clip| !x.retime.reverse && x.retime.mean_speed() == 1.0;
                             if d >= 2 && simple(c) && simple(pclip) {
                                 // the incoming clip can only start earlier if its source has room
                                 let room = (clips[this].src_secs * sr as f64).floor() as i64;

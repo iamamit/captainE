@@ -63,6 +63,7 @@ fn retime(item: u128, speed: f64, reverse: bool, freeze: bool) -> Op {
             speed,
             reverse,
             freeze,
+            ramp_to: 0.0,
         },
     }
 }
@@ -177,6 +178,7 @@ fn fuzz_retime_with_cuts_trims_and_undo() {
                         speed: [0.25, 0.5, 1.0, 1.5, 2.0, 4.0][rng.below(6)],
                         reverse: rng.below(2) == 0,
                         freeze: rng.below(6) == 0,
+                        ramp_to: 0.0,
                     },
                 },
                 2 => Op::Split {
@@ -220,4 +222,82 @@ fn fuzz_retime_with_cuts_trims_and_undo() {
             assert_eq!(ed.project(), expected, "seed {seed}: redo mismatch");
         }
     }
+}
+
+#[test]
+fn a_speed_ramp_covers_the_source_in_a_straight_line_and_undoes() {
+    let mut ed = editor();
+    let before = ed.snapshot();
+    // 96 frames of source ramped from 50% to 150% speed: mean 1.0, so the clip keeps its length
+    let op = |s: f64, r: f64| Op::SetRetime {
+        item: id(10),
+        retime: Retime {
+            speed: s,
+            ramp_to: r,
+            ..Retime::default()
+        },
+    };
+    ed.apply(Author::User, op(0.5, 1.5)).unwrap();
+    let c = clips(&ed)[0].clone();
+    assert_eq!((c.duration.value, c.source_span()), (96, 96));
+    // slow start, fast finish: the first quarter covers far less than a quarter of the source
+    let (q1, q2, q3) = (
+        c.source_frame_at(24),
+        c.source_frame_at(48),
+        c.source_frame_at(72),
+    );
+    assert!(
+        q1 - 100 < 24 && q2 - 100 < 48 && q3 - 100 < 72,
+        "{q1} {q2} {q3}"
+    );
+    assert_eq!(q2 - 100, 36, "0.5*48 + 1.0*48*48/(2*96)");
+    // the speed never goes backwards and every source frame stays inside the window
+    let mut last = c.source_frame_at(0);
+    for l in 1..96 {
+        let f = c.source_frame_at(l);
+        assert!(f >= last && f < 100 + 96);
+        last = f;
+    }
+    // a steeper ramp changes the length: 100% -> 300% averages 200%
+    ed.apply(Author::User, op(1.0, 3.0)).unwrap();
+    assert_eq!(clips(&ed)[0].duration.value, 48);
+    // bad ramp end is refused
+    assert!(ed.apply(Author::User, op(1.0, 80.0)).is_err());
+    assert!(ed.apply(Author::User, op(1.0, f64::NAN)).is_err());
+    ed.undo();
+    ed.undo();
+    assert_eq!(ed.project(), &before);
+}
+
+#[test]
+fn a_ramped_clip_cannot_be_cut_or_trimmed_until_the_ramp_is_removed() {
+    let mut ed = editor();
+    ed.apply(
+        Author::User,
+        Op::SetRetime {
+            item: id(10),
+            retime: Retime {
+                speed: 0.5,
+                ramp_to: 2.0,
+                ..Retime::default()
+            },
+        },
+    )
+    .unwrap();
+    let split = Op::Split {
+        item: id(10),
+        at: t(20),
+        new_id: id(99),
+    };
+    assert!(ed.apply(Author::User, split.clone()).is_err());
+    let trim = Op::Trim {
+        item: id(10),
+        edge: Edge::Out,
+        delta: t(-5),
+    };
+    assert!(ed.apply(Author::User, trim.clone()).is_err());
+    ed.apply(Author::User, retime(10, 1.0, false, false))
+        .unwrap();
+    ed.apply(Author::User, split).unwrap();
+    ed.apply(Author::User, trim).unwrap();
 }

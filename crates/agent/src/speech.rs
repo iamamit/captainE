@@ -21,7 +21,7 @@ pub fn clip_transcript(
     let src = clip.source_start.to_seconds_f64();
     let span = clip.source_span() as f64 / clip.source_start.rate.as_f64();
     let mut segs = captaine_speech::transcribe(&media.path, src, span, language)?;
-    let speed = clip.retime.speed;
+    let speed = clip.retime.mean_speed();
     if speed != 1.0 {
         for s in &mut segs {
             s.start /= speed;

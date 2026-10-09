@@ -63,9 +63,10 @@ pub fn export(project: &Project, timeline: Id, drop_frame: bool) -> Result<Strin
                     tc(start, rate, drop),
                     tc(start + c.duration.value, rate, drop),
                 );
-                if c.retime.speed != 1.0 && !c.retime.freeze {
-                    let fps =
-                        rate.as_f64() * c.retime.speed * if c.retime.reverse { -1.0 } else { 1.0 };
+                if c.retime.mean_speed() != 1.0 && !c.retime.freeze {
+                    let fps = rate.as_f64()
+                        * c.retime.mean_speed()
+                        * if c.retime.reverse { -1.0 } else { 1.0 };
                     out += &format!(
                         "M2   {r:<8} {fps:>7.1}                {}\n",
                         tc(s_in, rate, drop)
@@ -214,6 +215,7 @@ pub fn import(project: &Project, timeline: Id, text: &str) -> Result<Vec<Op>, St
                 speed: sp.abs(),
                 reverse: sp < 0.0,
                 freeze: false,
+                ..Retime::default()
             };
         }
         let _ = e.src_out;

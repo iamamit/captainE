@@ -2425,6 +2425,37 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     if sp.done {
         app.end_merge();
     }
+    let mut ramp = rt.ramp_to * 100.0;
+    let rp = slider_row(
+        ui,
+        "Ramp to",
+        &mut ramp,
+        0.0..=400.0,
+        0.0,
+        0,
+        "%",
+        has_video && !rt.freeze,
+    );
+    if rp.changed {
+        // 0 is "no ramp"; anything else is clamped to the same range as Speed
+        let end = if ramp < 5.0 { 0.0 } else { ramp / 100.0 };
+        let to = Retime {
+            ramp_to: end.min(Retime::MAX_SPEED),
+            ..rt
+        };
+        if to != clip.retime {
+            app.do_merging(
+                Op::SetRetime {
+                    item: clip.id,
+                    retime: to,
+                },
+                &format!("r:{key}"),
+            );
+        }
+    }
+    if rp.done {
+        app.end_merge();
+    }
     ui.horizontal(|ui| {
         if chip(ui, "Reverse", rt.reverse, !rt.freeze).clicked() {
             rt.reverse = !rt.reverse;

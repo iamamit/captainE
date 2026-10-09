@@ -37,9 +37,10 @@ fn sample(clip: &Clip, media: &MediaRef) -> Result<(Scratch, usize), String> {
 /// Timeline ticks into the clip at which sample `i` is shown.
 fn tick_of(clip: &Clip, i: usize, fps: f64) -> i64 {
     let src_secs = i as f64 / SAMPLE_FPS;
-    let secs = src_secs / clip.retime.speed;
+    let secs = src_secs / clip.retime.mean_speed();
     let secs = if clip.retime.backwards() {
-        clip.source_span() as f64 / clip.source_start.rate.as_f64() / clip.retime.speed - secs
+        clip.source_span() as f64 / clip.source_start.rate.as_f64() / clip.retime.mean_speed()
+            - secs
     } else {
         secs
     };

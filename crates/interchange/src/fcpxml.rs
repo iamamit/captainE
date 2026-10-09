@@ -85,7 +85,7 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
             t(c.duration.value, rate),
             if c.enabled { "" } else { " enabled=\"0\"" },
         );
-        if c.retime.speed != 1.0 && !c.retime.freeze {
+        if c.retime.mean_speed() != 1.0 && !c.retime.freeze {
             s += &format!(">\n{indent}  <timeMap><timept time=\"0s\" value=\"0s\" interp=\"linear\"/><timept time=\"{}\" value=\"{}\" interp=\"linear\"/></timeMap>\n{indent}</asset-clip>\n",
                 t(c.duration.value, rate), t(c.source_span(), src_rate));
         } else {

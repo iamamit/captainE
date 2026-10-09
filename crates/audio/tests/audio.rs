@@ -444,6 +444,7 @@ fn speed_reverse_and_freeze_reach_the_mix() {
                     speed,
                     reverse,
                     freeze,
+                    ramp_to: 0.0,
                 },
             },
         )

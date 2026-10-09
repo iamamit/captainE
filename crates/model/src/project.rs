@@ -300,6 +300,9 @@ pub struct Retime {
     pub reverse: bool,
     #[serde(default)]
     pub freeze: bool,
+    /// Speed at the end of the clip for a speed ramp (a straight change from `speed`); 0: no ramp.
+    #[serde(default)]
+    pub ramp_to: f64,
 }
 
 impl Default for Retime {
@@ -308,11 +311,21 @@ impl Default for Retime {
             speed: 1.0,
             reverse: false,
             freeze: false,
+            ramp_to: 0.0,
         }
     }
 }
 
 impl Retime {
+    /// The speed the clip averages over its whole length (equal to `speed` without a ramp).
+    pub fn mean_speed(&self) -> f64 {
+        if self.ramp_to > 0.0 {
+            (self.speed + self.ramp_to) / 2.0
+        } else {
+            self.speed
+        }
+    }
+
     pub const MIN_SPEED: f64 = 0.05;
     pub const MAX_SPEED: f64 = 20.0;
 
@@ -336,12 +349,21 @@ impl Clip {
         let tl = self.duration.rate;
         let src = self.source_start.rate;
         let mode = if up { Rounding::Ceil } else { Rounding::Floor };
-        if self.retime.speed == 1.0 {
+        if self.retime.speed == 1.0 && self.retime.ramp_to == 0.0 {
             return RationalTime::new(ticks, tl)
                 .rescale(src, mode)
                 .map_or(0, |t| t.value);
         }
-        let x = ticks as f64 * self.retime.speed * src.as_f64() / tl.as_f64();
+        let per_tick = src.as_f64() / tl.as_f64();
+        let x = if self.retime.ramp_to > 0.0 {
+            // speed changes in a straight line over the clip: the source covered is the area under it
+            let d = self.duration.value.max(1) as f64;
+            let t = ticks as f64;
+            (self.retime.speed * t + (self.retime.ramp_to - self.retime.speed) * t * t / (2.0 * d))
+                * per_tick
+        } else {
+            ticks as f64 * self.retime.speed * per_tick
+        };
         (if up { x.ceil() } else { x.floor() }) as i64
     }
 
@@ -467,6 +489,10 @@ impl Clip {
         let sp = self.retime.speed;
         if !sp.is_finite() || !(Retime::MIN_SPEED..=Retime::MAX_SPEED).contains(&sp) {
             return Err("speed must be between 5% and 2000%");
+        }
+        let r = self.retime.ramp_to;
+        if r != 0.0 && (!r.is_finite() || !(Retime::MIN_SPEED..=Retime::MAX_SPEED).contains(&r)) {
+            return Err("the speed to ramp to must be between 5% and 2000%");
         }
         check_anim(&self.anim, true)
     }

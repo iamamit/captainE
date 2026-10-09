@@ -47,13 +47,13 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
                         }));
                     }
                     let mut effects = Vec::new();
-                    if c.retime.speed != 1.0 || c.retime.reverse || c.retime.freeze {
+                    if c.retime.mean_speed() != 1.0 || c.retime.reverse || c.retime.freeze {
                         let scalar = if c.retime.freeze {
                             0.0
                         } else if c.retime.reverse {
-                            -c.retime.speed
+                            -c.retime.mean_speed()
                         } else {
-                            c.retime.speed
+                            c.retime.mean_speed()
                         };
                         effects.push(json!({
                             "OTIO_SCHEMA": if c.retime.freeze { "FreezeFrame.1" } else { "LinearTimeWarp.1" },

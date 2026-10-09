@@ -6,6 +6,16 @@ use captaine_time::{Rational, RationalTime};
 
 use crate::{Edge, Op};
 
+/// A speed ramp is spread over the whole clip, so cutting or trimming it would change the speeds.
+fn ramp_guard(item: &Item) -> Result<()> {
+    match item {
+        Item::Clip(c) if c.retime.ramp_to > 0.0 => Err(OpError::BadProps(
+            "remove the speed ramp before cutting or trimming this clip",
+        )),
+        _ => Ok(()),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpError {
     NotFound(&'static str, Id),
@@ -356,6 +366,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             if at.rate != rate || at.value <= 0 || at.value >= old.duration().value {
                 return Err(OpError::OutOfRange("split point must be inside the item"));
             }
+            ramp_guard(&old)?;
             let rest = RationalTime::new(old.duration().value - at.value, rate);
             let (left, right) = match &old {
                 Item::Clip(c) => {
@@ -592,6 +603,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 return Err(OpError::BadDuration(*item));
             }
             let old = p.item(loc).expect("located").clone();
+            ramp_guard(&old)?;
             let (new, inverse) = match (&old, edge) {
                 (Item::Clip(c), _) => {
                     let duration = match edge {
@@ -873,7 +885,9 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let mut ticks = if keep {
                 c.duration.value
             } else {
-                ((c.duration.value as f64 * c.retime.speed / retime.speed).round() as i64).max(1)
+                ((c.duration.value as f64 * c.retime.mean_speed() / retime.mean_speed()).round()
+                    as i64)
+                    .max(1)
             };
             let new = loop {
                 let (fi, fo) = fit_fades(c.audio.fade_in, c.audio.fade_out, ticks);
