@@ -33,9 +33,9 @@ v11	Video	Adjustment layers	3	0
 v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.25	
 v13	Video	AI background removal / rotoscoping	3	0	
 c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.5	4 controls
-c02	Color	Wheels, curves, HSL	4	0	
-c03	Color	Scopes (waveform, vectorscope, histogram)	3	0	
-c04	Color	LUTs	3	0	
+c02	Color	Wheels, curves, HSL	4	0.5	lift/gamma/gain wheels, 4-curve editor, 6-band HSL as slider effects; no graphical wheels/curve drag, no secondaries/qualifiers
+c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, vectorscope, histogram over the viewer; fixed size
+c04	Color	LUTs	3	0.5	.cube 3D LUT with strength per clip; no 1D LUTs, no LUT browser
 c05	Color	Auto color and shot matching	2	0	
 a01	Audio	Gain, pan, fades, mute, waveforms	4	1	
 a02	Audio	Mixer panel with track faders and live meters	4	0	

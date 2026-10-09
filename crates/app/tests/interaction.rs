@@ -723,3 +723,34 @@ fn adding_and_removing_an_effect_in_the_inspector() {
     settle(&mut h);
     assert!(first(app(&h)).effects.is_empty());
 }
+
+#[test]
+fn the_scopes_panel_draws_from_the_picture_on_screen() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).playhead = 5;
+    h.get_by_label("Scopes").click();
+    for _ in 0..200 {
+        h.step();
+        if app(&h).scope_tex.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(app(&h).scopes_open);
+    assert!(
+        app(&h).scope_tex.is_some(),
+        "a scope picture was made from the frame"
+    );
+    h.get_by_label("Vectorscope").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h).scope_kind,
+        captaine_app::scopes::ScopeKind::Vectorscope
+    );
+    h.get_by_label("Scopes").click();
+    settle(&mut h);
+    assert!(!app(&h).scopes_open);
+}

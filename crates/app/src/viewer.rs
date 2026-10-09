@@ -38,13 +38,32 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
                 theme::MUTED,
             );
 
+            let btn = Rect::from_min_size(
+                pos2(head.right() - 232.0, head.top() + 3.0),
+                vec2(80.0, 24.0),
+            );
+            let toggled = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(btn), |ui| {
+                    chip(ui, "Scopes", app.scopes_open, true).clicked()
+                })
+                .inner;
+            if toggled {
+                app.scopes_open = !app.scopes_open;
+                app.scope_dirty = true;
+                app.scope_src = None;
+                app.last_requested = None; // draw the current frame again so there is something to read
+            }
+
             let transport_h = 70.0;
             let area = Rect::from_min_max(
                 pos2(full.left(), head.bottom()),
                 pos2(full.right(), full.bottom() - transport_h),
             )
             .shrink(18.0);
-            let (cw, ch) = (s.width as f32, s.height as f32);
+            let (cw, ch) = (
+                app.project().settings.width as f32,
+                app.project().settings.height as f32,
+            );
             let scale = (area.width() / cw).min(area.height() / ch).max(0.01);
             let pic = Rect::from_center_size(area.center(), vec2(cw * scale, ch * scale));
             let p = ui.painter();
@@ -90,6 +109,12 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
                     ui_font(11.5),
                     Color32::WHITE,
                 );
+            }
+            if app.scopes_open {
+                if app.scope_dirty {
+                    app.refresh_scope(ui.ctx());
+                }
+                scopes_panel(app, ui, pic);
             }
             transport(
                 app,
@@ -226,4 +251,36 @@ fn transport(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
         },
     );
     let _ = Sense::hover();
+}
+
+/// The scopes panel, floating at the top right of the picture.
+fn scopes_panel(app: &mut App, ui: &mut egui::Ui, pic: Rect) {
+    let size = vec2(270.0, 270.0 + 34.0);
+    let r = Rect::from_min_size(pic.right_top() + vec2(-size.x - 12.0, 12.0), size);
+    ui.painter()
+        .rect_filled(r, 6.0, Color32::from_rgba_unmultiplied(14, 14, 18, 235));
+    let tabs = Rect::from_min_size(r.min + vec2(6.0, 4.0), vec2(r.width() - 12.0, 26.0));
+    let mut picked = None;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tabs));
+    child.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for k in crate::scopes::ScopeKind::ALL {
+            if chip(ui, k.label(), app.scope_kind == k, true).clicked() {
+                picked = Some(k);
+            }
+        }
+    });
+    if let Some(k) = picked {
+        app.scope_kind = k;
+        app.scope_dirty = true;
+    }
+    let img = Rect::from_min_size(r.min + vec2(7.0, 34.0), vec2(256.0, 256.0));
+    if let Some(t) = &app.scope_tex {
+        ui.painter().image(
+            t.id(),
+            img,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
 }

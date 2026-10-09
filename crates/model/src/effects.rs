@@ -13,6 +13,10 @@ pub enum EffectKind {
     Crop,
     ChromaKey,
     Pixelate,
+    ColorWheels,
+    Curves,
+    Hsl,
+    Lut,
 }
 
 pub struct ParamDef {
@@ -34,7 +38,7 @@ const fn p(name: &'static str, min: f64, max: f64, default: f64, decimals: usize
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 7] = [
+    pub const ALL: [EffectKind; 11] = [
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::Vignette,
@@ -42,6 +46,10 @@ impl EffectKind {
         EffectKind::Crop,
         EffectKind::ChromaKey,
         EffectKind::Pixelate,
+        EffectKind::ColorWheels,
+        EffectKind::Curves,
+        EffectKind::Hsl,
+        EffectKind::Lut,
     ];
 
     pub fn label(self) -> &'static str {
@@ -53,6 +61,10 @@ impl EffectKind {
             EffectKind::Crop => "Crop",
             EffectKind::ChromaKey => "Chroma key",
             EffectKind::Pixelate => "Pixelate",
+            EffectKind::ColorWheels => "Color wheels",
+            EffectKind::Curves => "Curves",
+            EffectKind::Hsl => "Hue / Sat / Lum",
+            EffectKind::Lut => "LUT",
         }
     }
 
@@ -66,6 +78,10 @@ impl EffectKind {
             EffectKind::Crop => "crop",
             EffectKind::ChromaKey => "chroma_key",
             EffectKind::Pixelate => "pixelate",
+            EffectKind::ColorWheels => "color_wheels",
+            EffectKind::Curves => "curves",
+            EffectKind::Hsl => "hsl",
+            EffectKind::Lut => "lut",
         }
     }
 
@@ -82,6 +98,10 @@ impl EffectKind {
             EffectKind::Crop => &CROP,
             EffectKind::ChromaKey => &CHROMA,
             EffectKind::Pixelate => &PIXELATE,
+            EffectKind::ColorWheels => &WHEELS,
+            EffectKind::Curves => &CURVES,
+            EffectKind::Hsl => &HSL,
+            EffectKind::Lut => &LUT,
         }
     }
 }
@@ -113,12 +133,77 @@ static CHROMA: [ParamDef; 6] = [
 // block size in pixels on a 1080-pixel-tall frame
 static PIXELATE: [ParamDef; 1] = [p("Block size", 1.0, 200.0, 24.0, 0)];
 
+// lift (shadows), gamma (midtones), gain (highlights): a master and a tint per channel, -1..1
+static WHEELS: [ParamDef; 12] = [
+    p("Lift master", -1.0, 1.0, 0.0, 2),
+    p("Lift red", -1.0, 1.0, 0.0, 2),
+    p("Lift green", -1.0, 1.0, 0.0, 2),
+    p("Lift blue", -1.0, 1.0, 0.0, 2),
+    p("Gamma master", -1.0, 1.0, 0.0, 2),
+    p("Gamma red", -1.0, 1.0, 0.0, 2),
+    p("Gamma green", -1.0, 1.0, 0.0, 2),
+    p("Gamma blue", -1.0, 1.0, 0.0, 2),
+    p("Gain master", -1.0, 1.0, 0.0, 2),
+    p("Gain red", -1.0, 1.0, 0.0, 2),
+    p("Gain green", -1.0, 1.0, 0.0, 2),
+    p("Gain blue", -1.0, 1.0, 0.0, 2),
+];
+// output level at input 0, 25, 50, 75 and 100 %, for the master curve and then red, green and blue
+static CURVES: [ParamDef; 20] = [
+    p("Master 0%", 0.0, 1.0, 0.0, 2),
+    p("Master 25%", 0.0, 1.0, 0.25, 2),
+    p("Master 50%", 0.0, 1.0, 0.5, 2),
+    p("Master 75%", 0.0, 1.0, 0.75, 2),
+    p("Master 100%", 0.0, 1.0, 1.0, 2),
+    p("Red 0%", 0.0, 1.0, 0.0, 2),
+    p("Red 25%", 0.0, 1.0, 0.25, 2),
+    p("Red 50%", 0.0, 1.0, 0.5, 2),
+    p("Red 75%", 0.0, 1.0, 0.75, 2),
+    p("Red 100%", 0.0, 1.0, 1.0, 2),
+    p("Green 0%", 0.0, 1.0, 0.0, 2),
+    p("Green 25%", 0.0, 1.0, 0.25, 2),
+    p("Green 50%", 0.0, 1.0, 0.5, 2),
+    p("Green 75%", 0.0, 1.0, 0.75, 2),
+    p("Green 100%", 0.0, 1.0, 1.0, 2),
+    p("Blue 0%", 0.0, 1.0, 0.0, 2),
+    p("Blue 25%", 0.0, 1.0, 0.25, 2),
+    p("Blue 50%", 0.0, 1.0, 0.5, 2),
+    p("Blue 75%", 0.0, 1.0, 0.75, 2),
+    p("Blue 100%", 0.0, 1.0, 1.0, 2),
+];
+// six hue bands (red, yellow, green, cyan, blue, magenta): hue shift in degrees, saturation %, lightness
+static HSL: [ParamDef; 18] = [
+    p("Red hue", -60.0, 60.0, 0.0, 0),
+    p("Red sat", 0.0, 200.0, 100.0, 0),
+    p("Red lum", -50.0, 50.0, 0.0, 0),
+    p("Yellow hue", -60.0, 60.0, 0.0, 0),
+    p("Yellow sat", 0.0, 200.0, 100.0, 0),
+    p("Yellow lum", -50.0, 50.0, 0.0, 0),
+    p("Green hue", -60.0, 60.0, 0.0, 0),
+    p("Green sat", 0.0, 200.0, 100.0, 0),
+    p("Green lum", -50.0, 50.0, 0.0, 0),
+    p("Cyan hue", -60.0, 60.0, 0.0, 0),
+    p("Cyan sat", 0.0, 200.0, 100.0, 0),
+    p("Cyan lum", -50.0, 50.0, 0.0, 0),
+    p("Blue hue", -60.0, 60.0, 0.0, 0),
+    p("Blue sat", 0.0, 200.0, 100.0, 0),
+    p("Blue lum", -50.0, 50.0, 0.0, 0),
+    p("Magenta hue", -60.0, 60.0, 0.0, 0),
+    p("Magenta sat", 0.0, 200.0, 100.0, 0),
+    p("Magenta lum", -50.0, 50.0, 0.0, 0),
+];
+// the .cube file is `Effect::text`
+static LUT: [ParamDef; 1] = [p("Strength", 0.0, 100.0, 100.0, 0)];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Effect {
     pub kind: EffectKind,
     #[serde(default = "yes")]
     pub enabled: bool,
     pub params: Vec<f64>,
+    /// Free text a kind may need: the path of a LUT's .cube file
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 fn yes() -> bool {
@@ -131,6 +216,7 @@ impl Effect {
             kind,
             enabled: true,
             params: kind.params().iter().map(|d| d.default).collect(),
+            text: String::new(),
         }
     }
 

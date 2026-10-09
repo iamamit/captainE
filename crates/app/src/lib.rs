@@ -6,6 +6,7 @@ pub mod branches_ui;
 pub mod compare;
 pub mod copilot;
 pub mod jobs;
+pub mod scopes;
 pub mod theme;
 pub mod timeline;
 pub mod titles_ui;

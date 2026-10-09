@@ -172,7 +172,7 @@ pub struct App {
     pub shuttle: f64,
     play_origin: Instant,
     play_origin_secs: f64,
-    last_requested: Option<i64>,
+    pub last_requested: Option<i64>,
     audio: Option<AudioEngine>,
     audio_live: bool,
 
@@ -182,6 +182,12 @@ pub struct App {
     sent_revision: Option<(u64, u64)>,
     pub program: Option<TextureHandle>,
     pub program_tick: i64,
+    /// The scopes panel over the viewer, which kind it shows, and its picture
+    pub scopes_open: bool,
+    pub scope_kind: crate::scopes::ScopeKind,
+    pub scope_tex: Option<TextureHandle>,
+    pub scope_src: Option<egui::ColorImage>,
+    pub scope_dirty: bool,
     pub thumbs: HashMap<Id, TextureHandle>,
     pub waves: HashMap<Id, Arc<Vec<Peak>>>,
     queued_media: std::collections::HashSet<Id>,
@@ -247,6 +253,11 @@ impl App {
             sent_revision: None,
             program: None,
             program_tick: 0,
+            scopes_open: false,
+            scope_kind: crate::scopes::ScopeKind::Waveform,
+            scope_tex: None,
+            scope_src: None,
+            scope_dirty: true,
             thumbs: HashMap::new(),
             waves: HashMap::new(),
             queued_media: Default::default(),
@@ -710,6 +721,10 @@ impl App {
             }
             match f.image {
                 Ok(img) => {
+                    if self.scopes_open {
+                        self.scope_src = Some(img.clone());
+                        self.scope_dirty = true;
+                    }
                     match &mut self.program {
                         Some(t) => t.set(img, egui::TextureOptions::LINEAR),
                         None => {
@@ -810,5 +825,20 @@ impl App {
     pub fn on_exit(&mut self) {
         self.pause();
         self.autosave(true);
+    }
+}
+
+impl App {
+    /// Redraw the scope picture from the latest frame, if the panel is open.
+    pub fn refresh_scope(&mut self, ctx: &egui::Context) {
+        let Some(src) = &self.scope_src else { return };
+        let img = crate::scopes::render(self.scope_kind, src);
+        match &mut self.scope_tex {
+            Some(t) => t.set(img, egui::TextureOptions::NEAREST),
+            None => {
+                self.scope_tex = Some(ctx.load_texture("scope", img, egui::TextureOptions::NEAREST))
+            }
+        }
+        self.scope_dirty = false;
     }
 }

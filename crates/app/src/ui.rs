@@ -1406,6 +1406,23 @@ fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
                 }
             });
         });
+        if e.kind == EffectKind::Lut {
+            ui.horizontal(|ui| {
+                let name = std::path::Path::new(&e.text)
+                    .file_name()
+                    .map_or("No LUT chosen".to_string(), |n| n.to_string_lossy().into());
+                ui.label(RichText::new(name).size(11.0).color(theme::MUTED));
+                if chip(ui, "Choose .cube…", false, true).clicked() {
+                    if let Some(f) = rfd::FileDialog::new()
+                        .add_filter("LUT", &["cube"])
+                        .pick_file()
+                    {
+                        e.text = f.to_string_lossy().into();
+                        structural = true;
+                    }
+                }
+            });
+        }
         for (v, d) in e.params.iter_mut().zip(e.kind.params()) {
             let r = slider_row(
                 ui,
