@@ -8,10 +8,18 @@ pub fn preview_project(project: &Project, scale: f64) -> Project {
     let mut p = project.clone();
     p.settings.width = even(project.settings.width);
     p.settings.height = even(project.settings.height);
-    // use the exact ratio actually achieved after rounding to even sizes
-    let sx = p.settings.width as f64 / project.settings.width as f64;
+    let settings_width = p.settings.width;
     for tl in p.timelines.values_mut() {
         let tl: &mut Timeline = Arc::make_mut(tl);
+        // use the exact ratio actually achieved after rounding to even sizes
+        let (ow, _) = tl
+            .canvas
+            .unwrap_or((project.settings.width, project.settings.height));
+        if let Some((w, h)) = tl.canvas {
+            tl.canvas = Some((even(w), even(h)));
+        }
+        let nw = tl.canvas.map_or(settings_width, |c| c.0);
+        let sx = nw as f64 / ow as f64;
         for track in tl.tracks.iter_mut() {
             let track = Arc::make_mut(track);
             for item in track.items.iter_mut() {

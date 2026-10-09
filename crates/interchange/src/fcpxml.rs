@@ -27,8 +27,8 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
     xml += &format!(
         "    <format id=\"r0\" name=\"captainE\" frameDuration=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         t(1, rate),
-        project.settings.width,
-        project.settings.height
+        project.canvas(timeline).0,
+        project.canvas(timeline).1
     );
     let mut ids: Vec<Id> = Vec::new();
     for track in &tl.tracks {

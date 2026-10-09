@@ -99,7 +99,7 @@ impl Renderer {
     }
 
     pub fn size(&self) -> (u32, u32) {
-        (self.project.settings.width, self.project.settings.height)
+        self.project.canvas(self.timeline)
     }
 
     fn fetch(

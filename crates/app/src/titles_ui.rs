@@ -212,10 +212,7 @@ fn layer_controls(app: &mut App, ui: &mut Ui, title: &Title, track_name: &str) {
     }
     ui.add_space(6.0);
     ui.label(RichText::new("Transform").strong().size(12.5));
-    let (cw, ch) = (
-        app.project().settings.width as f64,
-        app.project().settings.height as f64,
-    );
+    let (cw, ch) = (app.canvas().0 as f64, app.canvas().1 as f64);
     let mut row = |ui: &mut Ui,
                    label: &str,
                    v: &mut f64,
@@ -469,10 +466,7 @@ fn animate_controls(app: &mut App, ui: &mut Ui, title: &Title) {
     }
     let total = title.duration.value;
     let len = ((app.preset_secs * fps).round() as i64).clamp(1, total);
-    let canvas = (
-        app.project().settings.width as f64,
-        app.project().settings.height as f64,
-    );
+    let canvas = (app.canvas().0 as f64, app.canvas().1 as f64);
     let mut picked: Option<(Preset, bool)> = None;
     for (label, entering) in [("In", true), ("Out", false)] {
         ui.horizontal_wrapped(|ui| {
@@ -727,10 +721,7 @@ pub fn controls(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(10.0);
     ui.label(RichText::new("Transform").strong().size(12.5));
-    let (cw, ch) = (
-        app.project().settings.width as f64,
-        app.project().settings.height as f64,
-    );
+    let (cw, ch) = (app.canvas().0 as f64, app.canvas().1 as f64);
     row(
         ui,
         "Position X",

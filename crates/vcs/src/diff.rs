@@ -289,6 +289,9 @@ pub fn diff(a: &Project, b: &Project) -> Vec<Change> {
                 if ta.markers != tb.markers {
                     f.push("markers".into());
                 }
+                if ta.canvas != tb.canvas {
+                    f.push("canvas".into());
+                }
                 if !f.is_empty() {
                     let mut c = simple(
                         Target::Timeline(*id),

@@ -1003,6 +1003,9 @@ pub struct Timeline {
     pub tracks: Vec<Arc<Track>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// Frame size of this sequence when it differs from the project's (a vertical cut of a horizontal film)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<(u32, u32)>,
 }
 
 impl Timeline {
@@ -1013,6 +1016,7 @@ impl Timeline {
             rate,
             tracks: Vec::new(),
             markers: Vec::new(),
+            canvas: None,
         }
     }
 
@@ -1107,6 +1111,13 @@ impl Project {
                 .any(|tl| tl.markers.iter().any(|m| m.id == id))
     }
 
+    /// The frame size of a timeline: its own, or the project's.
+    pub fn canvas(&self, timeline: Id) -> (u32, u32) {
+        self.timeline(timeline)
+            .and_then(|t| t.canvas)
+            .unwrap_or((self.settings.width, self.settings.height))
+    }
+
     pub fn media_in_use(&self, media: Id) -> bool {
         self.timelines.values().any(|tl| {
             tl.tracks.iter().any(|t| {
@@ -1135,6 +1146,11 @@ impl Project {
         }
         for tl in self.timelines.values() {
             note(tl.id, "timeline", &mut errs);
+            if let Some((w, h)) = tl.canvas {
+                if w < 16 || h < 16 || w > 16384 || h > 16384 || w % 2 != 0 || h % 2 != 0 {
+                    errs.push(format!("timeline {} has a bad frame size {w}x{h}", tl.name));
+                }
+            }
             if tl
                 .markers
                 .windows(2)

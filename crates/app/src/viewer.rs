@@ -78,10 +78,7 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
                 pos2(full.right(), full.bottom() - transport_h),
             )
             .shrink(18.0);
-            let (cw, ch) = (
-                app.project().settings.width as f32,
-                app.project().settings.height as f32,
-            );
+            let (cw, ch) = (app.canvas().0 as f32, app.canvas().1 as f32);
             let scale = (area.width() / cw).min(area.height() / ch).max(0.01);
             let pic = Rect::from_center_size(area.center(), vec2(cw * scale, ch * scale));
             if app.source.open {

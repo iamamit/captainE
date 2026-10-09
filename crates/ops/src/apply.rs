@@ -177,6 +177,21 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 timeline: (*tl).clone(),
             })
         }
+        Op::SetCanvas { timeline, canvas } => {
+            if let Some((w, h)) = canvas {
+                if *w < 16 || *h < 16 || *w > 16384 || *h > 16384 || w % 2 != 0 || h % 2 != 0 {
+                    return Err(OpError::OutOfRange("frame size must be even, 16 to 16384"));
+                }
+            }
+            let tl = p
+                .timeline_mut(*timeline)
+                .ok_or(OpError::NotFound("timeline", *timeline))?;
+            let old = std::mem::replace(&mut tl.canvas, *canvas);
+            Ok(Op::SetCanvas {
+                timeline: *timeline,
+                canvas: old,
+            })
+        }
         Op::AddMarker { timeline, marker } => {
             marker.check().map_err(OpError::BadProps)?;
             ensure_free(p, marker.id)?;

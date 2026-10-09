@@ -1798,10 +1798,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     let _ = start;
     let has_video = media.as_ref().is_some_and(|m| m.has_video);
     let has_audio = media.as_ref().is_some_and(|m| m.has_audio);
-    let (cw, ch) = (
-        app.project().settings.width as f64,
-        app.project().settings.height as f64,
-    );
+    let (cw, ch) = (app.canvas().0 as f64, app.canvas().1 as f64);
 
     let mut v = clip.video;
     let mut a = clip.audio;

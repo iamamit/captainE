@@ -110,7 +110,7 @@ fn target_json(p: &Project, t: Target) -> Option<Value> {
         Target::Timeline(id) => p
             .timelines
             .get(&id)
-            .map(|t| serde_json::json!({"name": t.name, "rate": t.rate, "markers": t.markers})),
+            .map(|t| serde_json::json!({"name": t.name, "rate": t.rate, "markers": t.markers, "canvas": t.canvas})),
     }
 }
 
@@ -417,6 +417,9 @@ pub fn merge(
                     }
                     if c.fields.iter().any(|f| f == "markers") {
                         mt.markers = tt.markers.clone();
+                    }
+                    if c.fields.iter().any(|f| f == "canvas") {
+                        mt.canvas = tt.canvas;
                     }
                 }
             }

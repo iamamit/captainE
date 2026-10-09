@@ -930,10 +930,8 @@ impl ToolBox {
         let len = self
             .ticks(num(input, "duration_sec").unwrap_or(0.6))
             .clamp(1, total);
-        let canvas = (
-            self.project().settings.width as f64,
-            self.project().settings.height as f64,
-        );
+        let (cw, ch) = self.project().canvas(self.timeline()?.id);
+        let canvas = (cw as f64, ch as f64);
         let new = tracks(preset, entering, len, total, &t.video, canvas);
         let props: Vec<&str> = new.iter().map(|(p, _)| *p).collect();
         let mut anim = t.anim.clone();

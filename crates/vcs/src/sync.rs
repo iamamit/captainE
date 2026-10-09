@@ -90,6 +90,12 @@ pub fn sync_ops(from: &Project, to: &Project) -> Result<Vec<Op>, String> {
                 name: t.name.clone(),
             });
         }
+        if f.canvas != t.canvas {
+            ops.push(Op::SetCanvas {
+                timeline: *tid,
+                canvas: t.canvas,
+            });
+        }
         // markers: gone, new and changed
         for m in &f.markers {
             if !t.markers.iter().any(|x| x.id == m.id) {

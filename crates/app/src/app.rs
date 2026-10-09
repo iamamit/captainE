@@ -394,6 +394,13 @@ impl App {
         self.timeline().map(|t| t.id)
     }
 
+    /// Frame size of the sequence being edited.
+    pub fn canvas(&self) -> (u32, u32) {
+        let s = &self.project().settings;
+        self.timeline_id()
+            .map_or((s.width, s.height), |t| self.project().canvas(t))
+    }
+
     pub fn rate(&self) -> Rational {
         self.timeline().map_or(Rational::FPS_30, |t| t.rate)
     }

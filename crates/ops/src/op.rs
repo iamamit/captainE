@@ -32,6 +32,11 @@ pub enum Op {
         id: Id,
         name: String,
     },
+    /// Give a sequence its own frame size (None: the project's).
+    SetCanvas {
+        timeline: Id,
+        canvas: Option<(u32, u32)>,
+    },
     AddMarker {
         timeline: Id,
         marker: Marker,
@@ -180,6 +185,10 @@ impl Op {
             Op::AddTimeline { timeline } => format!("Add timeline {}", timeline.name),
             Op::RemoveTimeline { id } => format!("Remove timeline {id}"),
             Op::RenameTimeline { name, .. } => format!("Rename timeline to {name}"),
+            Op::SetCanvas { canvas, .. } => match canvas {
+                Some((w, h)) => format!("Set sequence size to {w}x{h}"),
+                None => "Use the project frame size".to_string(),
+            },
             Op::AddMarker { marker, .. } => format!("Add marker {}", marker.name),
             Op::RemoveMarker { marker, .. } => format!("Remove marker {marker}"),
             Op::SetMarker { marker, .. } => format!("Edit marker {}", marker.name),

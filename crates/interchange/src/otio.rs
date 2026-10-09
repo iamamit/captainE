@@ -127,7 +127,7 @@ pub fn export(project: &Project, timeline: Id) -> Result<String, String> {
         "name": tl.name,
         "global_start_time": rt(0, rate),
         "tracks": {"OTIO_SCHEMA": "Stack.1", "name": "tracks", "children": tracks, "markers": markers},
-        "metadata": {"captaine": {"width": project.settings.width, "height": project.settings.height}},
+        "metadata": {"captaine": {"width": project.canvas(timeline).0, "height": project.canvas(timeline).1}},
     });
     serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
 }
@@ -185,6 +185,15 @@ pub fn import(project: &Project, text: &str) -> Result<Vec<Op>, String> {
         .values()
         .map(|m| (m.path.clone(), m.clone()))
         .collect();
+    let canvas = doc
+        .pointer("/metadata/captaine/width")
+        .and_then(Value::as_u64)
+        .zip(
+            doc.pointer("/metadata/captaine/height")
+                .and_then(Value::as_u64),
+        )
+        .map(|(w, h)| (w as u32, h as u32))
+        .filter(|c| *c != (project.settings.width, project.settings.height));
     let mut tl = Timeline::new(
         Id::new(),
         doc.get("name")
@@ -369,6 +378,7 @@ pub fn import(project: &Project, text: &str) -> Result<Vec<Op>, String> {
         tl.markers.push(marker);
     }
     tl.markers.sort_by_key(|m| (m.tick, m.id));
+    tl.canvas = canvas;
     ops.push(Op::AddTimeline { timeline: tl });
     Ok(ops)
 }
