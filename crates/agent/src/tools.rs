@@ -364,6 +364,7 @@ impl ToolBox {
                     "bin": self.project().meta.get(&m.id).map(|x| x.bin.clone()).filter(|b| !b.is_empty()),
                     "tags": self.project().meta.get(&m.id).map(|x| x.tags.clone()).filter(|t| !t.is_empty()),
                     "note": self.project().meta.get(&m.id).map(|x| x.note.clone()).filter(|n| !n.is_empty()),
+                    "input_color": self.project().meta.get(&m.id).map(|x| x.input.key()),
                 })
             })
             .collect();
@@ -385,6 +386,10 @@ impl ToolBox {
         }
         if let Some(n) = text(input, "note") {
             meta.note = n.trim().to_string();
+        }
+        if let Some(k) = text(input, "input_color") {
+            meta.input = InputSpace::from_key(k)
+                .ok_or("input_color is one of auto, rec709, rec2020, hlg, pq")?;
         }
         self.commit(Op::SetMediaMeta {
             media: m.id,
@@ -1492,7 +1497,7 @@ pub fn tool_definitions() -> Value {
     let track = json!({"type": "string", "description": "track name such as V1 or A2"});
     json!([
         {"name": "get_timeline", "description": "The whole timeline: tracks, every clip/title/gap with its id, start and duration in seconds, and non-default properties. Call this before editing.", "input_schema": obj(json!({}), &[])},
-        {"name": "organize_media", "description": "File a media item in a bin of the media pool (a folder the user sees), give it tags and a note. Omitted fields stay as they are; bin \"\" takes it out of its bin; tags replaces the whole tag list. Returns the media list.", "input_schema": obj(json!({"media": {"type": "string"}, "bin": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}}), &["media"])},
+        {"name": "organize_media", "description": "File a media item in a bin of the media pool (a folder the user sees), give it tags and a note. Omitted fields stay as they are; bin \"\" takes it out of its bin; tags replaces the whole tag list. Returns the media list.", "input_schema": obj(json!({"media": {"type": "string"}, "bin": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}, "input_color": {"type": "string", "enum": ["auto", "rec709", "rec2020", "hlg", "pq"], "description": "how the footage is encoded; HDR (hlg, pq) and wide-gamut (rec2020) footage is converted to Rec.709 for editing and export. auto reads it from the file."}}), &["media"])},
         {"name": "list_media", "description": "The media pool: ids, names, lengths, whether each has picture and sound.", "input_schema": obj(json!({}), &[])},
         {"name": "find_silences", "description": "Analyse a clip's audio and list quiet stretches (timeline seconds). Read-only.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number", "description": "level below which audio counts as silent; default -42"}, "min_seconds": {"type": "number", "description": "shortest silence to report; default 0.45"}}), &["item_id"])},
         {"name": "split", "description": "Cut the item under a time on one track into two (nothing moves).", "input_schema": obj(json!({"track": track, "at_sec": {"type": "number"}}), &["track", "at_sec"])},

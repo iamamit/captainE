@@ -583,3 +583,114 @@ fn the_other_transitions_reveal_the_new_picture_their_own_way() {
     assert!(px(&f, 35, 2, 2)[2] > 250);
     assert_eq!(TransitionKind::ALL.len(), 12);
 }
+
+/// A flat mid-grey clip tagged as the given HDR (or wide-gamut) encoding, 10-bit HEVC.
+fn tagged_video(path: &Path, primaries: &str, trc: &str, matrix: &str) {
+    let params =
+        format!("log-level=error:colorprim={primaries}:transfer={trc}:colormatrix={matrix}");
+    let ok = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0xc0c0c0:s=96x54:r=30:d=1",
+            "-vf",
+            "format=yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            &params,
+            "-tag:v",
+            "hvc1",
+        ])
+        .arg(path)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
+#[test]
+fn hdr_footage_is_tone_mapped_into_rec709_unless_told_otherwise() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (hlg, pq, sdr) = (
+        scratch("c-hlg.mp4"),
+        scratch("c-pq.mp4"),
+        scratch("c-sdr.mp4"),
+    );
+    tagged_video(&hlg, "bt2020", "arib-std-b67", "bt2020nc");
+    tagged_video(&pq, "bt2020", "smpte2084", "bt2020nc");
+    tagged_video(&sdr, "bt709", "bt709", "bt709");
+    assert_eq!(
+        captaine_media::detect_space(&hlg.to_string_lossy()),
+        InputSpace::Hlg
+    );
+    assert_eq!(
+        captaine_media::detect_space(&pq.to_string_lossy()),
+        InputSpace::Pq
+    );
+    assert_eq!(
+        captaine_media::detect_space(&sdr.to_string_lossy()),
+        InputSpace::Rec709
+    );
+    let mut f = fixture((96, 54));
+    let shown = |f: &mut Fixture, m: &MediaRef, space: Option<InputSpace>| -> u8 {
+        if let Some(s) = space {
+            f.ed.apply(
+                Author::User,
+                Op::SetMediaMeta {
+                    media: m.id,
+                    meta: Some(MediaMeta {
+                        input: s,
+                        ..MediaMeta::default()
+                    }),
+                },
+            )
+            .unwrap();
+        }
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        grey_of(&r.render(3).unwrap(), 48, 27)
+    };
+    let (mh, mp, ms) = (
+        add_media(&mut f, &hlg),
+        add_media(&mut f, &pq),
+        add_media(&mut f, &sdr),
+    );
+    // one clip per file, one after the other on V1
+    for m in [&mh, &mp, &ms] {
+        f.ed.apply(
+            Author::User,
+            edit::append(f.ed.project(), f.v1, clip(m, 0, 20)),
+        )
+        .unwrap();
+    }
+    let at = |f: &Fixture, tick: i64| {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        grey_of(&r.render(tick).unwrap(), 48, 27)
+    };
+    let (h_auto, p_auto, s_auto) = (at(&f, 3), at(&f, 23), at(&f, 43));
+    // SDR footage is untouched (light grey stays as it is)
+    assert!((s_auto as i32 - 190).abs() < 12, "{s_auto}");
+    // told to treat the HDR files as plain Rec.709 they show the raw values...
+    let h_raw = shown(&mut f, &mh, Some(InputSpace::Rec709));
+    let p_raw = shown(&mut f, &mp, Some(InputSpace::Rec709));
+    assert!((h_raw as i32 - 190).abs() < 20, "raw HLG grey {h_raw}");
+    // ...while the automatic reading maps them: visibly different from the raw ones
+    assert!(
+        (h_auto as i32 - h_raw as i32).abs() > 12,
+        "HLG {h_auto} vs raw {h_raw}"
+    );
+    assert!(
+        (p_auto as i32 - p_raw as i32).abs() > 12,
+        "PQ {p_auto} vs raw {p_raw}"
+    );
+    // the choice is part of the project and undoes
+    f.ed.undo();
+    f.ed.undo();
+    assert_eq!(at(&f, 3), h_auto);
+}

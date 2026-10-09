@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 
-use captaine_model::Id;
+use captaine_model::{Id, InputSpace};
 use captaine_time::Rational;
 
 use crate::Frame8;
@@ -22,6 +22,7 @@ pub struct VideoReader {
     fps: Rational,
     path: String,
     hw: bool,
+    space: InputSpace,
     /// index of the frame the stream will deliver next
     next: i64,
     last: Option<Arc<Frame8>>,
@@ -52,6 +53,19 @@ impl VideoReader {
         start: i64,
         hw: bool,
     ) -> Result<VideoReader, String> {
+        VideoReader::open_in(path, width, height, fps, start, hw, InputSpace::Rec709)
+    }
+
+    /// Like [`open_with`](Self::open_with), bringing footage in `space` into Rec.709 SDR (HDR is tone mapped).
+    pub fn open_in(
+        path: &str,
+        width: u32,
+        height: u32,
+        fps: Rational,
+        start: i64,
+        hw: bool,
+        space: InputSpace,
+    ) -> Result<VideoReader, String> {
         if !Path::new(path).exists() {
             return Err(format!("media file not found: {path}"));
         }
@@ -71,7 +85,10 @@ impl VideoReader {
                 "-an",
                 "-sn",
                 "-vf",
-                &format!("scale={width}:{height}:flags=bicubic"),
+                &format!(
+                    "scale={width}:{height}:flags=bicubic{}",
+                    captaine_media::to_rec709(space)
+                ),
             ])
             .args(["-pix_fmt", "rgba", "-f", "rawvideo", "-"])
             .stdin(Stdio::null())
@@ -88,6 +105,7 @@ impl VideoReader {
             fps,
             path: path.to_string(),
             hw,
+            space,
             next: start,
             last: None,
             eof: false,
@@ -116,13 +134,14 @@ impl VideoReader {
                     return Ok(last.clone());
                 }
             }
-            *self = VideoReader::open_with(
+            *self = VideoReader::open_in(
                 &self.path,
                 self.width,
                 self.height,
                 self.fps,
                 index,
                 self.hw,
+                self.space,
             )?;
         }
         let mut scratch = Vec::new();

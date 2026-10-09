@@ -159,6 +159,8 @@ pub struct ExportDialog {
     pub path: Option<PathBuf>,
     /// export only between the in and out marks
     pub marks_only: bool,
+    /// Write HDR (HLG) when the format is HEVC
+    pub hdr: bool,
     pub jobs: Vec<ExportJob>,
 }
 
@@ -310,6 +312,7 @@ impl App {
                 crf: 18,
                 path: None,
                 marks_only: false,
+                hdr: false,
                 jobs: Vec::new(),
             },
             toasts: Vec::new(),

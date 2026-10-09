@@ -195,6 +195,8 @@ pub struct ExportOptions {
     pub range: Option<(i64, i64)>,
     /// Set to stop the export between frames.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Write HDR (Rec.2020, Hybrid Log-Gamma, 10-bit): HEVC only
+    pub hdr: bool,
 }
 
 impl Default for ExportOptions {
@@ -207,6 +209,7 @@ impl Default for ExportOptions {
             render: RenderOptions::default(),
             range: None,
             cancel: None,
+            hdr: false,
         }
     }
 }
@@ -264,26 +267,47 @@ pub fn encode_args(
         a.push(out.join("frame_%06d.png").to_string_lossy().into_owned());
         return a;
     }
-    // RGB -> limited-range BT.709 YUV, tagged as such so players decode it the way we composited it
+    // RGB -> limited-range BT.709 YUV, tagged as such so players decode it the way we composited it;
+    // HDR output goes on to Rec.2020 Hybrid Log-Gamma (graphic white at 75 % of the signal, as BT.2408 has it)
+    let hdr = o.hdr && o.codec == Codec::Hevc;
     let pix = if o.codec == Codec::ProRes {
         "yuv422p10le"
+    } else if hdr {
+        "yuv420p10le"
     } else {
         "yuv420p"
     };
     a.extend([
         "-vf".to_string(),
-        format!("scale=out_color_matrix=bt709:out_range=tv,format={pix}"),
+        if hdr {
+            "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt2020,zscale=t=arib-std-b67:m=bt2020nc:r=tv:npl=203,format=yuv420p10le".to_string()
+        } else {
+            format!("scale=out_color_matrix=bt709:out_range=tv,format={pix}")
+        },
     ]);
-    let tags = [
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-        "-color_range",
-        "tv",
-    ];
+    let tags = if hdr {
+        [
+            "-colorspace",
+            "bt2020nc",
+            "-color_primaries",
+            "bt2020",
+            "-color_trc",
+            "arib-std-b67",
+            "-color_range",
+            "tv",
+        ]
+    } else {
+        [
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-color_range",
+            "tv",
+        ]
+    };
     a.extend(tags.map(String::from));
     match o.codec {
         Codec::H264 => {
@@ -297,7 +321,13 @@ pub fn encode_args(
                 "-crf".into(),
                 o.crf.to_string(),
                 "-x265-params".into(),
-                "log-level=error".into(),
+                // libx265 only writes the colour description into the stream when asked here
+                if hdr {
+                    "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited"
+                } else {
+                    "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited"
+                }
+                .into(),
             ]);
         }
         Codec::ProRes => {

@@ -56,7 +56,7 @@ d02	Delivery	Export presets, queue, background export	4	0.75	8 presets, format p
 d03	Delivery	Hardware-accelerated encode	3	0.5	VideoToolbox H.264/HEVC encode (macOS); no NVENC/QSV, no hardware ProRes
 d04	Delivery	Range export, audio only, GIF, image sequence, alpha	3	0.75	range export, WAV/AAC audio only, GIF, PNG sequence; no alpha channel export
 d05	Delivery	Real-time playback of 4K and long timelines	5	0.5	scaled decode: 4K clip previews at ~100 fps; stacks and effects still CPU
-d06	Delivery	Color management and HDR	3	0.25	
+d06	Delivery	Color management and HDR	3	0.75	footage colour space read from the file or set per clip (Rec.709, Rec.2020 SDR, HLG, PQ); HDR and wide gamut tone-mapped/gamut-mapped into the Rec.709 working space for preview, proxies and export; HEVC export as Rec.2020 HLG 10-bit (UI, CLI); correct colour tags; no ACES/OCIO, no HDR scopes or HDR monitoring
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
 u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.5	
 u02	Platform	Stability and crash recovery	4	0.75	atomic autosave after every edit, .bak of the last good file, timed snapshots (every 5 min, newest 20), automatic fallback to them when a file is damaged, unclean-exit notice, crash log; no in-app snapshot browser, no per-process watchdog

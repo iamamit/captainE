@@ -320,6 +320,9 @@ enum Cmd {
         preset: String,
         #[arg(long, value_enum, default_value = "h264")]
         codec: CodecArg,
+        /// HDR output (Rec.2020 HLG, 10-bit): with --codec hevc
+        #[arg(long)]
+        hdr: bool,
         /// Draft quality: read proxies where they exist
         #[arg(long)]
         proxy: bool,
@@ -1363,6 +1366,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
             crf,
             preset,
             codec,
+            hdr,
             proxy,
             from,
             to,
@@ -1392,6 +1396,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 range,
                 crf,
                 preset,
+                hdr,
                 render: captaine_render::RenderOptions {
                     use_proxy: proxy,
                     ..Default::default()

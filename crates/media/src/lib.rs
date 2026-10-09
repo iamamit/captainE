@@ -1,10 +1,11 @@
 //! Media probing. Uses the `ffprobe` binary for now; a libav binding replaces it in the engine phase.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
-use captaine_model::{Id, MediaRef};
+use captaine_model::{Id, InputSpace, MediaRef};
 use captaine_time::{Rational, RationalTime};
 
 #[derive(Debug)]
@@ -155,6 +156,65 @@ pub fn media_ref(path: &Path, id: Id) -> Result<MediaRef, MediaError> {
     })
 }
 
+/// The rest of an FFmpeg filter chain (starting with a comma) that turns footage in `space` into Rec.709
+/// SDR: HDR is tone mapped, wide-gamut SDR is squeezed into the Rec.709 primaries. Empty for Rec.709.
+pub fn to_rec709(space: InputSpace) -> String {
+    let (tin, pin) = match space {
+        InputSpace::Auto | InputSpace::Rec709 => return String::new(),
+        InputSpace::Rec2020 => ("bt709", "bt2020"),
+        InputSpace::Hlg => ("arib-std-b67", "bt2020"),
+        InputSpace::Pq => ("smpte2084", "bt2020"),
+    };
+    // HDR reference white (203 nits) lands on SDR white; the highlights above it are rolled off
+    let (tone, npl) = if matches!(space, InputSpace::Hlg | InputSpace::Pq) {
+        (",tonemap=tonemap=hable:desat=0", 203)
+    } else {
+        ("", 100)
+    };
+    format!(
+        ",zscale=tin={tin}:pin={pin}:min=bt2020nc:t=linear:npl={npl},format=gbrpf32le,zscale=p=bt709{tone},zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
+}
+
+/// What a file says about its colours, asked of ffprobe once per file.
+pub fn detect_space(path: &str) -> InputSpace {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, InputSpace>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(s) = cache.lock().ok().and_then(|c| c.get(path).copied()) {
+        return s;
+    }
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_primaries,color_transfer",
+            "-of",
+            "default=noprint_wrappers=1",
+        ])
+        .arg(path)
+        .output()
+        .ok();
+    let text = out
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let get = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let space = InputSpace::from_tags(&get("color_primaries="), &get("color_transfer="));
+    if let Ok(mut c) = cache.lock() {
+        c.insert(path.to_string(), space);
+    }
+    space
+}
+
 /// Where a media file's generated helpers (proxy, thumbnails) live: `<dir>/<id>.<what>`.
 pub fn cache_path(cache_dir: &Path, id: Id, what: &str) -> std::path::PathBuf {
     cache_dir.join(format!("{}.{what}", id.to_full_string()))
@@ -167,7 +227,11 @@ pub fn make_proxy(src: &Path, dst: &Path, max_height: u32) -> Result<(), MediaEr
         std::fs::create_dir_all(parent).map_err(MediaError::Io)?;
     }
     let tmp = dst.with_extension("partial.mp4");
-    let vf = format!("scale=-2:'min({max_height},ih)'");
+    // HDR and wide-gamut footage becomes ordinary Rec.709 in the proxy, so the picture matches the original's
+    let vf = format!(
+        "scale=-2:'min({max_height},ih)'{}",
+        to_rec709(detect_space(&src.to_string_lossy()))
+    );
     let out = Command::new("ffmpeg")
         .args(["-y", "-v", "error", "-nostdin", "-i"])
         .arg(src)

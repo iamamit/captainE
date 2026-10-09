@@ -490,3 +490,40 @@ fn copilot_can_file_and_tag_media() {
         .call("organize_media", &json!({"media": "nope.mp4", "bin": "x"}))
         .is_err());
 }
+
+#[test]
+fn copilot_can_set_how_footage_is_colour_encoded() {
+    let mut ed = Editor::new(Project::new(ProjectSettings::default()));
+    ed.apply(
+        Author::User,
+        Op::AddMedia {
+            media: MediaRef {
+                id: Id::from_u128(5),
+                name: "phone.mov".into(),
+                path: "/phone.mov".into(),
+                duration: Some(RationalTime::new(100, Rational::FPS_30)),
+                has_audio: true,
+                width: 16,
+                height: 9,
+                has_video: true,
+                proxy: None,
+            },
+        },
+    )
+    .unwrap();
+    let mut tools = ToolBox::new(ed.project(), &[], None, 0.0).unwrap();
+    let out = tools
+        .call(
+            "organize_media",
+            &json!({"media": "phone.mov", "input_color": "hlg"}),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["input_color"], "hlg");
+    assert!(tools
+        .call(
+            "organize_media",
+            &json!({"media": "phone.mov", "input_color": "sepia"})
+        )
+        .is_err());
+}

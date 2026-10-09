@@ -35,6 +35,7 @@ fn media_can_be_filed_tagged_and_found_and_it_undoes() {
         bin: "Day 1".into(),
         tags: vec!["Drone".into(), "sunset".into()],
         note: "golden hour, wide".into(),
+        input: InputSpace::Hlg,
     };
     ed.apply(
         Author::User,

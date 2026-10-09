@@ -1248,6 +1248,73 @@ pub struct MediaMeta {
     pub tags: Vec<String>,
     #[serde(default)]
     pub note: String,
+    /// How the footage's colours are encoded (Auto: read from the file)
+    #[serde(default, skip_serializing_if = "InputSpace::is_auto")]
+    pub input: InputSpace,
+}
+
+/// The colour encoding of a source, which decides how it is brought into the Rec.709 working space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InputSpace {
+    /// Look at what the file says about itself
+    #[default]
+    Auto,
+    /// Ordinary HD video
+    Rec709,
+    /// Wide-gamut footage with a normal (SDR) brightness curve
+    Rec2020,
+    /// HDR in Hybrid Log-Gamma (iPhone and broadcast HDR)
+    Hlg,
+    /// HDR in PQ / HDR10
+    Pq,
+}
+
+impl InputSpace {
+    pub const ALL: [InputSpace; 5] = [
+        InputSpace::Auto,
+        InputSpace::Rec709,
+        InputSpace::Rec2020,
+        InputSpace::Hlg,
+        InputSpace::Pq,
+    ];
+
+    pub fn is_auto(&self) -> bool {
+        *self == InputSpace::Auto
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InputSpace::Auto => "Auto",
+            InputSpace::Rec709 => "Rec.709",
+            InputSpace::Rec2020 => "Rec.2020 SDR",
+            InputSpace::Hlg => "HLG HDR",
+            InputSpace::Pq => "PQ HDR",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            InputSpace::Auto => "auto",
+            InputSpace::Rec709 => "rec709",
+            InputSpace::Rec2020 => "rec2020",
+            InputSpace::Hlg => "hlg",
+            InputSpace::Pq => "pq",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<InputSpace> {
+        InputSpace::ALL.into_iter().find(|s| s.key() == k)
+    }
+
+    /// From the colour tags of a video stream.
+    pub fn from_tags(primaries: &str, transfer: &str) -> InputSpace {
+        match (transfer, primaries) {
+            ("smpte2084", _) => InputSpace::Pq,
+            ("arib-std-b67", _) => InputSpace::Hlg,
+            (_, "bt2020") => InputSpace::Rec2020,
+            _ => InputSpace::Rec709,
+        }
+    }
 }
 
 impl MediaMeta {
@@ -1266,7 +1333,7 @@ impl MediaMeta {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bin.is_empty() && self.tags.is_empty() && self.note.is_empty()
+        self.bin.is_empty() && self.tags.is_empty() && self.note.is_empty() && self.input.is_auto()
     }
 
     /// Does a lower-case search word match the bin, a tag or the note?

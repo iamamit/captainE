@@ -2743,6 +2743,34 @@ fn metadata(app: &mut App, ui: &mut Ui) {
             }
         });
     }
+    if m.has_video && m.nested_timeline().is_none() {
+        section(ui, "Colour");
+        let cur = app.media_meta(m.id).input;
+        let seen = captaine_media::detect_space(&m.path);
+        ui.label(
+            RichText::new(format!("The file says: {}", seen.label()))
+                .size(11.0)
+                .color(theme::MUTED),
+        );
+        ui.horizontal_wrapped(|ui| {
+            for s in captaine_model::InputSpace::ALL {
+                if chip(ui, s.label(), cur == s, true).clicked() && cur != s {
+                    let mut meta = app.media_meta(m.id);
+                    meta.input = s;
+                    app.set_media_meta(m.id, meta);
+                }
+            }
+        });
+        if seen != captaine_model::InputSpace::Rec709 || cur != captaine_model::InputSpace::Auto {
+            ui.label(
+                RichText::new(
+                    "HDR and wide-gamut footage is converted to Rec.709 for editing and export.",
+                )
+                .size(10.5)
+                .color(theme::FAINT),
+            );
+        }
+    }
     section(ui, "Organise");
     let draft = app.meta_draft.take().filter(|d| d.0 == m.id);
     let (_, mut bin, mut tags, mut note) = draft.unwrap_or_else(|| {
@@ -2783,6 +2811,7 @@ fn metadata(app: &mut App, ui: &mut Ui) {
                 bin: bin.trim().to_string(),
                 tags: crate::media_org::parse_tags(&tags),
                 note: note.trim().to_string(),
+                input: app.media_meta(m.id).input,
             },
         );
     } else {
@@ -3028,6 +3057,15 @@ fn export_dialog(app: &mut App, ctx: &Context) {
                     .color(theme::FAINT),
                 );
             }
+            if codec == Codec::Hevc {
+                let hdr = app.export.hdr;
+                if chip(ui, "HDR (HLG, Rec.2020, 10-bit)", hdr, true)
+                    .on_hover_text("For HDR displays and phones; the picture is graded in Rec.709 and carried over")
+                    .clicked()
+                {
+                    app.export.hdr = !hdr;
+                }
+            }
             let marks = app
                 .mark_in
                 .zip(app.mark_out)
@@ -3166,6 +3204,7 @@ fn queue_export(app: &mut App, ctx: &Context, range: Option<(i64, i64)>) {
     let opts = captaine_export::ExportOptions {
         codec,
         crf: app.export.crf,
+        hdr: app.export.hdr && codec == captaine_export::Codec::Hevc,
         range,
         cancel: Some(cancel.clone()),
         ..Default::default()

@@ -660,3 +660,60 @@ fn every_preset_names_a_real_format() {
         assert!(Codec::ALL.contains(&p.codec));
     }
 }
+
+fn colour_tags(path: &Path) -> String {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt,color_space,color_transfer,color_primaries",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn hevc_can_be_written_as_hdr_and_the_tags_say_so() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (a, b) = (scratch("hdr_a.mp4"), scratch("hdr_b.mp4"));
+    make_source(&a, true);
+    make_source(&b, false);
+    let built = build(&a, &b);
+    let run = |name: &str, hdr: bool| {
+        let out = scratch(name);
+        let opts = ExportOptions {
+            codec: Codec::Hevc,
+            preset: "ultrafast".into(),
+            hdr,
+            range: Some((0, 6)),
+            ..ExportOptions::default()
+        };
+        export(built.ed.project(), built.tl, &out, &opts, &mut |_, _| {}).unwrap();
+        out
+    };
+    let sdr = run("hdr_sdr.mp4", false);
+    let hlg = run("hdr_hlg.mp4", true);
+    // csv order of ffprobe's fields: pix_fmt,color_space,color_transfer,color_primaries
+    let (s, h) = (colour_tags(&sdr), colour_tags(&hlg));
+    assert!(s.contains("bt709") && s.starts_with("yuv420p,"), "{s}");
+    assert!(h.starts_with("yuv420p10le,"), "{h}");
+    assert!(h.contains("arib-std-b67") && h.contains("bt2020"), "{h}");
+    // and the editor reads its own HDR file back as HLG
+    assert_eq!(
+        captaine_media::detect_space(&hlg.to_string_lossy()),
+        captaine_model::InputSpace::Hlg
+    );
+    assert_eq!(
+        captaine_media::detect_space(&sdr.to_string_lossy()),
+        captaine_model::InputSpace::Rec709
+    );
+}

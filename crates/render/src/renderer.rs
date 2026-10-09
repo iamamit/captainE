@@ -132,6 +132,12 @@ impl Renderer {
             .duration
             .map(|d| d.rate)
             .unwrap_or(self.project.settings.frame_rate);
+        // the colour encoding: what the user said, else what the file says (a proxy is already Rec.709)
+        let space = match self.project.meta.get(&media).map(|x| x.input) {
+            Some(s) if s != captaine_model::InputSpace::Auto => s,
+            _ if m.proxy.is_some() && self.opts.use_proxy => captaine_model::InputSpace::Rec709,
+            _ => captaine_media::detect_space(&path),
+        };
         self.clock += 1;
         // previews decode at the size they will be shown, not the size of the file
         let even = |v: u32| (((v as f64 * self.opts.decode_scale).round() as u32).max(2)) & !1;
@@ -144,7 +150,7 @@ impl Renderer {
             // a decoder only runs forwards: read a run of frames ending at this one and keep them all,
             // so the next frames of a reversed clip come from the cache
             let lo = (frame - REVERSE_RUN + 1).max(0);
-            let mut r = VideoReader::open_with(&path, dw, dh, fps, lo, self.opts.hw_decode)
+            let mut r = VideoReader::open_in(&path, dw, dh, fps, lo, self.opts.hw_decode, space)
                 .map_err(RenderError::Decode)?;
             let mut last = None;
             for i in lo..=frame {
@@ -164,7 +170,7 @@ impl Renderer {
                     .expect("non-empty");
                 self.readers.remove(&oldest);
             }
-            let r = VideoReader::open_with(&path, dw, dh, fps, frame, self.opts.hw_decode)
+            let r = VideoReader::open_in(&path, dw, dh, fps, frame, self.opts.hw_decode, space)
                 .map_err(RenderError::Decode)?;
             self.readers.insert(clip, (r, self.clock));
         }
