@@ -52,9 +52,9 @@ i04	AI	Natural-language editing assistant	4	0.75	Claude agent and local skills
 i05	AI	Auto-reframe to vertical and other aspect ratios	3	0	
 i06	AI	Generative fill, extend, text-to-video	1	0	out of scope; counted so the score is honest
 d01	Delivery	Export H.264, HEVC, ProRes	5	1	
-d02	Delivery	Export presets, queue, background export	4	0	
-d03	Delivery	Hardware-accelerated encode	3	0	
-d04	Delivery	Range export, audio only, GIF, image sequence, alpha	3	0	
+d02	Delivery	Export presets, queue, background export	4	0.75	8 presets, format picker, in/out range, background queue with progress + cancel, per-job project snapshot; no per-preset resolution/bitrate settings
+d03	Delivery	Hardware-accelerated encode	3	0.5	VideoToolbox H.264/HEVC encode (macOS); no NVENC/QSV, no hardware ProRes
+d04	Delivery	Range export, audio only, GIF, image sequence, alpha	3	0.75	range export, WAV/AAC audio only, GIF, PNG sequence; no alpha channel export
 d05	Delivery	Real-time playback of 4K and long timelines	5	0.5	scaled decode: 4K clip previews at ~100 fps; stacks and effects still CPU
 d06	Delivery	Color management and HDR	3	0.25	
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg

@@ -64,6 +64,9 @@ impl VideoReader {
         }
         let mut child = cmd
             .args(["-ss", &format!("{secs:.6}"), "-i", path])
+            // one output frame per decoded frame: the default would duplicate the first one when the seek
+            // lands exactly half a frame early, shifting every later frame by one
+            .args(["-fps_mode", "passthrough"])
             .args([
                 "-an",
                 "-sn",

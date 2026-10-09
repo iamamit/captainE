@@ -452,3 +452,211 @@ fn a_title_is_burned_into_the_export() {
     .unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), std::fs::read(&again).unwrap());
 }
+
+/// A built project (see `build`), ready for the new-format tests.
+fn project_for_formats() -> (Built, PathBuf) {
+    let a = scratch("fmt-a.mp4");
+    let b = scratch("fmt-b.mp4");
+    make_source(&a, true);
+    make_source(&b, false);
+    (build(&a, &b), a)
+}
+
+fn probe_streams(path: &Path) -> String {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name,codec_type,width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+fn duration_secs(path: &Path) -> f64 {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+#[test]
+fn range_gif_png_audio_and_hardware_exports() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (built, _) = project_for_formats();
+    let (p, tl) = (built.ed.project(), built.tl);
+    let quick = |codec, range: Option<(i64, i64)>| ExportOptions {
+        codec,
+        preset: "ultrafast".into(),
+        range,
+        ..Default::default()
+    };
+    // a range: 30 frames out of the middle is one second long
+    let out = scratch("range.mp4");
+    export(
+        p,
+        tl,
+        &out,
+        &quick(Codec::H264, Some((15, 45))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let info = probe(&out).unwrap();
+    assert_eq!(info.length, 30);
+    // the range renders the very same pictures as the full export (compared as lossless PNGs)
+    let (dfull, drange) = (scratch("png-full"), scratch("png-range"));
+    for d in [&dfull, &drange] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    export(
+        p,
+        tl,
+        &dfull,
+        &quick(Codec::PngSequence, Some((0, 25))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    export(
+        p,
+        tl,
+        &drange,
+        &quick(Codec::PngSequence, Some((15, 25))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    for k in 1..=10 {
+        let a = std::fs::read(drange.join(format!("frame_{k:06}.png"))).unwrap();
+        let b = std::fs::read(dfull.join(format!("frame_{:06}.png", 15 + k))).unwrap();
+        assert_eq!(a, b, "range frame {k}");
+    }
+    // empty or backwards range
+    assert!(export(
+        p,
+        tl,
+        &out,
+        &quick(Codec::H264, Some((40, 40))),
+        &mut |_, _| {}
+    )
+    .is_err());
+
+    // GIF: a picture, no sound, at most 480 wide
+    let gif = scratch("anim.gif");
+    export(
+        p,
+        tl,
+        &gif,
+        &quick(Codec::Gif, Some((0, 30))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let s = probe_streams(&gif);
+    assert!(s.contains("gif") && !s.contains("audio"), "{s}");
+    assert!(s.contains("480"), "{s}");
+
+    // PNG sequence: one file per frame
+    let dir = scratch("frames");
+    let _ = std::fs::remove_dir_all(&dir);
+    export(
+        p,
+        tl,
+        &dir,
+        &quick(Codec::PngSequence, Some((0, 12))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let n = std::fs::read_dir(&dir).unwrap().count();
+    assert_eq!(n, 12);
+    assert!(dir.join("frame_000001.png").exists());
+
+    // audio only
+    let wav = scratch("mix.wav");
+    export(
+        p,
+        tl,
+        &wav,
+        &quick(Codec::Wav, Some((0, 60))),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert!((duration_secs(&wav) - 2.0).abs() < 0.05);
+    assert!(probe_streams(&wav).contains("pcm_s16le"));
+    let m4a = scratch("mix.m4a");
+    let mut seen = 0;
+    export(p, tl, &m4a, &quick(Codec::Aac, None), &mut |d, t| {
+        seen = d;
+        assert!(d <= t);
+    })
+    .unwrap();
+    assert!(seen > 0);
+    assert!(probe_streams(&m4a).contains("aac"));
+
+    // hardware encoder (macOS only): H.264 that decodes to the right length
+    if cfg!(target_os = "macos") {
+        let hw = scratch("hw.mp4");
+        export(
+            p,
+            tl,
+            &hw,
+            &quick(Codec::H264Hw, Some((0, 30))),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(probe(&hw).unwrap().length, 30);
+        assert!(probe_streams(&hw).contains("h264"));
+    }
+}
+
+#[test]
+fn an_export_can_be_cancelled() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (built, _) = project_for_formats();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let out = scratch("cancelled.mp4");
+    let flag = cancel.clone();
+    let r = export(
+        built.ed.project(),
+        built.tl,
+        &out,
+        &ExportOptions {
+            preset: "ultrafast".into(),
+            cancel: Some(cancel),
+            ..Default::default()
+        },
+        &mut |done, _| {
+            if done == 5 {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+    );
+    assert!(matches!(r, Err(ExportError::Cancelled)), "{r:?}");
+    assert!(
+        !out.exists(),
+        "a cancelled export leaves no half-written file"
+    );
+}
+
+#[test]
+fn every_preset_names_a_real_format() {
+    for p in PRESETS {
+        assert!(!p.name.is_empty() && !p.note.is_empty());
+        assert!(Codec::ALL.contains(&p.codec));
+    }
+}

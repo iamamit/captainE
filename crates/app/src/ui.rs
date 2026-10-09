@@ -2135,31 +2135,42 @@ fn export_dialog(app: &mut App, ctx: &Context) {
         return;
     }
     let mut open = true;
-    let running = app
+    let busy = app
         .export
-        .progress
-        .as_ref()
-        .is_some_and(|p| p.lock().expect("export").2.is_none());
+        .jobs
+        .iter()
+        .any(|j| j.progress.lock().expect("export").2.is_none());
+    let codec = app.export.codec;
     egui::Window::new("Export")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Format");
-                for (c, l) in [
-                    (Codec::H264, "H.264"),
-                    (Codec::Hevc, "HEVC"),
-                    (Codec::ProRes, "ProRes 422 HQ"),
-                ] {
-                    if chip(ui, l, app.export.codec == c, !running).clicked() {
+            ui.set_min_width(460.0);
+            ui.label(RichText::new("Presets").size(11.0).color(theme::MUTED));
+            ui.horizontal_wrapped(|ui| {
+                for p in captaine_export::PRESETS {
+                    let on = app.export.codec == p.codec
+                        && (!p.codec.uses_quality() || app.export.crf == p.crf);
+                    if chip(ui, p.name, on, true).on_hover_text(p.note).clicked() {
+                        app.export.codec = p.codec;
+                        app.export.crf = p.crf;
+                        app.export.path = None;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new("Format").size(11.0).color(theme::MUTED));
+            ui.horizontal_wrapped(|ui| {
+                for c in Codec::ALL {
+                    if chip(ui, c.label(), codec == c, true).clicked() {
                         app.export.codec = c;
                         app.export.path = None;
                     }
                 }
             });
-            if app.export.codec != Codec::ProRes {
+            if codec.uses_quality() {
                 let mut crf = app.export.crf as f64;
                 let r = slider_row(
                     ui,
@@ -2169,7 +2180,7 @@ fn export_dialog(app: &mut App, ctx: &Context) {
                     18.0,
                     0,
                     "",
-                    !running,
+                    true,
                 );
                 if r.changed {
                     app.export.crf = crf.round() as u32;
@@ -2182,90 +2193,178 @@ fn export_dialog(app: &mut App, ctx: &Context) {
                     .color(theme::FAINT),
                 );
             }
+            let marks = app
+                .mark_in
+                .zip(app.mark_out)
+                .map(|(a, b)| (a.min(b), a.max(b)));
             ui.horizontal(|ui| {
-                ui.label("File");
+                ui.label("Range");
+                if chip(
+                    ui,
+                    "Whole timeline",
+                    !app.export.marks_only || marks.is_none(),
+                    true,
+                )
+                .clicked()
+                {
+                    app.export.marks_only = false;
+                }
+                if chip(
+                    ui,
+                    "In to Out marks",
+                    app.export.marks_only && marks.is_some(),
+                    marks.is_some(),
+                )
+                .clicked()
+                {
+                    app.export.marks_only = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(if codec == Codec::PngSequence {
+                    "Folder"
+                } else {
+                    "File"
+                });
                 let text = app
                     .export
                     .path
                     .as_ref()
                     .map_or("Choose…".to_string(), |p| p.display().to_string());
-                if ui.add_enabled(!running, egui::Button::new(text)).clicked() {
-                    let ext = if app.export.codec == Codec::ProRes {
-                        "mov"
+                if ui.button(text).clicked() {
+                    let picked = if codec == Codec::PngSequence {
+                        rfd::FileDialog::new()
+                            .set_file_name(app.project_title())
+                            .save_file()
                     } else {
-                        "mp4"
+                        let ext = codec.extension();
+                        rfd::FileDialog::new()
+                            .set_file_name(format!("{}.{ext}", app.project_title()))
+                            .add_filter("export", &[ext])
+                            .save_file()
                     };
-                    if let Some(p) = rfd::FileDialog::new()
-                        .set_file_name(format!("{}.{ext}", app.project_title()))
-                        .add_filter("video", &[ext])
-                        .save_file()
-                    {
+                    if let Some(p) = picked {
                         app.export.path = Some(p);
                     }
                 }
             });
-            if let Some(prog) = &app.export.progress {
-                let (done, total, result) = prog.lock().expect("export").clone();
-                ui.add(
-                    egui::ProgressBar::new(if total > 0 {
-                        done as f32 / total as f32
-                    } else {
-                        0.0
-                    })
-                    .show_percentage(),
-                );
-                match result {
-                    Some(Ok(())) => {
-                        ui.colored_label(theme::OK, "Finished");
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    app.export.path.is_some(),
+                    egui::Button::new(
+                        RichText::new(if busy { "Add to queue" } else { "Export" })
+                            .color(Color32::WHITE),
+                    )
+                    .fill(theme::ACCENT),
+                )
+                .clicked()
+            {
+                let range = if app.export.marks_only { marks } else { None };
+                queue_export(app, ctx, range);
+            }
+            if !app.export.jobs.is_empty() {
+                ui.separator();
+                ui.label(RichText::new("Queue").size(11.0).color(theme::MUTED));
+                let mut remove = None;
+                for (i, j) in app.export.jobs.iter().enumerate() {
+                    let (done, total, result) = j.progress.lock().expect("export").clone();
+                    let started = j.started.load(std::sync::atomic::Ordering::Relaxed);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&j.name).size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let label = if result.is_some() { "Clear" } else { "Cancel" };
+                            if chip(ui, label, false, true).clicked() {
+                                if result.is_some() {
+                                    remove = Some(i);
+                                } else {
+                                    j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        });
+                    });
+                    match &result {
+                        Some(Ok(())) => {
+                            ui.colored_label(theme::OK, format!("Finished: {}", j.path.display()));
+                        }
+                        Some(Err(e)) => {
+                            ui.colored_label(Color32::LIGHT_RED, e);
+                        }
+                        None if !started => {
+                            ui.label(RichText::new("Waiting…").size(11.0).color(theme::MUTED));
+                        }
+                        None => {
+                            ui.add(
+                                egui::ProgressBar::new(if total > 0 {
+                                    done as f32 / total as f32
+                                } else {
+                                    0.0
+                                })
+                                .show_percentage(),
+                            );
+                        }
                     }
-                    Some(Err(e)) => {
-                        ui.colored_label(Color32::LIGHT_RED, e);
-                    }
-                    None => {}
+                }
+                if let Some(i) = remove {
+                    app.export.jobs.remove(i);
                 }
             }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let ready = app.export.path.is_some() && !running;
-                if ui
-                    .add_enabled(
-                        ready,
-                        egui::Button::new(RichText::new("Export").color(Color32::WHITE))
-                            .fill(theme::ACCENT),
-                    )
-                    .clicked()
-                {
-                    start_export(app, ctx);
-                }
-            });
         });
     app.export.open = open;
-    if running {
+    if busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
 
-fn start_export(app: &mut App, ctx: &Context) {
+/// Serialises exports: a job waits here until the ones before it are done.
+static EXPORT_TURN: Mutex<()> = Mutex::new(());
+
+fn queue_export(app: &mut App, ctx: &Context, range: Option<(i64, i64)>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let (Some(path), Some(tl)) = (app.export.path.clone(), app.timeline_id()) else {
         return;
     };
     let project = app.project().clone();
+    let codec = app.export.codec;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
     let opts = captaine_export::ExportOptions {
-        codec: app.export.codec,
+        codec,
         crf: app.export.crf,
+        range,
+        cancel: Some(cancel.clone()),
         ..Default::default()
     };
-    let state = Arc::new(Mutex::new((0i64, 0i64, None::<Result<(), String>>)));
-    app.export.progress = Some(state.clone());
+    let state: ExportProgress = Arc::new(Mutex::new((0, 0, None)));
+    app.export.jobs.push(ExportJob {
+        name: format!(
+            "{} · {}",
+            path.file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into()),
+            codec.label()
+        ),
+        path: path.clone(),
+        codec,
+        progress: state.clone(),
+        cancel: cancel.clone(),
+        started: started.clone(),
+    });
+    app.export.path = None;
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let s2 = state.clone();
-        let r = captaine_export::export(&project, tl, &path, &opts, &mut |d, t| {
-            let mut g = s2.lock().expect("export");
-            g.0 = d;
-            g.1 = t;
-        });
-        state.lock().expect("export").2 = Some(r.map_err(|e| e.to_string()));
+        let _turn = EXPORT_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        started.store(true, Ordering::Relaxed);
+        let result = if cancel.load(Ordering::Relaxed) {
+            Err(captaine_export::ExportError::Cancelled)
+        } else {
+            let s2 = state.clone();
+            captaine_export::export(&project, tl, &path, &opts, &mut |d, t| {
+                let mut g = s2.lock().expect("export");
+                g.0 = d;
+                g.1 = t;
+            })
+        };
+        state.lock().expect("export").2 = Some(result.map_err(|e| e.to_string()));
         ctx.request_repaint();
     });
 }

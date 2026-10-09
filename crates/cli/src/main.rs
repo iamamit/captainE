@@ -313,6 +313,12 @@ enum Cmd {
         /// Draft quality: read proxies where they exist
         #[arg(long)]
         proxy: bool,
+        /// Only render from this time (seconds)
+        #[arg(long)]
+        from: Option<f64>,
+        /// ... up to this time (seconds)
+        #[arg(long)]
+        to: Option<f64>,
     },
 }
 
@@ -334,6 +340,12 @@ enum CodecArg {
     H264,
     Hevc,
     Prores,
+    H264Hw,
+    HevcHw,
+    Gif,
+    Png,
+    Wav,
+    Aac,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -1296,15 +1308,32 @@ fn run(cmd: Cmd) -> Result<(), String> {
             preset,
             codec,
             proxy,
+            from,
+            to,
         } => {
             let s = Session::load(&project)?;
             let tl = timeline(&s)?;
+            let fps = tl.rate.as_f64();
+            let range = match (from, to) {
+                (None, None) => None,
+                (a, b) => Some((
+                    (a.unwrap_or(0.0) * fps).round() as i64,
+                    b.map_or(i64::MAX, |b| (b * fps).round() as i64),
+                )),
+            };
             let opts = captaine_export::ExportOptions {
                 codec: match codec {
                     CodecArg::H264 => captaine_export::Codec::H264,
                     CodecArg::Hevc => captaine_export::Codec::Hevc,
                     CodecArg::Prores => captaine_export::Codec::ProRes,
+                    CodecArg::H264Hw => captaine_export::Codec::H264Hw,
+                    CodecArg::HevcHw => captaine_export::Codec::HevcHw,
+                    CodecArg::Gif => captaine_export::Codec::Gif,
+                    CodecArg::Png => captaine_export::Codec::PngSequence,
+                    CodecArg::Wav => captaine_export::Codec::Wav,
+                    CodecArg::Aac => captaine_export::Codec::Aac,
                 },
+                range,
                 crf,
                 preset,
                 render: captaine_render::RenderOptions {

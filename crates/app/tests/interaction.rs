@@ -855,3 +855,68 @@ fn multi_select_copy_paste_duplicate_and_delete() {
     settle(&mut h);
     assert_eq!(ids(app(&h)).len(), 4);
 }
+
+#[test]
+fn export_dialog_queues_jobs_and_writes_the_file() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let dir = std::env::temp_dir().join(format!("captaine-queue-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (wav, m4a) = (dir.join("mix.wav"), dir.join("mix.m4a"));
+    app_mut(&mut h).export.open = true;
+    settle(&mut h);
+    h.get_by_label("Audio WAV").click(); // a preset
+    settle(&mut h);
+    assert_eq!(app(&h).export.codec, captaine_export::Codec::Wav);
+    app_mut(&mut h).export.path = Some(wav.clone());
+    settle(&mut h);
+    // the dialog's button comes after the top bar's and the window title
+    h.get_all_by_label("Export").last().unwrap().click();
+    settle(&mut h);
+    // queue a second one straight away
+    h.get_by_label("Audio podcast").click();
+    settle(&mut h);
+    app_mut(&mut h).export.path = Some(m4a.clone());
+    settle(&mut h);
+    assert_eq!(app(&h).export.jobs.len(), 1);
+    for _ in 0..400 {
+        h.step();
+        if wav.exists()
+            && app(&h)
+                .export
+                .jobs
+                .iter()
+                .all(|j| j.progress.lock().unwrap().2.is_some())
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(wav.exists(), "the first export wrote its file");
+    assert!(matches!(
+        app(&h).export.jobs[0].progress.lock().unwrap().2,
+        Some(Ok(()))
+    ));
+    // the second is added to the queue with the button's other label and finishes too
+    h.get_all_by_label("Export").last().unwrap().click();
+    settle(&mut h);
+    for _ in 0..400 {
+        h.step();
+        if m4a.exists()
+            && app(&h).export.jobs.len() == 2
+            && app(&h)
+                .export
+                .jobs
+                .iter()
+                .all(|j| j.progress.lock().unwrap().2.is_some())
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(app(&h).export.jobs.len(), 2);
+    assert!(m4a.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

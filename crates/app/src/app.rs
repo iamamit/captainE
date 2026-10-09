@@ -118,12 +118,25 @@ pub struct Toast {
 /// `(frames done, frames total, result once finished)` shared with the export thread.
 pub type ExportProgress = Arc<std::sync::Mutex<(i64, i64, Option<Result<(), String>>)>>;
 
+/// One export in the queue. Jobs run one at a time, each from the project as it was when queued.
+pub struct ExportJob {
+    pub name: String,
+    pub path: PathBuf,
+    pub codec: captaine_export::Codec,
+    pub progress: ExportProgress,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// false while it waits for the jobs before it
+    pub started: Arc<std::sync::atomic::AtomicBool>,
+}
+
 pub struct ExportDialog {
     pub open: bool,
     pub codec: captaine_export::Codec,
     pub crf: u32,
     pub path: Option<PathBuf>,
-    pub progress: Option<ExportProgress>,
+    /// export only between the in and out marks
+    pub marks_only: bool,
+    pub jobs: Vec<ExportJob>,
 }
 
 pub struct App {
@@ -232,7 +245,8 @@ impl App {
                 codec: captaine_export::Codec::H264,
                 crf: 18,
                 path: None,
-                progress: None,
+                marks_only: false,
+                jobs: Vec::new(),
             },
             toasts: Vec::new(),
             central_rect: egui::Rect::from_min_size(
