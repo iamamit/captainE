@@ -465,6 +465,76 @@ impl TitleStyle {
     }
 }
 
+/// What a generated layer draws instead of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ShapeKind {
+    Rectangle,
+    Ellipse,
+    /// The whole frame in one colour
+    Solid,
+}
+
+impl ShapeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShapeKind::Rectangle => "Rectangle",
+            ShapeKind::Ellipse => "Ellipse",
+            ShapeKind::Solid => "Solid color",
+        }
+    }
+}
+
+/// A flat or gradient shape. Sizes are percentages of the frame; colours are RGBA.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    pub kind: ShapeKind,
+    pub color: [u8; 4],
+    /// Second colour: when set the fill runs from `color` at the top to this at the bottom
+    pub gradient_to: Option<[u8; 4]>,
+    pub width: f64,
+    pub height: f64,
+    /// Rounded corners of a rectangle, in percent of its shorter side
+    pub corner: f64,
+    pub outline: f64,
+    pub outline_color: [u8; 4],
+}
+
+impl Shape {
+    pub fn new(kind: ShapeKind) -> Shape {
+        Shape {
+            kind,
+            color: match kind {
+                ShapeKind::Solid => [40, 40, 48, 255],
+                _ => [0x5b, 0x4f, 0xd6, 255],
+            },
+            gradient_to: None,
+            width: 40.0,
+            height: 40.0,
+            corner: 0.0,
+            outline: 0.0,
+            outline_color: [255, 255, 255, 255],
+        }
+    }
+
+    pub fn check(&self) -> Result<(), &'static str> {
+        let nums = [self.width, self.height, self.corner, self.outline];
+        if !nums.iter().all(|v| v.is_finite()) {
+            return Err("shape sizes must be numbers");
+        }
+        if !(1.0..=400.0).contains(&self.width) || !(1.0..=400.0).contains(&self.height) {
+            return Err("shape size must be 1-400 % of the frame");
+        }
+        if !(0.0..=50.0).contains(&self.corner) || !(0.0..=50.0).contains(&self.outline) {
+            return Err("shape corner and outline are 0-50 %");
+        }
+        Ok(())
+    }
+}
+
+/// A generated clip: text, or (with `shape`) a shape or solid colour, or (with `adjustment`) a layer whose
+/// effects change everything beneath it. It has a picture (so it takes the usual transform and opacity)
+/// and no sound.
+///
 /// A generated text clip. It has a picture (so it takes the usual transform and opacity) and no sound.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Title {
@@ -482,9 +552,34 @@ pub struct Title {
     #[serde(default, skip_serializing_if = "Anim::is_empty")]
     pub anim: Anim,
     pub fade_out: i64,
+    /// Draw this instead of text
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
+    /// An adjustment layer draws nothing itself: its `effects` are applied to the picture below it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adjustment: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
 }
 
 impl Title {
+    /// A shape, solid colour or adjustment layer lasting `duration`.
+    pub fn generator(id: Id, kind: Option<ShapeKind>, duration: RationalTime) -> Title {
+        let mut t = Title::new(id, TitleTemplate::Centered, duration);
+        t.text = String::new();
+        match kind {
+            Some(k) => {
+                t.name = k.label().to_string();
+                t.shape = Some(Shape::new(k));
+            }
+            None => {
+                t.name = "Adjustment Layer".into();
+                t.adjustment = true;
+            }
+        }
+        t
+    }
+
     pub fn new(id: Id, template: TitleTemplate, duration: RationalTime) -> Title {
         let (text, subtitle) = match template {
             TitleTemplate::LowerThird => ("Your Title", "Subtitle"),
@@ -503,6 +598,9 @@ impl Title {
             fade_in: 0,
             anim: Anim::default(),
             fade_out: 0,
+            shape: None,
+            adjustment: false,
+            effects: Vec::new(),
         }
     }
 
@@ -514,6 +612,16 @@ impl Title {
         let (a, b) = (self.fade_in, self.fade_out);
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the title");
+        }
+        if let Some(sh) = &self.shape {
+            sh.check()?;
+        }
+        if self.shape.is_some() && self.adjustment {
+            return Err("a layer is either a shape or an adjustment layer");
+        }
+        check_effects(&self.effects)?;
+        if self.effects.iter().any(|e| e.kind.is_audio()) {
+            return Err("a title has no sound to process");
         }
         check_anim(&self.anim, false)
     }

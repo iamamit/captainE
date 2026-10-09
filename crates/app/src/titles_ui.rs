@@ -6,7 +6,7 @@ use egui::{pos2, vec2, Align2, Color32, Rect, RichText, Sense, Stroke, Ui};
 
 use crate::app::App;
 use crate::theme::{self, mono, ui_font};
-use crate::ui::{chip, slider_row, TitleDrag};
+use crate::ui::{chip, slider_row, LayerDrag, TitleDrag};
 
 const TEMPLATES: [TitleTemplate; 3] = [
     TitleTemplate::LowerThird,
@@ -38,8 +38,261 @@ pub fn pool_tab(app: &mut App, ui: &mut Ui) {
                         });
                         ui.add_space(6.0);
                     }
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Shapes & layers").strong().size(12.0));
+                    ui.add_space(6.0);
+                    let kinds = [
+                        Some(ShapeKind::Rectangle),
+                        Some(ShapeKind::Ellipse),
+                        Some(ShapeKind::Solid),
+                        None,
+                    ];
+                    for row in kinds.chunks(2) {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            for k in row {
+                                layer_card(app, ui, *k, w);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
                 });
         });
+}
+
+fn layer_card(app: &mut App, ui: &mut Ui, kind: Option<ShapeKind>, w: f32) {
+    let h = (w * 9.0 / 16.0).round();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h + 22.0), Sense::click_and_drag());
+    let pic = Rect::from_min_size(rect.min, vec2(w, h));
+    let p = ui.painter();
+    p.rect_filled(pic, 3.0, Color32::from_rgb(0x2c, 0x3f, 0x57));
+    p.rect_filled(
+        Rect::from_min_max(pos2(pic.left(), pic.top() + h * 0.62), pic.max),
+        3.0,
+        Color32::from_rgb(0x59, 0x6b, 0x55),
+    );
+    match kind {
+        Some(ShapeKind::Rectangle) => {
+            p.rect_filled(
+                Rect::from_center_size(pic.center(), vec2(w * 0.5, h * 0.5)),
+                2.0,
+                theme::ACCENT,
+            );
+        }
+        Some(ShapeKind::Ellipse) => {
+            p.circle_filled(pic.center(), h * 0.28, theme::ACCENT);
+        }
+        Some(ShapeKind::Solid) => {
+            p.rect_filled(pic, 3.0, Color32::from_rgb(0x28, 0x28, 0x30));
+        }
+        None => {
+            // a pane of glass over the scene
+            p.rect_filled(pic, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+            p.line_segment(
+                [pic.left_bottom(), pic.right_top()],
+                Stroke::new(1.5, Color32::from_white_alpha(160)),
+            );
+        }
+    }
+    let label = kind.map_or("Adjustment Layer", |k| k.label());
+    p.text(
+        rect.left_bottom() + vec2(0.0, -20.0),
+        Align2::LEFT_TOP,
+        label,
+        ui_font(11.0),
+        theme::TEXT,
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    if resp.double_clicked() {
+        app.add_layer(kind, None, None);
+    }
+    if resp.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), LayerDrag(kind));
+    }
+    resp.context_menu(|ui| {
+        if ui.button("Add at Playhead").clicked() {
+            app.add_layer(kind, None, None);
+            ui.close();
+        }
+    });
+}
+
+/// The inspector of a shape, solid colour or adjustment layer.
+fn layer_controls(app: &mut App, ui: &mut Ui, title: &Title, track_name: &str) {
+    ui.label(RichText::new(&title.name).strong().size(13.0));
+    ui.label(
+        RichText::new(format!(
+            "{track_name} · {} · {}",
+            app.tc(title.duration.value),
+            if title.adjustment {
+                "adjustment layer"
+            } else {
+                "shape"
+            }
+        ))
+        .font(mono(10.5))
+        .color(theme::MUTED),
+    );
+    let mut t = title.clone();
+    let (mut changed, mut done) = (false, false);
+    ui.add_space(8.0);
+    if let Some(sh) = t.shape.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [80.0, 22.0],
+                egui::Label::new(RichText::new("Fill").size(12.0)),
+            );
+            let mut rgb = [sh.color[0], sh.color[1], sh.color[2]];
+            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                sh.color = [rgb[0], rgb[1], rgb[2], sh.color[3]];
+                changed = true;
+                done = true;
+            }
+            let on = sh.gradient_to.is_some();
+            if chip(ui, "Gradient", on, true).clicked() {
+                sh.gradient_to = if on { None } else { Some([0, 0, 0, 255]) };
+                changed = true;
+                done = true;
+            }
+            if let Some(g) = sh.gradient_to.as_mut() {
+                let mut rgb = [g[0], g[1], g[2]];
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    *g = [rgb[0], rgb[1], rgb[2], g[3]];
+                    changed = true;
+                    done = true;
+                }
+            }
+        });
+        let mut row = |ui: &mut Ui,
+                       label: &str,
+                       v: &mut f64,
+                       range: std::ops::RangeInclusive<f64>,
+                       def: f64,
+                       suf: &str| {
+            let r = slider_row(ui, label, v, range, def, 0, suf, true);
+            changed |= r.changed;
+            done |= r.done;
+        };
+        let mut alpha = sh.color[3] as f64 / 255.0 * 100.0;
+        let before = alpha;
+        row(ui, "Fill opacity", &mut alpha, 0.0..=100.0, 100.0, "%");
+        if alpha != before {
+            sh.color[3] = (alpha / 100.0 * 255.0).round() as u8;
+        }
+        if sh.kind != ShapeKind::Solid {
+            row(ui, "Width", &mut sh.width, 1.0..=200.0, 40.0, "%");
+            row(ui, "Height", &mut sh.height, 1.0..=200.0, 40.0, "%");
+        }
+        if sh.kind == ShapeKind::Rectangle {
+            row(ui, "Corner radius", &mut sh.corner, 0.0..=50.0, 0.0, "%");
+        }
+        if sh.kind != ShapeKind::Solid {
+            row(ui, "Outline", &mut sh.outline, 0.0..=50.0, 0.0, " px");
+            if sh.outline > 0.0 {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [80.0, 22.0],
+                        egui::Label::new(RichText::new("Outline color").size(12.0)),
+                    );
+                    let mut rgb = [
+                        sh.outline_color[0],
+                        sh.outline_color[1],
+                        sh.outline_color[2],
+                    ];
+                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                        sh.outline_color = [rgb[0], rgb[1], rgb[2], 255];
+                        changed = true;
+                        done = true;
+                    }
+                });
+            }
+        }
+    } else {
+        ui.label(
+            RichText::new("Everything on the tracks below this layer goes through its effects. Add a Mask to limit it to part of the picture.")
+                .size(10.5)
+                .color(theme::FAINT),
+        );
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new("Transform").strong().size(12.5));
+    let (cw, ch) = (
+        app.project().settings.width as f64,
+        app.project().settings.height as f64,
+    );
+    let mut row = |ui: &mut Ui,
+                   label: &str,
+                   v: &mut f64,
+                   range: std::ops::RangeInclusive<f64>,
+                   def: f64,
+                   dec: usize,
+                   suf: &str| {
+        let r = slider_row(
+            ui,
+            label,
+            v,
+            range,
+            def,
+            dec,
+            suf,
+            !title.adjustment || label == "Opacity",
+        );
+        changed |= r.changed;
+        done |= r.done;
+    };
+    row(
+        ui,
+        "Position X",
+        &mut t.video.transform.position.0,
+        -cw..=cw,
+        0.0,
+        1,
+        "",
+    );
+    row(
+        ui,
+        "Position Y",
+        &mut t.video.transform.position.1,
+        -ch..=ch,
+        0.0,
+        1,
+        "",
+    );
+    let mut scale = t.video.transform.scale.0 * 100.0;
+    let before = scale;
+    row(ui, "Scale", &mut scale, 5.0..=400.0, 100.0, 1, "%");
+    if scale != before {
+        t.video.transform.scale = (scale / 100.0, scale / 100.0);
+    }
+    row(
+        ui,
+        "Rotation",
+        &mut t.video.transform.rotation_deg,
+        -180.0..=180.0,
+        0.0,
+        1,
+        "°",
+    );
+    let mut opacity = t.video.opacity * 100.0;
+    let before = opacity;
+    row(ui, "Opacity", &mut opacity, 0.0..=100.0, 100.0, 0, "%");
+    if opacity != before {
+        t.video.opacity = opacity / 100.0;
+    }
+    if t != *title || changed {
+        let key = format!("t:{}", title.id.to_full_string());
+        app.do_merging(
+            Op::SetTitle {
+                item: title.id,
+                title: t,
+            },
+            &key,
+        );
+    }
+    if done {
+        app.end_merge();
+    }
+    crate::ui::effects_stack(app, ui, title.id, &title.effects, true, false);
 }
 
 fn card(app: &mut App, ui: &mut Ui, template: TitleTemplate, w: f32) {
@@ -162,6 +415,10 @@ pub fn controls(app: &mut App, ui: &mut Ui) {
         .and_then(|t| t.tracks.iter().find(|x| x.id == track))
         .map(|t| t.name.clone())
         .unwrap_or_default();
+    if title.shape.is_some() || title.adjustment {
+        layer_controls(app, ui, &title, &track_name);
+        return;
+    }
     ui.label(RichText::new(&title.name).strong().size(13.0));
     ui.label(
         RichText::new(format!(

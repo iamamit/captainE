@@ -1035,3 +1035,35 @@ fn several_sequences_can_be_made_switched_renamed_and_deleted() {
     app_mut(&mut h).delete_sequence(only);
     assert_eq!(app(&h).project().timelines.len(), 1);
 }
+
+#[test]
+fn shapes_and_adjustment_layers_from_the_pool() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).playhead = 20;
+    app_mut(&mut h).add_layer(Some(ShapeKind::Ellipse), None, None);
+    settle(&mut h);
+    let sel = app(&h)
+        .selected_title()
+        .expect("the new shape is selected")
+        .0;
+    assert_eq!(sel.shape.unwrap().kind, ShapeKind::Ellipse);
+    h.get_by_label("Outline").scroll_to_me();
+    app_mut(&mut h).add_layer(None, None, None);
+    settle(&mut h);
+    let adj = app(&h).selected_title().unwrap().0;
+    assert!(adj.adjustment && adj.shape.is_none());
+    h.get_by_label("+ Blur").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("+ Blur").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h).selected_title().unwrap().0.effects[0].kind,
+        EffectKind::Blur
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(app(&h).selected_title().unwrap().0.effects.is_empty());
+}

@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 18);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 19);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -545,4 +545,46 @@ fn set_effects_adds_a_chroma_key_with_named_parameters() {
         (50.0, 80.0)
     );
     assert_eq!(c.effects[0].params[1], 255.0, "green key by default");
+}
+
+#[test]
+fn add_layer_makes_shapes_and_adjustment_layers_that_take_effects() {
+    let (p, _) = project();
+    let model = Scripted::new(vec![
+        tool("t1", "add_layer", json!({"kind": "hexagon", "at_sec": 0})),
+        tool(
+            "t2",
+            "add_layer",
+            json!({"kind": "rectangle", "at_sec": 1.0, "duration_sec": 2.0, "color": "#ff8800", "width_percent": 30, "height_percent": 20, "track": "V2"}),
+        ),
+        tool(
+            "t3",
+            "add_layer",
+            json!({"kind": "adjustment", "at_sec": 4, "duration_sec": 4}),
+        ),
+        end("Added an orange box and an adjustment layer."),
+    ]);
+    let r = ask(&model, &p, "orange box, and an adjustment layer", None).unwrap();
+    assert_eq!(r.new_ops.len(), 2, "the unknown kind changed nothing");
+    let after = apply_all(&p, &r.new_ops);
+    let tl = after.timelines.values().next().unwrap();
+    let boxed = tl.tracks[1]
+        .items
+        .iter()
+        .find_map(|i| i.as_title())
+        .unwrap()
+        .clone();
+    let sh = boxed.shape.unwrap();
+    assert_eq!(
+        (sh.kind, sh.color, sh.width, sh.height),
+        (ShapeKind::Rectangle, [255, 136, 0, 255], 30.0, 20.0)
+    );
+    let adj = tl
+        .tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter_map(|i| i.as_title())
+        .find(|t| t.adjustment)
+        .unwrap();
+    assert_eq!(adj.duration.value, 96);
 }

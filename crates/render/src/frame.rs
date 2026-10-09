@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use crate::color::to_srgb8;
+use crate::color::{to_linear, to_srgb8};
 
 /// A decoded picture: 8-bit sRGB RGBA, straight (non-premultiplied) alpha, as it comes from the decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,20 @@ impl Canvas {
             out.extend([to_srgb8(p[0]), to_srgb8(p[1]), to_srgb8(p[2]), 255]);
         }
         out
+    }
+
+    /// Mix an 8-bit picture over the canvas: `amount` (0..1) times the picture's own alpha says how much of
+    /// it replaces what is there. Used by adjustment layers.
+    pub fn blend_adjusted(&mut self, f: &Frame8, amount: f32) {
+        for (d, s) in self.data.chunks_exact_mut(4).zip(f.rgba.chunks_exact(4)) {
+            let a = s[3] as f32 / 255.0 * amount;
+            if a <= 0.0 {
+                continue;
+            }
+            for c in 0..3 {
+                d[c] = d[c] * (1.0 - a) + to_linear(s[c]) * a;
+            }
+        }
     }
 
     pub fn save_png(&self, path: &Path) -> Result<(), String> {

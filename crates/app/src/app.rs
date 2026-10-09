@@ -432,6 +432,42 @@ impl App {
     }
 
     /// Put a new title on the timeline: on `track` (default the top video track) at `at` (default the playhead).
+    /// Put a shape, solid colour or adjustment layer (`None`) on a video track.
+    pub fn add_layer(&mut self, kind: Option<ShapeKind>, at: Option<i64>, track: Option<Id>) {
+        let Some(tl) = self.timeline().cloned() else {
+            return;
+        };
+        // an adjustment layer goes on top of everything by default; shapes on the topmost track too
+        let track = track.or_else(|| {
+            tl.tracks
+                .iter()
+                .rev()
+                .find(|t| t.kind == TrackKind::Video)
+                .map(|t| t.id)
+        });
+        let Some(track) = track else {
+            self.toast("There is no video track to put a layer on", true);
+            return;
+        };
+        if tl
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .is_some_and(|t| t.kind != TrackKind::Video)
+        {
+            self.toast("Layers go on video tracks", true);
+            return;
+        }
+        let dur = RationalTime::new(((5.0 * self.fps()).round() as i64).max(1), tl.rate);
+        let layer = Title::generator(Id::new(), kind, dur);
+        let id = layer.id;
+        let at = self.time(at.unwrap_or(self.playhead).max(0));
+        if self.do_plan(|p| edit::overwrite_item(p, track, at, Item::Title(layer))) {
+            self.select_only(&[id]);
+            self.inspector_tab = InspectorTab::Inspector;
+        }
+    }
+
     pub fn add_title(&mut self, template: TitleTemplate, at: Option<i64>, track: Option<Id>) {
         let Some(tl) = self.timeline().cloned() else {
             return;

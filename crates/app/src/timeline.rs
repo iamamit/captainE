@@ -7,7 +7,7 @@ use egui::{pos2, vec2, Align2, Color32, Context, Painter, Rect, RichText, Sense,
 
 use crate::app::*;
 use crate::theme::{self, mono, ui_font};
-use crate::ui::{self, chip, toggle_text, MediaDrag, TitleDrag};
+use crate::ui::{self, chip, toggle_text, LayerDrag, MediaDrag, TitleDrag};
 
 const HEADER_W: f32 = 56.0;
 const RULER_H: f32 = 26.0;
@@ -1187,6 +1187,23 @@ fn media_drop(
         }
         return Some((row.track, tick, len));
     }
+    if let Some(lp) = egui::DragAndDrop::payload::<LayerDrag>(ctx) {
+        let pos = ctx.input(|i| i.pointer.hover_pos())?;
+        if !body.contains(pos) {
+            return None;
+        }
+        let row = rows
+            .iter()
+            .find(|r| pos.y >= r.top && pos.y < r.top + r.h && r.kind == TrackKind::Video)?;
+        let tick = snap(app, view.tick(pos.x).max(0), None, snapped);
+        let len = (5.0 * app.fps()).round() as i64;
+        if ctx.input(|i| i.pointer.any_released()) {
+            app.add_layer(lp.0, Some(tick), Some(row.track));
+            egui::DragAndDrop::clear_payload(ctx);
+            return None;
+        }
+        return Some((row.track, tick, len));
+    }
     let payload = egui::DragAndDrop::payload::<MediaDrag>(ctx)?;
     let MediaDrag(media) = *payload;
     let pos = ctx.input(|i| i.pointer.hover_pos())?;
@@ -1218,6 +1235,8 @@ fn drag_ghost(app: &App, ctx: &Context) {
     };
     let label = if let Some(t) = egui::DragAndDrop::payload::<TitleDrag>(ctx) {
         t.0.label().to_string()
+    } else if let Some(l) = egui::DragAndDrop::payload::<LayerDrag>(ctx) {
+        l.0.map_or("Adjustment Layer", |k| k.label()).to_string()
     } else if let Some(m) =
         egui::DragAndDrop::payload::<MediaDrag>(ctx).and_then(|p| app.project().media.get(&p.0))
     {

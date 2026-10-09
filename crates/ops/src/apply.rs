@@ -453,6 +453,9 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         || a.text != b.text
                         || a.subtitle != b.subtitle
                         || a.style != b.style
+                        || a.shape != b.shape
+                        || a.adjustment != b.adjustment
+                        || a.effects != b.effects
                         || a.video != b.video
                     {
                         return Err(OpError::NotJoinable("titles differ"));
@@ -719,13 +722,23 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
         Op::SetEffects { item, effects } => {
             let loc = item_loc(p, *item)?;
             let rate = timeline_rate(p, loc.timeline);
-            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
-                return Err(OpError::NotFound("clip", *item));
+            let (new, previous) = match p.item(loc).expect("located").clone() {
+                Item::Clip(c) => (
+                    Item::Clip(Clip {
+                        effects: effects.clone(),
+                        ..c.clone()
+                    }),
+                    c.effects,
+                ),
+                Item::Title(t) => (
+                    Item::Title(Title {
+                        effects: effects.clone(),
+                        ..t.clone()
+                    }),
+                    t.effects,
+                ),
+                Item::Gap(_) => return Err(OpError::NotFound("clip", *item)),
             };
-            let new = Item::Clip(Clip {
-                effects: effects.clone(),
-                ..c.clone()
-            });
             check_item(p, rate, &new)?;
             p.timeline_mut(loc.timeline)
                 .expect("located")
@@ -733,7 +746,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 .items[loc.index] = new;
             Ok(Op::SetEffects {
                 item: *item,
-                effects: c.effects,
+                effects: previous,
             })
         }
         Op::SetTransition { item, transition } => {

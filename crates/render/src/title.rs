@@ -1,7 +1,7 @@
 //! Title templates: lay out a [`Title`] on a canvas of a given size and draw it into a transparent picture.
 //! Sizes are in pixels on a 1080-pixel-tall canvas and scale with the canvas height.
 
-use captaine_model::{Title, TitleTemplate};
+use captaine_model::{Shape, ShapeKind, Title, TitleTemplate};
 
 use crate::text::{ascent_descent, draw_text, fill_rounded_rect, text_width};
 use crate::Frame8;
@@ -12,6 +12,12 @@ const PLATE: [u8; 3] = [24, 24, 28];
 /// The title as a canvas-sized picture, transparent except for the title itself.
 pub fn render_title(t: &Title, width: u32, height: u32) -> Frame8 {
     let mut f = Frame8::solid(width, height, [0, 0, 0, 0]);
+    if let Some(shape) = &t.shape {
+        return render_shape(shape, width, height);
+    }
+    if t.adjustment {
+        return f; // an adjustment layer has no picture of its own
+    }
     if t.text.trim().is_empty() && t.subtitle.trim().is_empty() {
         return f;
     }
@@ -129,6 +135,71 @@ fn caption(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
         1.0,
         false,
     );
+}
+
+/// A shape (or the whole frame in one colour) as a canvas-sized picture with smooth edges.
+pub fn render_shape(sh: &Shape, width: u32, height: u32) -> Frame8 {
+    let mut f = Frame8::solid(width, height, [0, 0, 0, 0]);
+    let (w, h) = (width as f32, height as f32);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let (bw, bh) = if sh.kind == ShapeKind::Solid {
+        (w, h)
+    } else {
+        (
+            (sh.width as f32 / 100.0) * w,
+            (sh.height as f32 / 100.0) * h,
+        )
+    };
+    let (hx, hy) = (bw / 2.0, bh / 2.0);
+    let radius = (sh.corner as f32 / 100.0) * bw.min(bh);
+    let outline = (sh.outline as f32) * h / 1080.0;
+    let mix = |a: [u8; 4], b: [u8; 4], t: f32| -> [f32; 4] {
+        std::array::from_fn(|i| a[i] as f32 + (b[i] as f32 - a[i] as f32) * t)
+    };
+    for y in 0..height {
+        for x in 0..width {
+            let (px, py) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+            // signed distance to the edge in pixels (negative inside)
+            let d = match sh.kind {
+                ShapeKind::Solid => -1.0,
+                ShapeKind::Rectangle => {
+                    let (qx, qy) = (px.abs() - (hx - radius), py.abs() - (hy - radius));
+                    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+                }
+                ShapeKind::Ellipse => {
+                    let (a, b) = (hx.max(0.5), hy.max(0.5));
+                    ((px / a).powi(2) + (py / b).powi(2))
+                        .sqrt()
+                        .mul_add(1.0, -1.0)
+                        * a.min(b)
+                }
+            };
+            let cover = (0.5 - d).clamp(0.0, 1.0);
+            if cover <= 0.0 {
+                continue;
+            }
+            let t = ((py + hy) / bh.max(1.0)).clamp(0.0, 1.0);
+            let fill = match sh.gradient_to {
+                Some(to) => mix(sh.color, to, t),
+                None => sh.color.map(|v| v as f32),
+            };
+            // the outline covers the band just inside the edge
+            let ring = if outline > 0.0 {
+                (0.5 + d + outline).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let c: [f32; 4] =
+                std::array::from_fn(|i| fill[i] + (sh.outline_color[i] as f32 - fill[i]) * ring);
+            let a = c[3] / 255.0 * cover;
+            let i = ((y * width + x) * 4) as usize;
+            f.rgba[i] = c[0].round() as u8;
+            f.rgba[i + 1] = c[1].round() as u8;
+            f.rgba[i + 2] = c[2].round() as u8;
+            f.rgba[i + 3] = (a * 255.0).round() as u8;
+        }
+    }
+    f
 }
 
 #[cfg(test)]

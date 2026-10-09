@@ -168,7 +168,11 @@ impl Renderer {
     fn title_picture(&mut self, t: &Title) -> Arc<Frame8> {
         let (w, h) = self.size();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        format!("{}|{}|{:?}|{w}x{h}", t.text, t.subtitle, t.style).hash(&mut hasher);
+        format!(
+            "{}|{}|{:?}|{:?}|{w}x{h}",
+            t.text, t.subtitle, t.style, t.shape
+        )
+        .hash(&mut hasher);
         let key = hasher.finish();
         if self.titles.len() > 32 {
             self.titles.clear();
@@ -254,7 +258,22 @@ impl Renderer {
                     draw_layer_fx(&mut canvas, &f, &props, &fx);
                 }
                 Want::Title { title, props } => {
-                    let f = self.title_picture(&title);
+                    if title.adjustment {
+                        // change everything drawn so far: through the effects and back, mixed by opacity
+                        let before = Frame8 {
+                            width: canvas.width,
+                            height: canvas.height,
+                            rgba: canvas.to_rgba8(),
+                        };
+                        if let Some(after) = apply_effects(&before, &title.effects) {
+                            canvas.blend_adjusted(&after, props.opacity as f32);
+                        }
+                        continue;
+                    }
+                    let mut f = self.title_picture(&title);
+                    if let Some(g) = apply_effects(&f, &title.effects) {
+                        f = Arc::new(g);
+                    }
                     draw_layer(&mut canvas, &f, &props);
                 }
             }

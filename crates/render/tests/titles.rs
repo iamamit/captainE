@@ -208,3 +208,145 @@ fn keyframed_properties_change_the_picture_frame_by_frame() {
     assert!(e24 > e12 + 20, "moving right: {e12} -> {e24}");
     assert_eq!(right_edge(&f40), e24, "and stopped");
 }
+
+fn px8(c: &Canvas, x: u32, y: u32) -> [u8; 3] {
+    let rgba = c.to_rgba8();
+    let i = ((y * c.width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2]]
+}
+
+fn render_at(p: &Project, tl: Id, tick: i64) -> Canvas {
+    Renderer::new(p, tl, RenderOptions::default())
+        .unwrap()
+        .render(tick)
+        .unwrap()
+}
+
+#[test]
+fn shapes_and_solids_are_drawn_without_any_media() {
+    let mut s = Title::generator(Id::new(), Some(ShapeKind::Rectangle), t(48));
+    s.shape = Some(Shape {
+        color: [255, 0, 0, 255],
+        width: 50.0,
+        height: 50.0,
+        ..Shape::new(ShapeKind::Rectangle)
+    });
+    let (p, tl) = project_with(s.clone());
+    let c = render_at(&p, tl, 30);
+    assert!(
+        px8(&c, 320, 180)[0] > 250 && px8(&c, 320, 180)[1] < 5,
+        "red in the middle"
+    );
+    assert_eq!(px8(&c, 20, 20), [0, 0, 0], "black outside the rectangle");
+    assert_eq!(
+        px8(&render_at(&p, tl, 5), 320, 180),
+        [0, 0, 0],
+        "nothing before it starts"
+    );
+    // ellipse leaves the corners of its box empty
+    let mut e = s.clone();
+    e.shape = Some(Shape {
+        kind: ShapeKind::Ellipse,
+        ..e.shape.unwrap()
+    });
+    let (p, tl) = project_with(e);
+    let c = render_at(&p, tl, 30);
+    assert!(px8(&c, 320, 180)[0] > 250);
+    assert_eq!(px8(&c, 170, 100), [0, 0, 0], "corner of the ellipse's box");
+    // a gradient runs top to bottom, and a solid covers the frame
+    let mut g = Title::generator(Id::new(), Some(ShapeKind::Solid), t(48));
+    g.shape = Some(Shape {
+        color: [255, 255, 255, 255],
+        gradient_to: Some([0, 0, 0, 255]),
+        ..Shape::new(ShapeKind::Solid)
+    });
+    let (p, tl) = project_with(g);
+    let c = render_at(&p, tl, 30);
+    assert!(px8(&c, 100, 5)[0] > 240 && px8(&c, 100, 355)[0] < 15 && px8(&c, 100, 180)[0] > 100);
+    // an outline paints the edge in its own colour
+    let mut o = s;
+    o.shape = Some(Shape {
+        outline: 30.0,
+        outline_color: [0, 0, 255, 255],
+        ..o.shape.unwrap()
+    });
+    let (p, tl) = project_with(o);
+    let c = render_at(&p, tl, 30);
+    let edge = px8(&c, 165, 180);
+    assert!(edge[2] > 200 && edge[0] < 60, "{edge:?}");
+    assert!(px8(&c, 320, 180)[0] > 250, "the inside keeps the fill");
+}
+
+#[test]
+fn an_adjustment_layer_changes_what_is_under_it_only_where_its_effects_reach() {
+    // a red solid on V1, an adjustment layer on V2 that turns red grey, limited to the left half by a mask
+    let red = {
+        let mut s = Title::generator(Id::new(), Some(ShapeKind::Solid), t(48));
+        s.shape = Some(Shape {
+            color: [255, 0, 0, 255],
+            ..Shape::new(ShapeKind::Solid)
+        });
+        s
+    };
+    let mut adj = Title::generator(Id::new(), None, t(48));
+    let mut hsl = Effect::new(EffectKind::Hsl);
+    hsl.params[1] = 0.0;
+    let mut mask = Effect::new(EffectKind::Mask);
+    mask.params = vec![0.0, 25.0, 50.0, 50.0, 100.0, 0.0, 0.0, 0.0]; // the left half
+    adj.effects = vec![hsl, mask];
+    let (mut p, tl) = project_with(red);
+    let mut v2 = Track::new(Id::new(), "V2", TrackKind::Video);
+    v2.items.push(Item::Gap(Gap {
+        id: Id::new(),
+        duration: t(24),
+    }));
+    v2.items.push(Item::Title(adj.clone()));
+    let mut timeline = (*p.timelines[&tl]).clone();
+    timeline.tracks.push(Arc::new(v2));
+    p.timelines.insert(tl, Arc::new(timeline));
+    p.validate().unwrap();
+    let c = render_at(&p, tl, 30);
+    let (left, right) = (px8(&c, 100, 180), px8(&c, 540, 180));
+    assert!(
+        left[0].abs_diff(left[1]) < 12 && left[0].abs_diff(left[2]) < 12,
+        "left is grey: {left:?}"
+    );
+    assert!(right[0] > 250 && right[1] < 5, "right stays red: {right:?}");
+    // before the layer starts nothing is changed; at half opacity it is half way
+    let before = render_at(&p, tl, 12);
+    assert_eq!(px8(&before, 100, 180), [0, 0, 0]);
+    let mut half = adj;
+    half.video.opacity = 0.5;
+    let mut timeline = (*p.timelines[&tl]).clone();
+    let mut v2 = (*timeline.tracks[1]).clone();
+    v2.items[1] = Item::Title(half);
+    timeline.tracks[1] = Arc::new(v2);
+    p.timelines.insert(tl, Arc::new(timeline));
+    let mid = px8(&render_at(&p, tl, 30), 100, 180);
+    assert!(
+        mid[0] > 150 && mid[1] > 50 && mid[1] < 200 && mid[0] > mid[1],
+        "{mid:?}"
+    );
+    // adjustment layers and shapes are ordinary items for the command layer
+    let mut ed = Editor::new(p);
+    let id = match &ed.project().timelines[&tl].tracks[1].items[1] {
+        Item::Title(t) => t.id,
+        _ => unreachable!(),
+    };
+    ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: id,
+            effects: vec![],
+        },
+    )
+    .unwrap();
+    ed.undo();
+    assert_eq!(
+        match &ed.project().timelines[&tl].tracks[1].items[1] {
+            Item::Title(t) => t.effects.len(),
+            _ => 0,
+        },
+        2
+    );
+}

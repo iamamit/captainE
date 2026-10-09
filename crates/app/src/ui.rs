@@ -1137,6 +1137,9 @@ pub struct MediaDrag(pub Id);
 #[derive(Clone, Copy)]
 pub struct TitleDrag(pub TitleTemplate);
 
+/// A shape, solid colour (`Some`) or adjustment layer (`None`) being dragged from the pool.
+pub struct LayerDrag(pub Option<ShapeKind>);
+
 pub fn media_pool(app: &mut App, root: &mut Ui) {
     egui::Panel::left("media_pool")
         .default_size(330.0)
@@ -1568,9 +1571,21 @@ pub fn toggle_transition(app: &mut App) {
 }
 
 fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip, has_video: bool, has_audio: bool) {
+    effects_stack(app, ui, clip.id, &clip.effects, has_video, has_audio);
+}
+
+/// The effects list of a clip or of a generated layer, with add / remove / on-off and sliders.
+pub fn effects_stack(
+    app: &mut App,
+    ui: &mut Ui,
+    id: Id,
+    current: &[Effect],
+    has_video: bool,
+    has_audio: bool,
+) {
     section(ui, "Effects");
-    let mut fx = clip.effects.clone();
-    let key = format!("fx:{}", clip.id.to_full_string());
+    let mut fx = current.to_vec();
+    let key = format!("fx:{}", id.to_full_string());
     let (mut changed, mut done, mut structural) = (false, false, false);
     let mut remove = None;
     for (i, e) in fx.iter_mut().enumerate() {
@@ -1642,13 +1657,13 @@ fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip, has_video: bool, ha
     if structural {
         app.end_merge();
         app.do_op(Op::SetEffects {
-            item: clip.id,
+            item: id,
             effects: fx,
         });
     } else if changed {
         app.do_merging(
             Op::SetEffects {
-                item: clip.id,
+                item: id,
                 effects: fx,
             },
             &key,
