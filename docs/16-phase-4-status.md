@@ -15,8 +15,8 @@ on its own branch. The design is [07](07-branching-and-versioning.md); this reco
 | History survives crashes | Every edit is written to the project file within 0.6 s (atomic write: temp file then rename); branch actions save at once. A crash can lose the last fraction of a second, never a commit |
 | Diffs are readable | Each change is a sentence ("Trimmed 'intro': duration 4.0 s → 3.2 s") and each branch/commit has a summary ("removes 1 clip (4.0 s), changes the properties of 2 items") |
 
-About 80 tests cover this phase, including three fuzzers: random states → ops (180 pairs), random edits on both sides of
-a merge (120 + 80 + 600 pairs).
+About 45 tests cover this phase (27 in `vcs`, 11 for the session, 7 through the window), including three fuzzers: random states → ops (180 pairs), random edits on both sides of
+a merge (120 + 80 + 600 pairs); the whole project now has about 215 tests.
 
 ## How it works
 
