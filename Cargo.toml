@@ -33,4 +33,5 @@ ureq = "3"
 captaine-vcs = { path = "crates/vcs" }
 captaine-interchange = { path = "crates/interchange" }
 captaine-speech = { path = "crates/speech" }
+captaine-vision = { path = "crates/vision" }
 blake3 = "1"

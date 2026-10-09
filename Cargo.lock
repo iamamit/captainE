@@ -837,6 +837,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "captaine-vision"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "cc"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

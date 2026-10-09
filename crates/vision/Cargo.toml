@@ -1,0 +1,13 @@
+[package]
+name = "captaine-vision"
+description = "Apple's Vision framework for captainE: subject mattes, face and saliency boxes, object tracking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_vision"
+
+[dependencies]
+serde_json.workspace = true
