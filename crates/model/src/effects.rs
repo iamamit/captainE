@@ -17,12 +17,14 @@ pub enum EffectKind {
     Curves,
     Hsl,
     Lut,
+    Mask,
     // sound
     Eq,
     Compressor,
     Limiter,
     DeEsser,
     NoiseReduction,
+    Ducking,
 }
 
 pub struct ParamDef {
@@ -44,7 +46,7 @@ const fn p(name: &'static str, min: f64, max: f64, default: f64, decimals: usize
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 16] = [
+    pub const ALL: [EffectKind; 18] = [
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::Vignette,
@@ -56,11 +58,13 @@ impl EffectKind {
         EffectKind::Curves,
         EffectKind::Hsl,
         EffectKind::Lut,
+        EffectKind::Mask,
         EffectKind::Eq,
         EffectKind::Compressor,
         EffectKind::Limiter,
         EffectKind::DeEsser,
         EffectKind::NoiseReduction,
+        EffectKind::Ducking,
     ];
 
     /// Works on a clip's sound rather than its picture.
@@ -72,6 +76,7 @@ impl EffectKind {
                 | EffectKind::Limiter
                 | EffectKind::DeEsser
                 | EffectKind::NoiseReduction
+                | EffectKind::Ducking
         )
     }
 
@@ -88,11 +93,13 @@ impl EffectKind {
             EffectKind::Curves => "Curves",
             EffectKind::Hsl => "Hue / Sat / Lum",
             EffectKind::Lut => "LUT",
+            EffectKind::Mask => "Mask",
             EffectKind::Eq => "EQ",
             EffectKind::Compressor => "Compressor",
             EffectKind::Limiter => "Limiter",
             EffectKind::DeEsser => "De-esser",
             EffectKind::NoiseReduction => "Noise reduction",
+            EffectKind::Ducking => "Auto duck",
         }
     }
 
@@ -110,11 +117,13 @@ impl EffectKind {
             EffectKind::Curves => "curves",
             EffectKind::Hsl => "hsl",
             EffectKind::Lut => "lut",
+            EffectKind::Mask => "mask",
             EffectKind::Eq => "eq",
             EffectKind::Compressor => "compressor",
             EffectKind::Limiter => "limiter",
             EffectKind::DeEsser => "de_esser",
             EffectKind::NoiseReduction => "noise_reduction",
+            EffectKind::Ducking => "ducking",
         }
     }
 
@@ -135,11 +144,13 @@ impl EffectKind {
             EffectKind::Curves => &CURVES,
             EffectKind::Hsl => &HSL,
             EffectKind::Lut => &LUT,
+            EffectKind::Mask => &MASK,
             EffectKind::Eq => &EQ,
             EffectKind::Compressor => &COMPRESSOR,
             EffectKind::Limiter => &LIMITER,
             EffectKind::DeEsser => &DEESSER,
             EffectKind::NoiseReduction => &NOISE,
+            EffectKind::Ducking => &DUCKING,
         }
     }
 }
@@ -230,6 +241,17 @@ static HSL: [ParamDef; 18] = [
     p("Magenta sat", 0.0, 200.0, 100.0, 0),
     p("Magenta lum", -50.0, 50.0, 0.0, 0),
 ];
+// shape 0 = rectangle, 1 = ellipse; centre and size in % of the frame; feather in % of the shorter side
+static MASK: [ParamDef; 8] = [
+    p("Shape", 0.0, 1.0, 1.0, 0),
+    p("Center x", 0.0, 100.0, 50.0, 1),
+    p("Center y", 0.0, 100.0, 50.0, 1),
+    p("Width", 1.0, 200.0, 60.0, 1),
+    p("Height", 1.0, 200.0, 60.0, 1),
+    p("Rotation", -180.0, 180.0, 0.0, 0),
+    p("Feather", 0.0, 50.0, 8.0, 1),
+    p("Invert", 0.0, 1.0, 0.0, 0),
+];
 // four bands: low shelf, two peaking bands, high shelf (gain in dB, frequency in Hz)
 static EQ: [ParamDef; 10] = [
     p("Low gain", -18.0, 18.0, 0.0, 1),
@@ -261,6 +283,13 @@ static DEESSER: [ParamDef; 2] = [
 static NOISE: [ParamDef; 2] = [
     p("Reduction dB", 0.0, 40.0, 12.0, 0),
     p("Sensitivity %", 0.0, 100.0, 50.0, 0),
+];
+// turn this clip down while any other sound on the timeline is louder than the threshold
+static DUCKING: [ParamDef; 4] = [
+    p("Threshold dB", -60.0, 0.0, -35.0, 1),
+    p("Reduction dB", 0.0, 40.0, 14.0, 1),
+    p("Attack ms", 1.0, 500.0, 40.0, 0),
+    p("Release ms", 10.0, 3000.0, 450.0, 0),
 ];
 // the .cube file is `Effect::text`
 static LUT: [ParamDef; 1] = [p("Strength", 0.0, 100.0, 100.0, 0)];

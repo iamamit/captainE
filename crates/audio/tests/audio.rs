@@ -566,3 +566,81 @@ fn sound_effects_run_in_the_mix_and_tracks_are_metered() {
     assert!(peaks[1] > 0.85, "plain track {}", peaks[1]);
     assert!(peak(&out) < 1.2);
 }
+
+#[test]
+fn music_ducks_under_dialogue_and_comes_back() {
+    if !have_ffmpeg() {
+        return;
+    }
+    // "dialogue": loud tone in seconds 1-2 of 4, silent otherwise; "music": steady quiet tone
+    let voice = scratch("voice.wav");
+    let src =
+        format!("aevalsrc=if(between(t\\,1\\,2)\\,0.5*sin(2*PI*220*t)\\,0):s={SR}:d=4:c=stereo");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &src,
+            "-c:a",
+            "pcm_f32le"
+        ])
+        .arg(&voice)
+        .status()
+        .unwrap()
+        .success());
+    let music = scratch("music.wav");
+    sine(&music, 880.0, 0.2, 4.0);
+    let mut f = fx();
+    let (mv, mm) = (media(&mut f, &voice), media(&mut f, &music));
+    place(&mut f, 0, 0, clip(&mv, 0.0, 120));
+    let bed = place(&mut f, 1, 0, clip(&mm, 0.0, 120));
+    let level = |out: &[f32], a: f64, b: f64| {
+        let sr = SR as f64;
+        // look at the music's own frequency by taking the whole mix; the voice is silent outside 1-2 s
+        rms(&out[(a * sr) as usize * 2..(b * sr) as usize * 2], 0)
+    };
+    let plain = mix(&f);
+    let before_plain = level(&plain, 0.2, 0.8);
+    assert!(before_plain > 0.1);
+    let mut duck = Effect::new(EffectKind::Ducking);
+    duck.params = vec![-30.0, 20.0, 30.0, 200.0];
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: bed,
+            effects: vec![duck],
+        },
+    )
+    .unwrap();
+    let out = mix(&f);
+    // away from the voice the music is at full level
+    assert!((level(&out, 0.2, 0.8) - before_plain).abs() < 0.01);
+    assert!(
+        (level(&out, 3.2, 3.8) - before_plain).abs() < 0.02,
+        "it recovers after the release"
+    );
+    // during the voice the music is far down: compare the 880 Hz part by removing the voice
+    let mut only_voice = Vec::new();
+    {
+        let mut g = fx();
+        let mv2 = media(&mut g, &voice);
+        place(&mut g, 0, 0, clip(&mv2, 0.0, 120));
+        only_voice.extend(mix(&g));
+    }
+    let a = (1.3 * SR as f64) as usize * 2;
+    let b = (1.9 * SR as f64) as usize * 2;
+    let residual: Vec<f32> = out[a..b]
+        .iter()
+        .zip(&only_voice[a..b])
+        .map(|(m, v)| m - v)
+        .collect();
+    let music_during = rms(&residual, 0);
+    assert!(
+        music_during < before_plain * 0.2,
+        "ducked: {music_during} vs {before_plain}"
+    );
+}

@@ -33,6 +33,7 @@ pub fn apply_effects(frame: &Frame8, effects: &[Effect]) -> Option<Frame8> {
             EffectKind::Curves => curves(&mut out, p),
             EffectKind::Hsl => hsl(&mut out, p),
             EffectKind::Lut => lut(&mut out, &e.text, p[0] / 100.0),
+            EffectKind::Mask => mask(&mut out, p),
             _ => {}
         }
     }
@@ -263,6 +264,38 @@ fn pixelate(f: &mut Frame8, block: usize) {
                     f.rgba[i..i + 4].copy_from_slice(&avg);
                 }
             }
+        }
+    }
+}
+
+/// Keep the picture only inside (or, inverted, outside) a rectangle or ellipse with a soft edge.
+fn mask(f: &mut Frame8, p: &[f64]) {
+    let (w, h) = (f.width as f64, f.height as f64);
+    let (cx, cy) = (p[1] / 100.0 * w, p[2] / 100.0 * h);
+    let (hw, hh) = (p[3] / 100.0 * w / 2.0, p[4] / 100.0 * h / 2.0);
+    let (sin, cos) = p[5].to_radians().sin_cos();
+    let feather = (p[6] / 100.0 * w.min(h)).max(0.5);
+    let ellipse = p[0] >= 0.5;
+    let invert = p[7] >= 0.5;
+    for y in 0..f.height as usize {
+        for x in 0..f.width as usize {
+            // into the mask's own axes
+            let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+            let (u, v) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+            // signed distance (in pixels) to the edge, negative inside
+            let dist = if ellipse {
+                let (a, b) = (hw.max(0.5), hh.max(0.5));
+                let k = ((u / a).powi(2) + (v / b).powi(2)).sqrt();
+                (k - 1.0) * a.min(b)
+            } else {
+                (u.abs() - hw).max(v.abs() - hh)
+            };
+            let mut inside = (0.5 - dist / feather).clamp(0.0, 1.0);
+            if invert {
+                inside = 1.0 - inside;
+            }
+            let i = (y * f.width as usize + x) * 4;
+            f.rgba[i + 3] = (f.rgba[i + 3] as f64 * inside).round() as u8;
         }
     }
 }
@@ -820,6 +853,33 @@ mod tests {
         gone.text = "/no/such.cube".into();
         assert_eq!(apply_effects(&f, &[gone]).unwrap().rgba, f.rgba);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn masks_keep_the_inside_and_feather_the_edge() {
+        let f = Frame8::solid(100, 100, [200, 100, 50, 255]);
+        let mut m = Effect::new(EffectKind::Mask);
+        m.params = vec![0.0, 50.0, 50.0, 40.0, 40.0, 0.0, 0.0, 0.0]; // hard 40% rectangle
+        let r = apply_effects(&f, &[m.clone()]).unwrap();
+        assert_eq!(px(&r, 50, 50)[3], 255);
+        assert_eq!(px(&r, 5, 5)[3], 0);
+        assert_eq!(px(&r, 35, 50)[3], 255, "just inside the left edge");
+        assert_eq!(px(&r, 28, 50)[3], 0, "just outside");
+        // inverted: the opposite
+        m.params[7] = 1.0;
+        let inv = apply_effects(&f, &[m.clone()]).unwrap();
+        assert_eq!((px(&inv, 50, 50)[3], px(&inv, 5, 5)[3]), (0, 255));
+        // an ellipse leaves the corners of its box empty
+        let mut e = Effect::new(EffectKind::Mask);
+        e.params = vec![1.0, 50.0, 50.0, 80.0, 80.0, 0.0, 0.0, 0.0];
+        let el = apply_effects(&f, &[e.clone()]).unwrap();
+        assert_eq!(px(&el, 50, 50)[3], 255);
+        assert_eq!(px(&el, 14, 14)[3], 0, "corner of the box");
+        // feathering gives partial alpha at the edge
+        e.params[6] = 20.0;
+        let soft = apply_effects(&f, &[e]).unwrap();
+        let edge = px(&soft, 10, 50)[3];
+        assert!(edge > 20 && edge < 235, "{edge}");
     }
 
     #[test]

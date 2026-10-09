@@ -22,7 +22,7 @@ e19	Editing	Autosave and versioning	3	1	commits, branches, merge
 v01	Video	Transform, opacity, blend modes	4	0.75	4 blend modes
 v02	Video	Titles and text with templates and styling	4	0.5	3 templates, one font
 v03	Video	Shapes and graphics layers	3	0	
-v04	Video	Masks	3	0	
+v04	Video	Masks	3	0.5	rectangle/ellipse mask effect with feather, rotation, invert; no free-draw bezier masks, no tracking
 v05	Video	Chroma key	4	0.5	chroma key with tolerance/softness/spill; no matte view or edge refine
 v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0.5	blur, sharpen, vignette, mirror, crop, pixelate (CPU)
 v07	Video	Effects stack, inspector, presets	4	0.5	ordered stack on clips with on/off/remove and sliders; no presets, no keyframed effect params, clips only
@@ -30,7 +30,7 @@ v08	Video	Stabilization	3	0
 v09	Video	Motion tracking	2	0	
 v10	Video	Text animators and animation presets	3	0	
 v11	Video	Adjustment layers	3	0	
-v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.25	
+v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V, rotate, fit and fill buttons
 v13	Video	AI background removal / rotoscoping	3	0	
 c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.5	4 controls
 c02	Color	Wheels, curves, HSL	4	0.5	lift/gamma/gain wheels, 4-curve editor, 6-band HSL as slider effects; no graphical wheels/curve drag, no secondaries/qualifiers
@@ -42,12 +42,12 @@ a02	Audio	Mixer panel with track faders and live meters	4	0.5	mixer tab: per-tra
 a03	Audio	Loudness measure and normalize to a target	4	0.5	measure only
 a04	Audio	EQ, compressor, limiter, de-esser	4	0.5	4-band EQ, compressor, limiter, de-esser per clip; no sidechain, no spectrum display
 a05	Audio	Noise reduction and voice cleanup	4	0.5	spectral-subtraction noise reduction with sensitivity; no learn-profile or voice isolation model
-a06	Audio	Auto ducking	3	0	
+a06	Audio	Auto ducking	3	0.5	Auto duck effect on a clip: dips under any other sound with attack/release; no per-track sidechain choice
 a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
 a08	Audio	Voice-over recording	2	0	
 i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0	
 i02	AI	Edit by transcript, filler-word removal	4	0.25	silence removal only
-i03	AI	Scene detection and auto-cut	3	0	
+i03	AI	Scene detection and auto-cut	3	0.75	scene detection splits a clip at hard cuts (menu + Copilot split_at_scenes)
 i04	AI	Natural-language editing assistant	4	0.75	Claude agent and local skills
 i05	AI	Auto-reframe to vertical and other aspect ratios	3	0	
 i06	AI	Generative fill, extend, text-to-video	1	0	out of scope; counted so the score is honest

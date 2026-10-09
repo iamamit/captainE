@@ -665,6 +665,7 @@ name = "captaine-agent"
 version = "0.0.1"
 dependencies = [
  "captaine-audio",
+ "captaine-media",
  "captaine-model",
  "captaine-ops",
  "captaine-time",

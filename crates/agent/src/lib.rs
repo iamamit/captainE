@@ -7,10 +7,12 @@
 
 mod http;
 mod loop_;
+mod scenes;
 mod silence;
 mod tools;
 
 pub use http::{AnthropicTransport, Credentials, Transport};
 pub use loop_::{run, AgentConfig, AgentError, AgentRequest, AgentResult, ChatTurn, Event};
+pub use scenes::split_at_scenes;
 pub use silence::remove_silences;
 pub use tools::{tool_definitions, ToolBox};

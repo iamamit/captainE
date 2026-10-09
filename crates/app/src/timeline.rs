@@ -1086,6 +1086,16 @@ fn clip_menu(app: &mut App, ui: &mut egui::Ui) {
         ui.close();
     }
     if ui
+        .add_enabled(
+            app.selected().is_some(),
+            egui::Button::new("Split at Scene Changes"),
+        )
+        .clicked()
+    {
+        ui::split_at_scenes(app);
+        ui.close();
+    }
+    if ui
         .add_enabled(has, egui::Button::new("Trim Start to Playhead"))
         .clicked()
     {

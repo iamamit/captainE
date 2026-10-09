@@ -384,6 +384,26 @@ mod tests {
     }
 
     #[test]
+    fn negative_scale_flips_the_picture() {
+        let mut f = Frame8::solid(4, 2, [0, 0, 255, 255]);
+        for y in 0..2 {
+            for x in 0..2 {
+                let i = (y * 4 + x) * 4;
+                f.rgba[i..i + 3].copy_from_slice(&[255, 0, 0]); // left half red
+            }
+        }
+        let mut c = Canvas::black(4, 2);
+        draw_layer(&mut c, &f, &props());
+        assert_eq!(px(&c, 0, 0), [255, 0, 0]);
+        let mut flipped = props();
+        flipped.transform.scale = (-1.0, 1.0);
+        let mut c = Canvas::black(4, 2);
+        draw_layer(&mut c, &f, &flipped);
+        assert_eq!(px(&c, 0, 0), [0, 0, 255], "red is now on the right");
+        assert_eq!(px(&c, 3, 0), [255, 0, 0]);
+    }
+
+    #[test]
     fn offscreen_layer_is_harmless() {
         let mut c = Canvas::black(4, 4);
         let t = Transform {

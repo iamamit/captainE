@@ -745,6 +745,32 @@ pub fn freeze_frame(app: &mut App) {
     });
 }
 
+/// Cut the selected clip wherever the picture changes abruptly.
+pub fn split_at_scenes(app: &mut App) {
+    let Some((clip, ..)) = app.selected() else {
+        app.toast("Select a video clip first", false);
+        return;
+    };
+    let Some(media) = app.project().media.get(&clip.media).cloned() else {
+        return;
+    };
+    match captaine_agent::split_at_scenes(&clip, &media, app.fps(), 0.3, 0.5) {
+        Ok((ops, _)) if ops.is_empty() => app.toast("No scene changes found in this clip", false),
+        Ok((ops, secs)) => {
+            let n = secs.len();
+            app.do_op(Op::Transaction {
+                description: "Split at scene changes".into(),
+                ops,
+            });
+            app.toast(
+                format!("Cut at {n} scene change{}", if n == 1 { "" } else { "s" }),
+                false,
+            );
+        }
+        Err(e) => app.toast(e, true),
+    }
+}
+
 pub fn split_at_playhead(app: &mut App) {
     let Some(tl) = app.timeline().cloned() else {
         return;
@@ -1778,6 +1804,30 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     for r in &rows[..5] {
         anim_row(ui, r, &mut edits, &mut toggles);
     }
+    let mut quick = None;
+    if media.as_ref().is_some_and(|m| m.has_video) {
+        ui.horizontal_wrapped(|ui| {
+            let neg = (v.transform.scale.0 < 0.0, v.transform.scale.1 < 0.0);
+            if chip(ui, "Fit", false, true)
+                .on_hover_text("Whole picture inside the frame")
+                .clicked()
+            {
+                quick = Some(0);
+            }
+            if chip(ui, "Fill", false, true)
+                .on_hover_text("Cover the frame, cropping the overflow")
+                .clicked()
+            {
+                quick = Some(1);
+            }
+            if chip(ui, "Flip H", neg.0, true).clicked() {
+                quick = Some(2);
+            }
+            if chip(ui, "Flip V", neg.1, true).clicked() {
+                quick = Some(3);
+            }
+        });
+    }
     section(ui, "Color");
     for r in &rows[5..9] {
         anim_row(ui, r, &mut edits, &mut toggles);
@@ -1785,6 +1835,20 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     section(ui, "Audio & Speed");
     for r in &rows[9..] {
         anim_row(ui, r, &mut edits, &mut toggles);
+    }
+    if let (Some(q), Some(m)) = (quick, media.as_ref()) {
+        // how much bigger than "fit inside the frame" the picture must be to cover the frame
+        let (rx, ry) = (cw / m.width.max(1) as f64, ch / m.height.max(1) as f64);
+        let cover = rx.max(ry) / rx.min(ry);
+        let (sx, sy) = (v.transform.scale.0.signum(), v.transform.scale.1.signum());
+        match q {
+            0 => v.transform.scale = (sx, sy),
+            1 => v.transform.scale = (cover * sx, cover * sy),
+            2 => v.transform.scale.0 = -v.transform.scale.0,
+            _ => v.transform.scale.1 = -v.transform.scale.1,
+        }
+        vchanged = true;
+        vdone = true;
     }
     let row = |ui: &mut Ui,
                label: &str,

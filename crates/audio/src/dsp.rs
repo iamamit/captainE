@@ -14,6 +14,8 @@ pub fn apply_audio_effects(buf: &mut [f32], sr: u32, effects: &[Effect]) {
             EffectKind::Limiter => limiter(buf, sr, p[0], p[1]),
             EffectKind::DeEsser => de_esser(buf, sr, p[0], p[1] / 100.0),
             EffectKind::NoiseReduction => noise_reduction(buf, p[0], p[1] / 100.0),
+            // needs the rest of the mix, so the mixer applies it
+            EffectKind::Ducking => {}
             _ => {}
         }
     }

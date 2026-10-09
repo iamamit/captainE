@@ -321,6 +321,7 @@ impl ToolBox {
             "set_speed" => self.set_speed(input),
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
+            "split_at_scenes" => self.split_at_scenes_tool(input),
             "add_title" => self.add_title(input),
             "edit_title" => self.edit_title(input),
             "remove_silences" => self.remove_silences_tool(input),
@@ -732,6 +733,23 @@ impl ToolBox {
         self.describe(item.id())
     }
 
+    fn split_at_scenes_tool(&mut self, input: &Value) -> R {
+        let (clip, media, start) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let thr = num(input, "threshold").unwrap_or(0.3).clamp(0.05, 0.95);
+        let min = num(input, "min_seconds").unwrap_or(0.5);
+        let (ops, secs) = crate::scenes::split_at_scenes(&clip, &media, self.fps(), thr, min)?;
+        if ops.is_empty() {
+            return Ok(json!({"ok": true, "cuts": 0, "note": "no scene changes found; try a lower threshold"}).to_string());
+        }
+        self.commit(Op::Transaction {
+            description: "Copilot: split at scene changes".into(),
+            ops,
+        })?;
+        let t0 = start as f64 / self.fps();
+        let at: Vec<Value> = secs.iter().map(|s| json!(r2(t0 + s))).collect();
+        Ok(json!({"ok": true, "cuts": secs.len(), "cut_times_sec": at}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -897,7 +915,8 @@ pub fn tool_definitions() -> Value {
         {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, volume (dB), pan. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},
         {"name": "set_speed", "description": "Change a clip's speed (speed_percent: 100 normal, 200 twice as fast, 50 slow motion), play it backwards (reverse) or hold its first frame (freeze). The same stretch of source plays, so the clip gets shorter or longer and later items on its track move (ripple).", "input_schema": obj(json!({"item_id": item, "speed_percent": {"type": "number"}, "reverse": {"type": "boolean"}, "freeze": {"type": "boolean"}}), &["item_id"])},
         {"name": "set_transition", "description": "Put a transition on the cut between a clip and the clip right before it (item_id is the LATER clip). kind: dissolve, dip, wipe_right, wipe_left, push_left, push_right, or none to remove. The overlap is centred on the cut and does not change any lengths; it cannot be longer than twice the shorter of the two clips.", "input_schema": obj(json!({"item_id": item, "kind": {"type": "string", "enum": ["dissolve", "dip", "wipe_right", "wipe_left", "push_left", "push_right", "none"]}, "duration_sec": {"type": "number"}}), &["item_id"])},
-        {"name": "set_effects", "description": "Replace the picture effects of a clip (an empty list removes them). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %), pixelate (block_size px at 1080p), color_wheels (lift_/gamma_/gain_ master, red, green, blue, each -1..1), curves (master_0%, master_25%.. up to master_100%, same for red/green/blue, output level 0..1 at that input), hsl (red_hue, red_sat, red_lum ... for red, yellow, green, cyan, blue, magenta), lut (strength %, plus path to a .cube file); sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
+        {"name": "set_effects", "description": "Replace the picture effects of a clip (an empty list removes them). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), mask (shape 0 rectangle/1 ellipse, center_x, center_y, width, height in % of the frame, rotation deg, feather %, invert 0/1), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %), pixelate (block_size px at 1080p), color_wheels (lift_/gamma_/gain_ master, red, green, blue, each -1..1), curves (master_0%, master_25%.. up to master_100%, same for red/green/blue, output level 0..1 at that input), hsl (red_hue, red_sat, red_lum ... for red, yellow, green, cyan, blue, magenta), lut (strength %, plus path to a .cube file); sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
+        {"name": "split_at_scenes", "description": "Cut a clip wherever the picture changes abruptly (a hard cut in the footage). threshold 0.05-0.95 (default 0.3; lower finds more), min_seconds is the shortest piece to leave (default 0.5).", "input_schema": obj(json!({"item_id": item, "threshold": {"type": "number"}, "min_seconds": {"type": "number"}}), &["item_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},
