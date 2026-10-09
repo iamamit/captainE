@@ -8,11 +8,7 @@ use crate::app::App;
 use crate::theme::{self, mono, ui_font};
 use crate::ui::{chip, slider_row, LayerDrag, TitleDrag};
 
-const TEMPLATES: [TitleTemplate; 3] = [
-    TitleTemplate::LowerThird,
-    TitleTemplate::Centered,
-    TitleTemplate::Caption,
-];
+const TEMPLATES: [TitleTemplate; 6] = TitleTemplate::ALL;
 
 pub fn pool_tab(app: &mut App, ui: &mut Ui) {
     egui::Frame::new()
@@ -292,6 +288,7 @@ fn layer_controls(app: &mut App, ui: &mut Ui, title: &Title, track_name: &str) {
     if done {
         app.end_merge();
     }
+    animate_controls(app, ui, title);
     crate::ui::effects_stack(app, ui, title.id, &title.effects, true, false);
 }
 
@@ -342,6 +339,59 @@ fn card(app: &mut App, ui: &mut Ui, template: TitleTemplate, w: f32) {
                 "Title",
                 ui_font(24.0 * s.max(0.8)),
                 Color32::WHITE,
+            );
+        }
+        TitleTemplate::Minimal => {
+            let y = pic.top() + h * 0.7;
+            p.text(
+                pos2(pic.left() + w * 0.08, y),
+                Align2::LEFT_CENTER,
+                "Minimal title",
+                ui_font(14.0 * s.max(0.8)),
+                Color32::WHITE,
+            );
+            p.rect_filled(
+                Rect::from_min_size(
+                    pos2(pic.left() + w * 0.08, y + 9.0 * s),
+                    vec2(w * 0.4, 2.0 * s.max(0.8)),
+                ),
+                1.0,
+                theme::ACCENT,
+            );
+        }
+        TitleTemplate::Boxed => {
+            let plate = Rect::from_center_size(pic.center(), vec2(w * 0.62, 24.0 * s.max(0.8)));
+            p.rect_filled(plate.expand(1.5), 5.0, theme::ACCENT);
+            p.rect_filled(plate, 4.0, Color32::from_rgb(24, 24, 28));
+            p.text(
+                plate.center(),
+                Align2::CENTER_CENTER,
+                "Boxed title",
+                ui_font(12.0 * s.max(0.8)),
+                Color32::WHITE,
+            );
+        }
+        TitleTemplate::Quote => {
+            p.text(
+                pic.center() + vec2(0.0, -14.0 * s),
+                Align2::CENTER_CENTER,
+                "\u{201C}",
+                ui_font(30.0 * s.max(0.8)),
+                theme::ACCENT,
+            );
+            p.text(
+                pic.center() + vec2(0.0, 6.0 * s),
+                Align2::CENTER_CENTER,
+                "Make it simple",
+                ui_font(10.0 * s.max(0.8)),
+                Color32::WHITE,
+            );
+            p.text(
+                pic.center() + vec2(0.0, 18.0 * s),
+                Align2::CENTER_CENTER,
+                "\u{2014} Speaker",
+                ui_font(7.0 * s.max(0.8)),
+                Color32::from_gray(190),
             );
         }
         TitleTemplate::Caption => {
@@ -406,6 +456,79 @@ fn field(ui: &mut Ui, label: &str, text: &mut String) -> (bool, bool) {
 }
 
 /// Inspector for the selected title. Edits are one undo step per drag or per text-field focus.
+/// Animation presets: how the title comes on and goes off.
+fn animate_controls(app: &mut App, ui: &mut Ui, title: &Title) {
+    use captaine_model::anim_presets::{apply, tracks, Preset};
+    ui.add_space(10.0);
+    ui.label(RichText::new("Animate").strong().size(12.5));
+    let fps = app.fps();
+    let mut secs = app.preset_secs;
+    let r = slider_row(ui, "Length", &mut secs, 0.1..=3.0, 0.6, 1, " s", true);
+    if r.changed {
+        app.preset_secs = secs;
+    }
+    let total = title.duration.value;
+    let len = ((app.preset_secs * fps).round() as i64).clamp(1, total);
+    let canvas = (
+        app.project().settings.width as f64,
+        app.project().settings.height as f64,
+    );
+    let mut picked: Option<(Preset, bool)> = None;
+    for (label, entering) in [("In", true), ("Out", false)] {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_sized(
+                [28.0, 22.0],
+                egui::Label::new(RichText::new(label).size(12.0).color(theme::MUTED)),
+            );
+            for p in Preset::ALL {
+                if !entering && p == Preset::Typewriter {
+                    continue;
+                }
+                if chip(ui, p.label(), false, true).clicked() {
+                    picked = Some((p, entering));
+                }
+            }
+        });
+    }
+    let clear = ui
+        .horizontal(|ui| chip(ui, "Clear animation", false, !title.anim.is_empty()).clicked())
+        .inner;
+    if let Some((preset, entering)) = picked {
+        let new = tracks(preset, entering, len, total, &title.video, canvas);
+        let mut anim = title.anim.clone();
+        let props: Vec<&str> = new.iter().map(|(p, _)| *p).collect();
+        apply(&mut anim, new, entering, len, total);
+        let ops: Vec<Op> = props
+            .into_iter()
+            .map(|p| Op::SetAnimTrack {
+                item: title.id,
+                prop: p.to_string(),
+                keys: anim.keys(p).to_vec(),
+            })
+            .collect();
+        app.do_op(Op::Transaction {
+            description: format!("{} {}", preset.label(), if entering { "in" } else { "out" }),
+            ops,
+        });
+    }
+    if clear {
+        let ops: Vec<Op> = title
+            .anim
+            .0
+            .keys()
+            .map(|p| Op::SetAnimTrack {
+                item: title.id,
+                prop: p.clone(),
+                keys: Vec::new(),
+            })
+            .collect();
+        app.do_op(Op::Transaction {
+            description: "Clear animation".into(),
+            ops,
+        });
+    }
+}
+
 pub fn controls(app: &mut App, ui: &mut Ui) {
     let Some((title, track, _)) = app.selected_title() else {
         return;
@@ -484,6 +607,100 @@ pub fn controls(app: &mut App, ui: &mut Ui) {
         let r2 = ui.color_edit_button_srgb(&mut t.style.accent);
         if r1.changed() || r2.changed() {
             changed.set(true);
+        }
+    });
+
+    row(
+        ui,
+        "Outline",
+        &mut t.style.outline,
+        0.0..=40.0,
+        0.0,
+        0,
+        " px",
+    );
+    if t.style.outline > 0.0 {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [80.0, 22.0],
+                egui::Label::new(RichText::new("Outline color").size(12.0)),
+            );
+            if ui
+                .color_edit_button_srgb(&mut t.style.outline_color)
+                .changed()
+            {
+                changed.set(true);
+                done.set(true);
+            }
+        });
+    }
+    row(ui, "Shadow", &mut t.style.shadow, 0.0..=60.0, 0.0, 0, " px");
+    row(
+        ui,
+        "Letter spacing",
+        &mut t.style.tracking,
+        -20.0..=80.0,
+        0.0,
+        0,
+        " px",
+    );
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [80.0, 22.0],
+            egui::Label::new(RichText::new("Align").size(12.0)),
+        );
+        for (a, l) in [
+            (TextAlign::Left, "Left"),
+            (TextAlign::Center, "Center"),
+            (TextAlign::Right, "Right"),
+        ] {
+            if chip(ui, l, t.style.align == a, true).clicked() {
+                t.style.align = a;
+                changed.set(true);
+                done.set(true);
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.add_sized(
+            [80.0, 22.0],
+            egui::Label::new(RichText::new("Typeface").size(12.0)),
+        );
+        let cur = t.font.clone();
+        if chip(ui, "Default", cur.is_none(), true).clicked() {
+            t.font = None;
+            changed.set(true);
+            done.set(true);
+        }
+        if chip(ui, "Mono", cur.as_deref() == Some("builtin:mono"), true).clicked() {
+            t.font = Some("builtin:mono".into());
+            changed.set(true);
+            done.set(true);
+        }
+        let file_name = cur
+            .as_deref()
+            .filter(|f| !f.starts_with("builtin:"))
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .map_or(f.to_string(), |n| n.to_string_lossy().into())
+            });
+        if chip(
+            ui,
+            &file_name.clone().unwrap_or_else(|| "Font file…".into()),
+            file_name.is_some(),
+            true,
+        )
+        .clicked()
+        {
+            if let Some(f) = rfd::FileDialog::new()
+                .add_filter("font", &["ttf", "otf"])
+                .pick_file()
+            {
+                t.font = Some(f.to_string_lossy().into());
+                changed.set(true);
+                done.set(true);
+            }
         }
     });
 
@@ -569,6 +786,8 @@ pub fn controls(app: &mut App, ui: &mut Ui) {
     if done.get() || ui.input(|i| i.pointer.any_released()) {
         app.end_merge();
     }
+    animate_controls(app, ui, &title);
+    crate::ui::effects_stack(app, ui, title.id, &title.effects, true, false);
 }
 
 /// `SetTitle` keeps the id and length; the name is part of the title content so it rides along.

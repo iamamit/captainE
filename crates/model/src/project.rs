@@ -427,6 +427,20 @@ pub enum TitleTemplate {
     Centered,
     /// Subtitle-style line at the bottom centre on a dark pill.
     Caption,
+    /// Plain text with a thin accent line beneath it, lower left.
+    Minimal,
+    /// Centered text in a rounded plate with an accent border.
+    Boxed,
+    /// A large quotation mark, wrapped centered text and the speaker underneath.
+    Quote,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
 }
 
 impl TitleTemplate {
@@ -435,8 +449,20 @@ impl TitleTemplate {
             TitleTemplate::LowerThird => "Lower Third",
             TitleTemplate::Centered => "Centered Title",
             TitleTemplate::Caption => "Caption",
+            TitleTemplate::Minimal => "Minimal",
+            TitleTemplate::Boxed => "Boxed Title",
+            TitleTemplate::Quote => "Quote",
         }
     }
+
+    pub const ALL: [TitleTemplate; 6] = [
+        TitleTemplate::LowerThird,
+        TitleTemplate::Centered,
+        TitleTemplate::Caption,
+        TitleTemplate::Minimal,
+        TitleTemplate::Boxed,
+        TitleTemplate::Quote,
+    ];
 
     /// Text size in pixels on a 1080-pixel-tall canvas.
     pub fn default_size(self) -> f64 {
@@ -444,6 +470,9 @@ impl TitleTemplate {
             TitleTemplate::LowerThird => 46.0,
             TitleTemplate::Centered => 110.0,
             TitleTemplate::Caption => 40.0,
+            TitleTemplate::Minimal => 54.0,
+            TitleTemplate::Boxed => 80.0,
+            TitleTemplate::Quote => 56.0,
         }
     }
 }
@@ -456,6 +485,24 @@ pub struct TitleStyle {
     pub color: [u8; 3],
     /// Accent bar of the lower third
     pub accent: [u8; 3],
+    /// Outline around the letters, pixels on a 1080-pixel-tall canvas (0 = none)
+    #[serde(default)]
+    pub outline: f64,
+    #[serde(default = "white")]
+    pub outline_color: [u8; 3],
+    /// Drop shadow distance, pixels on a 1080-pixel-tall canvas (0 = none)
+    #[serde(default)]
+    pub shadow: f64,
+    /// Extra space between letters, pixels on a 1080-pixel-tall canvas
+    #[serde(default)]
+    pub tracking: f64,
+    /// Where the text sits horizontally (templates that centre by nature ignore Left/Right)
+    #[serde(default)]
+    pub align: TextAlign,
+}
+
+fn white() -> [u8; 3] {
+    [255, 255, 255]
 }
 
 impl TitleStyle {
@@ -465,6 +512,11 @@ impl TitleStyle {
             size: template.default_size(),
             color: [255, 255, 255],
             accent: [0x5b, 0x4f, 0xd6],
+            outline: 0.0,
+            outline_color: [0, 0, 0],
+            shadow: 0.0,
+            tracking: 0.0,
+            align: TextAlign::Center,
         }
     }
 }
@@ -559,6 +611,9 @@ pub struct Title {
     /// Draw this instead of text
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
+    /// The typeface: None for the built-in one, `builtin:mono`, or the path of a .ttf / .otf file
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
     /// An adjustment layer draws nothing itself: its `effects` are applied to the picture below it
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub adjustment: bool,
@@ -589,6 +644,9 @@ impl Title {
             TitleTemplate::LowerThird => ("Your Title", "Subtitle"),
             TitleTemplate::Centered => ("Title", ""),
             TitleTemplate::Caption => ("Caption text", ""),
+            TitleTemplate::Minimal => ("Minimal title", ""),
+            TitleTemplate::Boxed => ("Boxed title", ""),
+            TitleTemplate::Quote => ("Make it simple, but significant.", "Don Draper"),
         };
         Title {
             id,
@@ -603,6 +661,7 @@ impl Title {
             anim: Anim::default(),
             fade_out: 0,
             shape: None,
+            font: None,
             adjustment: false,
             effects: Vec::new(),
         }
@@ -612,6 +671,16 @@ impl Title {
         check_video(&self.video)?;
         if !self.style.size.is_finite() || self.style.size <= 0.0 {
             return Err("title size must be positive");
+        }
+        let st = &self.style;
+        if ![st.outline, st.shadow, st.tracking]
+            .iter()
+            .all(|v| v.is_finite())
+            || !(0.0..=40.0).contains(&st.outline)
+            || !(0.0..=60.0).contains(&st.shadow)
+            || !(-20.0..=80.0).contains(&st.tracking)
+        {
+            return Err("title outline, shadow or letter spacing out of range");
         }
         let (a, b) = (self.fade_in, self.fade_out);
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
@@ -726,12 +795,15 @@ pub fn check_anim(anim: &Anim, has_audio: bool) -> Result<(), &'static str> {
         if !has_audio && matches!(prop.as_str(), "volume" | "pan") {
             return Err("this item has no sound to animate");
         }
+        if has_audio && prop == "reveal" {
+            return Err("only titles can reveal their text");
+        }
         for k in keys {
             if !k.v.is_finite() {
                 return Err("keyframe values must be finite numbers");
             }
             let ok = match prop.as_str() {
-                "opacity" => (0.0..=100.0).contains(&k.v),
+                "opacity" | "reveal" => (0.0..=100.0).contains(&k.v),
                 "pan" => (-1.0..=1.0).contains(&k.v),
                 "contrast" => k.v >= 0.0,
                 "saturation" => (0.0..=400.0).contains(&k.v),

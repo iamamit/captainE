@@ -350,3 +350,73 @@ fn an_adjustment_layer_changes_what_is_under_it_only_where_its_effects_reach() {
         2
     );
 }
+
+#[test]
+fn text_animation_presets_show_up_frame_by_frame() {
+    use captaine_model::anim_presets::{apply, tracks, Preset};
+    let canvas = (640.0, 360.0);
+    let len = 12;
+    let mut title = Title::new(Id::new(), TitleTemplate::Centered, t(48));
+    title.text = "TYPEWRITER".into();
+    let base = title.video;
+    // typewriter: the amount of lit picture grows while it types, then stays
+    apply(
+        &mut title.anim,
+        tracks(Preset::Typewriter, true, len, 48, &base, canvas),
+        true,
+        len,
+        48,
+    );
+    let (p, tl) = project_with(title.clone());
+    let early = lit(&render_at(&p, tl, 24 + 2));
+    let mid = lit(&render_at(&p, tl, 24 + 6));
+    let done = lit(&render_at(&p, tl, 24 + 20));
+    assert!(early < mid && mid < done, "{early} < {mid} < {done}");
+    assert!(early > 0, "the first letters are already there");
+    // slide up + fade: starts lower and fainter, ends at rest
+    let mut title = Title::new(Id::new(), TitleTemplate::Centered, t(48));
+    title.text = "SLIDE".into();
+    apply(
+        &mut title.anim,
+        tracks(Preset::SlideUp, true, len, 48, &base, canvas),
+        true,
+        len,
+        48,
+    );
+    apply(
+        &mut title.anim,
+        tracks(Preset::Fade, false, len, 48, &base, canvas),
+        false,
+        len,
+        48,
+    );
+    let (p, tl) = project_with(title);
+    let centre_y = |c: &Canvas| {
+        let (mut sum, mut n) = (0.0f64, 0.0f64);
+        for (i, px) in c.data.chunks(4).enumerate() {
+            let v = (px[0] + px[1] + px[2]) as f64;
+            sum += v * (i as u32 / c.width) as f64;
+            n += v;
+        }
+        sum / n.max(1e-9)
+    };
+    let (a, b) = (render_at(&p, tl, 24 + 1), render_at(&p, tl, 24 + 30));
+    assert!(
+        centre_y(&a) > centre_y(&b) + 5.0,
+        "it starts lower: {} vs {}",
+        centre_y(&a),
+        centre_y(&b)
+    );
+    assert!(lit(&a) > 0 && px8(&a, 320, 180) != px8(&b, 320, 180) || lit(&a) != lit(&b));
+    let end = render_at(&p, tl, 24 + 47);
+    let energy = |c: &Canvas| {
+        c.data
+            .chunks(4)
+            .map(|p| (p[0] + p[1] + p[2]) as f64)
+            .sum::<f64>()
+    };
+    assert!(
+        energy(&end) < energy(&b) * 0.2,
+        "faded out by the last frame"
+    );
+}

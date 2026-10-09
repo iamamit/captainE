@@ -337,6 +337,9 @@ enum TemplateArg {
     LowerThird,
     Centered,
     Caption,
+    Minimal,
+    Boxed,
+    Quote,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -692,6 +695,9 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 TemplateArg::LowerThird => TitleTemplate::LowerThird,
                 TemplateArg::Centered => TitleTemplate::Centered,
                 TemplateArg::Caption => TitleTemplate::Caption,
+                TemplateArg::Minimal => TitleTemplate::Minimal,
+                TemplateArg::Boxed => TitleTemplate::Boxed,
+                TemplateArg::Quote => TitleTemplate::Quote,
             };
             let mut t = Title::new(
                 Id::new(),

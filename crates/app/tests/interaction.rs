@@ -1293,3 +1293,45 @@ fn separated_audio_stays_linked_through_selecting_moving_cutting_and_deleting() 
         .iter()
         .all(|c| c.link.is_none()));
 }
+
+#[test]
+fn title_animation_presets_and_styling_from_the_inspector() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).add_title(TitleTemplate::Centered, Some(0), None);
+    settle(&mut h);
+    let title = |a: &App| a.selected_title().unwrap().0;
+    h.get_by_label("Typewriter").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Typewriter").click();
+    settle(&mut h);
+    assert!(title(app(&h)).anim.has("reveal"));
+    // the out row has no typewriter; its Fade chip is the second one
+    let fades: Vec<_> = h.get_all_by_label("Fade").collect();
+    assert_eq!(
+        fades.len(),
+        2,
+        "one Fade chip in each of the In and Out rows"
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(
+        !title(app(&h)).anim.has("reveal"),
+        "one undo removes the whole preset"
+    );
+    // alignment and a new template through the same controls
+    h.get_by_label("Left").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Left").click();
+    settle(&mut h);
+    assert_eq!(title(app(&h)).style.align, TextAlign::Left);
+    h.get_by_label("Quote").scroll_to_me();
+    h.get_by_label("Quote").click();
+    settle(&mut h);
+    assert_eq!(title(app(&h)).style.template, TitleTemplate::Quote);
+    h.get_by_label("Mono").click();
+    settle(&mut h);
+    assert_eq!(title(app(&h)).font.as_deref(), Some("builtin:mono"));
+}

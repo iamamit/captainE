@@ -6,6 +6,7 @@
 //! The model has no editing logic; all changes go through the `ops` crate.
 
 mod anim;
+pub mod anim_presets;
 mod effects;
 mod id;
 mod project;

@@ -118,6 +118,8 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("temperature", "Temperature"),
     ("volume", "Volume"),
     ("pan", "Pan"),
+    // titles only: percent of the characters shown
+    ("reveal", "Reveal"),
 ];
 
 pub fn is_property(name: &str) -> bool {

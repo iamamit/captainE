@@ -323,6 +323,7 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "animate_title" => self.animate_title(input),
             "add_marker" => self.add_marker_tool(input),
             "remove_marker" => self.remove_marker_tool(input),
             "transcribe" => self.transcribe_tool(input),
@@ -900,6 +901,58 @@ impl ToolBox {
         Ok(json!({"ok": true}).to_string())
     }
 
+    fn animate_title(&mut self, input: &Value) -> R {
+        use captaine_model::anim_presets::{apply, tracks, Preset};
+        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        let Item::Title(t) = item else {
+            return Err("only titles and layers can use animation presets".into());
+        };
+        let name = req_text(input, "preset")?;
+        let preset = Preset::from_key(name).ok_or_else(|| {
+            format!(
+                "unknown preset '{name}'; use one of {}",
+                Preset::ALL
+                    .iter()
+                    .map(|p| p.key())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        let entering = match text(input, "direction").unwrap_or("in") {
+            "in" => true,
+            "out" => false,
+            other => return Err(format!("direction is 'in' or 'out', not '{other}'")),
+        };
+        if !entering && preset == Preset::Typewriter {
+            return Err("the typewriter only comes on".into());
+        }
+        let total = t.duration.value;
+        let len = self
+            .ticks(num(input, "duration_sec").unwrap_or(0.6))
+            .clamp(1, total);
+        let canvas = (
+            self.project().settings.width as f64,
+            self.project().settings.height as f64,
+        );
+        let new = tracks(preset, entering, len, total, &t.video, canvas);
+        let props: Vec<&str> = new.iter().map(|(p, _)| *p).collect();
+        let mut anim = t.anim.clone();
+        apply(&mut anim, new, entering, len, total);
+        let ops = props
+            .into_iter()
+            .map(|p| Op::SetAnimTrack {
+                item: t.id,
+                prop: p.to_string(),
+                keys: anim.keys(p).to_vec(),
+            })
+            .collect();
+        self.commit(Op::Transaction {
+            description: format!("Copilot: {name} {}", if entering { "in" } else { "out" }),
+            ops,
+        })?;
+        self.describe(t.id)
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -960,9 +1013,35 @@ impl ToolBox {
         if let Some(f) = num(input, "fade_out_sec") {
             t.fade_out = self.ticks(f).max(0);
         }
+        if let Some(x) = num(input, "outline") {
+            t.style.outline = x;
+        }
+        if let Some(x) = num(input, "shadow") {
+            t.style.shadow = x;
+        }
+        if let Some(x) = num(input, "letter_spacing") {
+            t.style.tracking = x;
+        }
+        if let Some(a) = text(input, "align") {
+            t.style.align = match a {
+                "left" => TextAlign::Left,
+                "center" => TextAlign::Center,
+                "right" => TextAlign::Right,
+                other => return Err(format!("align is left, center or right, not '{other}'")),
+            };
+        }
+        if let Some(f) = text(input, "font") {
+            t.font = match f {
+                "default" => None,
+                "mono" => Some("builtin:mono".into()),
+                path => Some(path.to_string()),
+            };
+        }
         if t == old {
             return Err("nothing to change".into());
         }
+        t.check_props(self.timeline()?.rate)
+            .map_err(|e| e.to_string())?;
         self.commit(Op::SetTitle {
             item: old.id,
             title: t,
@@ -1016,6 +1095,9 @@ fn template_name(t: TitleTemplate) -> &'static str {
         TitleTemplate::LowerThird => "lower_third",
         TitleTemplate::Centered => "centered",
         TitleTemplate::Caption => "caption",
+        TitleTemplate::Minimal => "minimal",
+        TitleTemplate::Boxed => "boxed",
+        TitleTemplate::Quote => "quote",
     }
 }
 
@@ -1024,6 +1106,9 @@ fn parse_template(s: &str) -> Result<TitleTemplate, String> {
         "lower_third" => Ok(TitleTemplate::LowerThird),
         "centered" => Ok(TitleTemplate::Centered),
         "caption" => Ok(TitleTemplate::Caption),
+        "minimal" => Ok(TitleTemplate::Minimal),
+        "boxed" => Ok(TitleTemplate::Boxed),
+        "quote" => Ok(TitleTemplate::Quote),
         other => Err(format!(
             "template must be lower_third, centered or caption, not '{other}'"
         )),
@@ -1073,8 +1158,9 @@ pub fn tool_definitions() -> Value {
         {"name": "add_captions", "description": "Transcribe a clip and put the words on screen as caption titles on a 'Captions' track (made if needed), timed to the speech. max_chars limits a caption line (default 42).", "input_schema": obj(json!({"item_id": item, "max_chars": {"type": "number"}, "language": {"type": "string"}}), &["item_id"])},
         {"name": "add_marker", "description": "Pin a marker (a chapter, a note to self) on the timeline at a time. Optional note, duration_sec for a range, color (blue, green, yellow, red, purple, cyan).", "input_schema": obj(json!({"at_sec": {"type": "number"}, "name": {"type": "string"}, "note": {"type": "string"}, "duration_sec": {"type": "number"}, "color": {"type": "string"}}), &["at_sec", "name"])},
         {"name": "remove_marker", "description": "Remove a marker by its id (see get_timeline) or its exact name.", "input_schema": obj(json!({"marker_id": {"type": "string"}}), &["marker_id"])},
-        {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
-        {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
+        {"name": "animate_title", "description": "Animate how a title or layer comes on (direction in) or goes off (out) with a preset: fade, slide_up, slide_down, slide_left, slide_right, pop, zoom, typewriter (in only). duration_sec is how long the move takes (default 0.6).", "input_schema": obj(json!({"item_id": item, "preset": {"type": "string"}, "direction": {"type": "string", "enum": ["in", "out"]}, "duration_sec": {"type": "number"}}), &["item_id", "preset"])},
+        {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
+        {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},
         {"name": "set_track", "description": "Hide/mute a track or change its volume.", "input_schema": obj(json!({"track": track, "enabled": {"type": "boolean"}, "volume_db": {"type": "number"}}), &["track"])},
     ])

@@ -227,10 +227,14 @@ impl Renderer {
                     }
                     let mut props = t.title.video_at(t.local_tick);
                     props.opacity *= k;
-                    Want::Title {
-                        title: t.title.clone(),
-                        props,
+                    let mut title = t.title.clone();
+                    // typewriter: show only the first part of the text
+                    if let Some(r) = title.anim.value("reveal", t.local_tick) {
+                        let n = title.text.chars().count();
+                        let shown = ((n as f64 * r / 100.0).ceil() as usize).min(n);
+                        title.text = title.text.chars().take(shown).collect();
                     }
+                    Want::Title { title, props }
                 }
             })
             .collect();

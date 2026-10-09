@@ -201,6 +201,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Length of the in and out animations of titles, seconds
+    pub preset_secs: f64,
     /// Linked clips are selected and edited together
     pub link_on: bool,
     pub markers_open: bool,
@@ -293,6 +295,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            preset_secs: 0.6,
             link_on: true,
             markers_open: false,
             marker_edit: None,

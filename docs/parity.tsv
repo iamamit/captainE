@@ -20,7 +20,7 @@ e17	Editing	Several sequences open and switchable	3	0.75	sequence menu: new, dup
 e18	Editing	Interchange: EDL, FCPXML, OTIO, SRT import/export	3	0.75	OTIO read/write (lossless round trip within captainE), CMX3600 EDL read/write incl. speed, FCPXML 1.9 write; no FCPXML import, no AAF
 e19	Editing	Autosave and versioning	3	1	commits, branches, merge
 v01	Video	Transform, opacity, blend modes	4	0.75	4 blend modes
-v02	Video	Titles and text with templates and styling	4	0.5	3 templates, one font
+v02	Video	Titles and text with templates and styling	4	0.75	6 templates incl. quote/boxed/minimal, outline, shadow, tracking, alignment, typeface (built-in mono or any ttf/otf), effects on text; no rich-text runs or text-on-path
 v03	Video	Shapes and graphics layers	3	0.5	rectangle, ellipse, solid colour with gradient, outline, corner radius, opacity; no lines/polygons/paths, no strokes animation
 v04	Video	Masks	3	0.5	rectangle/ellipse mask effect with feather, rotation, invert; no free-draw bezier masks, no tracking
 v05	Video	Chroma key	4	0.5	chroma key with tolerance/softness/spill; no matte view or edge refine
@@ -28,7 +28,7 @@ v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0.
 v07	Video	Effects stack, inspector, presets	4	0.5	ordered stack on clips with on/off/remove and sliders; no presets, no keyframed effect params, clips only
 v08	Video	Stabilization	3	0	
 v09	Video	Motion tracking	2	0	
-v10	Video	Text animators and animation presets	3	0	
+v10	Video	Text animators and animation presets	3	0.75	in/out animation presets (fade, slides, pop, zoom, typewriter) for titles and layers as editable keyframes; Copilot animate_title; no per-letter or word animators
 v11	Video	Adjustment layers	3	0.75	adjustment layer with the full effects stack, masks limit its reach, opacity mixes; applies to all tracks below
 v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V, rotate, fit and fill buttons
 v13	Video	AI background removal / rotoscoping	3	0	

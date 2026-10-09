@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 24);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 25);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -587,4 +587,54 @@ fn add_layer_makes_shapes_and_adjustment_layers_that_take_effects() {
         .find(|t| t.adjustment)
         .unwrap();
     assert_eq!(adj.duration.value, 96);
+}
+
+#[test]
+fn animate_title_applies_presets_and_the_title_style_can_be_dressed() {
+    let (mut p, _) = project();
+    let tl = *p.timelines.keys().next().unwrap();
+    let mut title = Title::new(Id::from_u128(77), TitleTemplate::Centered, t(96));
+    title.text = "Hello".into();
+    {
+        let tr = p.timeline_mut(tl).unwrap().track_mut(1);
+        tr.items.push(Item::Title(title));
+    }
+    let id = Id::from_u128(77).to_string();
+    let model = Scripted::new(vec![
+        tool(
+            "t1",
+            "animate_title",
+            json!({"item_id": id, "preset": "wobble"}),
+        ),
+        tool(
+            "t2",
+            "animate_title",
+            json!({"item_id": id, "preset": "typewriter", "direction": "in", "duration_sec": 1.0}),
+        ),
+        tool(
+            "t3",
+            "animate_title",
+            json!({"item_id": id, "preset": "fade", "direction": "out"}),
+        ),
+        tool(
+            "t4",
+            "edit_title",
+            json!({"item_id": id, "outline": 4, "shadow": 6, "align": "left", "font": "mono", "template": "quote"}),
+        ),
+        end("Typed it in, faded it out and styled it."),
+    ]);
+    let r = ask(&model, &p, "animate the title", None).unwrap();
+    let after = apply_all(&p, &r.new_ops);
+    let tr = &after.timeline(tl).unwrap().tracks[1];
+    let ti = tr.items.iter().find_map(|i| i.as_title()).unwrap();
+    assert!(ti.anim.has("reveal") && ti.anim.has("opacity"));
+    assert_eq!(ti.anim.value("reveal", 24), Some(100.0));
+    assert_eq!(
+        (ti.style.outline, ti.style.shadow, ti.style.align),
+        (4.0, 6.0, TextAlign::Left)
+    );
+    assert_eq!(
+        (ti.style.template, ti.font.as_deref()),
+        (TitleTemplate::Quote, Some("builtin:mono"))
+    );
 }
