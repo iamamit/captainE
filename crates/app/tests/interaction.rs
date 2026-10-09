@@ -1,5 +1,6 @@
 //! Drives the editor with real pointer and keyboard events and checks what happens to the project.
 
+use egui_kittest::kittest::Queryable;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -545,4 +546,44 @@ fn editing_a_title_in_the_inspector_is_one_undo_step() {
         replay.apply(e.author, e.op).unwrap();
     }
     assert_eq!(replay.project(), app(&h).project());
+}
+
+#[test]
+fn keyframe_diamonds_in_the_inspector_add_and_remove_keys_with_undo() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let (id, start) = {
+        let a = app(&h);
+        let t = v1(a);
+        (
+            match &t.items[0] {
+                Item::Clip(c) => c.id,
+                _ => panic!("first item is a clip"),
+            },
+            0i64,
+        )
+    };
+    app_mut(&mut h).selected_clip = Some(id);
+    app_mut(&mut h).playhead = start + 10;
+    settle(&mut h);
+    h.get_by_label("Keyframe Opacity").click();
+    settle(&mut h);
+    app_mut(&mut h).playhead = start + 20;
+    settle(&mut h);
+    h.get_by_label("Keyframe Opacity").click();
+    settle(&mut h);
+    let keys = |a: &App| a.selected().unwrap().0.anim.keys("opacity").to_vec();
+    assert_eq!(
+        keys(app(&h)).iter().map(|k| k.t).collect::<Vec<_>>(),
+        vec![10, 20]
+    );
+    // clicking on an existing key removes it
+    h.get_by_label("Keyframe Opacity").click();
+    settle(&mut h);
+    assert_eq!(keys(app(&h)).len(), 1);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert_eq!(keys(app(&h)).len(), 2);
 }

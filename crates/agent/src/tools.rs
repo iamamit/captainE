@@ -317,6 +317,7 @@ impl ToolBox {
             "move_item" => self.move_item(input),
             "add_clip" => self.add_clip(input),
             "set_clip" => self.set_clip(input),
+            "set_keyframes" => self.set_keyframes(input),
             "add_title" => self.add_title(input),
             "edit_title" => self.edit_title(input),
             "remove_silences" => self.remove_silences_tool(input),
@@ -568,6 +569,52 @@ impl ToolBox {
         self.describe(id)
     }
 
+    fn set_keyframes(&mut self, input: &Value) -> R {
+        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        let prop = req_text(input, "property")?.to_string();
+        if !is_property(&prop) {
+            return Err(format!(
+                "unknown property '{prop}'; use one of {}",
+                PROPERTIES
+                    .iter()
+                    .map(|p| p.0)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let mut keys = Vec::new();
+        for k in input
+            .get("keys")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
+            let at =
+                num(k, "at_sec").ok_or("each key needs at_sec (seconds from the item's start)")?;
+            let v = num(k, "value").ok_or("each key needs a value")?;
+            let interp = match text(k, "interp").unwrap_or("linear") {
+                "hold" => Interp::Hold,
+                "linear" => Interp::Linear,
+                "ease_in" => Interp::EaseIn,
+                "ease_out" => Interp::EaseOut,
+                "ease_in_out" => Interp::EaseInOut,
+                other => return Err(format!("unknown interp '{other}'")),
+            };
+            keys.push(Keyframe {
+                t: self.ticks(at).max(0),
+                v,
+                interp,
+            });
+        }
+        keys.sort_by_key(|k| k.t);
+        self.commit(Op::SetAnimTrack {
+            item: item.id(),
+            prop,
+            keys,
+        })?;
+        self.describe(item.id())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -730,6 +777,7 @@ pub fn tool_definitions() -> Value {
             "exposure": {"type": "number"}, "contrast": {"type": "number"}, "saturation": {"type": "number"}, "temperature_k": {"type": "number"},
             "volume_db": {"type": "number"}, "pan": {"type": "number"}, "muted": {"type": "boolean"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"},
             "name": {"type": "string"}, "enabled": {"type": "boolean"}}), &["item_id"])},
+        {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, volume (dB), pan. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

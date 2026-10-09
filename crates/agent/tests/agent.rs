@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 14);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -420,4 +420,36 @@ fn live_the_model_can_read_the_timeline_and_make_a_cut() {
         v1(&after)
     );
     assert_eq!(v1(&after)[0], (0, 48));
+}
+
+#[test]
+fn set_keyframes_animates_a_property_and_bad_input_is_reported() {
+    let (p, ids) = project();
+    let id = ids[0].to_string();
+    let model = Scripted::new(vec![
+        tool(
+            "t1",
+            "set_keyframes",
+            json!({"item_id": id, "property": "wobble", "keys": []}),
+        ),
+        tool(
+            "t2",
+            "set_keyframes",
+            json!({"item_id": id, "property": "opacity", "keys": [
+                {"at_sec": 1.0, "value": 100, "interp": "ease_out"},
+                {"at_sec": 0.0, "value": 0}]}),
+        ),
+        end("Faded the clip in over one second."),
+    ]);
+    let r = ask(&model, &p, "fade in the first clip", Some(ids[0])).unwrap();
+    assert_eq!(r.new_ops.len(), 1, "the rejected call changed nothing");
+    let after = apply_all(&p, &r.new_ops);
+    let clip = after.timelines.values().next().unwrap().tracks[0].items[0]
+        .as_clip()
+        .unwrap()
+        .clone();
+    assert_eq!(clip.anim.keys("opacity").len(), 2);
+    assert_eq!(clip.anim.keys("opacity")[0].t, 0, "keys are sorted");
+    assert_eq!(clip.video_at(0).opacity, 0.0);
+    assert_eq!(clip.video_at(48).opacity, 1.0);
 }

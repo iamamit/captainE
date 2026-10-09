@@ -428,6 +428,24 @@ pub fn base_value(video: &VideoProps, audio: Option<&AudioProps>, prop: &str) ->
     })
 }
 
+/// Write `value` (in animation units) into the un-animated base of a property.
+pub fn set_base_value(video: &mut VideoProps, audio: &mut AudioProps, prop: &str, value: f64) {
+    match prop {
+        "position.x" => video.transform.position.0 = value,
+        "position.y" => video.transform.position.1 = value,
+        "scale" => video.transform.scale = (value / 100.0, value / 100.0),
+        "rotation" => video.transform.rotation_deg = value,
+        "opacity" => video.opacity = value / 100.0,
+        "exposure" => video.color.exposure = value,
+        "contrast" => video.color.contrast = value,
+        "saturation" => video.color.saturation = value,
+        "temperature" => video.color.temperature = value,
+        "volume" => audio.gain_db = value,
+        "pan" => audio.pan = value,
+        _ => {}
+    }
+}
+
 /// Range and name checks for an item's keyframes.
 pub fn check_anim(anim: &Anim, has_audio: bool) -> Result<(), &'static str> {
     for (prop, keys) in &anim.0 {

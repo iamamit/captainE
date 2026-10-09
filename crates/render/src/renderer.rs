@@ -161,6 +161,7 @@ impl Renderer {
         let (w, h) = self.size();
         let mut canvas = Canvas::black(w, h);
         // collect first: layers borrow the project, fetching needs `&mut self`
+        #[allow(clippy::large_enum_variant)]
         enum Want {
             Clip {
                 clip: Id,

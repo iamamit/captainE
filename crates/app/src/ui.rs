@@ -220,6 +220,51 @@ pub struct SliderOut {
     pub done: bool,
 }
 
+/// Keyframe toggle: filled on a key at the playhead, outlined when animated, faint otherwise.
+fn diamond(
+    ui: &mut Ui,
+    label: &str,
+    animated: bool,
+    on_key: bool,
+    enabled: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(16.0, 22.0),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            enabled,
+            format!("Keyframe {label}"),
+        )
+    });
+    let c = rect.center();
+    let r = if resp.hovered() && enabled { 5.5 } else { 4.5 };
+    let pts = vec![
+        pos2(c.x, c.y - r),
+        pos2(c.x + r, c.y),
+        pos2(c.x, c.y + r),
+        pos2(c.x - r, c.y),
+    ];
+    let col = if animated {
+        theme::ACCENT
+    } else {
+        theme::FAINT
+    };
+    let fill = if on_key { col } else { Color32::TRANSPARENT };
+    ui.painter().add(egui::Shape::convex_polygon(
+        pts,
+        fill,
+        Stroke::new(1.2, col),
+    ));
+    resp
+}
+
 /// `label  ───●───  value`: drag the bar, drag/type the number, double-click the bar to reset.
 #[allow(clippy::too_many_arguments)]
 pub fn slider_row(
@@ -1274,8 +1319,88 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     let mut vchanged = false;
     let mut achanged = false;
     let key = clip.id.to_full_string();
+    let inside = app.playhead >= start && app.playhead < start + clip.duration.value;
+    let local = (app.playhead - start).clamp(0, clip.duration.value.max(1) - 1);
+    let (cur_v, cur_a) = (clip.video_at(local), clip.audio_at(local));
+    let mut edits: Vec<(&'static str, f64)> = Vec::new();
+    let mut toggles: Vec<(&'static str, f64)> = Vec::new();
 
+    // (property, label, range, default, decimals, suffix, is audio)
+    type Row = (
+        &'static str,
+        &'static str,
+        (f64, f64),
+        f64,
+        usize,
+        &'static str,
+        bool,
+    );
+    let rows: [Row; 11] = [
+        ("position.x", "Position X", (-cw, cw), 0.0, 1, "", false),
+        ("position.y", "Position Y", (-ch, ch), 0.0, 1, "", false),
+        ("scale", "Scale", (5.0, 400.0), 100.0, 1, "%", false),
+        ("rotation", "Rotation", (-180.0, 180.0), 0.0, 1, "°", false),
+        ("opacity", "Opacity", (0.0, 100.0), 100.0, 0, "%", false),
+        ("exposure", "Exposure", (-3.0, 3.0), 0.0, 2, "", false),
+        ("contrast", "Contrast", (0.2, 2.0), 1.0, 2, "", false),
+        (
+            "saturation",
+            "Saturation",
+            (0.0, 200.0),
+            100.0,
+            0,
+            "",
+            false,
+        ),
+        (
+            "temperature",
+            "Temperature",
+            (2500.0, 10000.0),
+            ColorProps::NEUTRAL_KELVIN,
+            0,
+            "K",
+            false,
+        ),
+        ("volume", "Volume", (-60.0, 12.0), 0.0, 1, " dB", true),
+        ("pan", "Pan", (-1.0, 1.0), 0.0, 2, "", true),
+    ];
+    let mut anim_row = |ui: &mut Ui, r: &Row, edits: &mut Vec<_>, toggles: &mut Vec<_>| {
+        let (prop, label, (lo, hi), def, dec, suf, audio) = *r;
+        let enabled = if audio { has_audio } else { has_video };
+        let cur = base_value(&cur_v, Some(&cur_a), prop).unwrap_or(def);
+        let mut val = cur;
+        let animated = clip.anim.has(prop);
+        let on_key = inside && clip.anim.keys(prop).iter().any(|k| k.t == local);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if diamond(ui, label, animated, on_key, enabled && inside).clicked() {
+                toggles.push((prop, cur));
+            }
+            let out = slider_row(ui, label, &mut val, lo..=hi, def, dec, suf, enabled);
+            if out.changed && (val - cur).abs() > 1e-9 {
+                edits.push((prop, val));
+            }
+            if out.done {
+                if audio {
+                    adone = true;
+                } else {
+                    vdone = true;
+                }
+            }
+        });
+    };
     section(ui, "Transform");
+    for r in &rows[..5] {
+        anim_row(ui, r, &mut edits, &mut toggles);
+    }
+    section(ui, "Color");
+    for r in &rows[5..9] {
+        anim_row(ui, r, &mut edits, &mut toggles);
+    }
+    section(ui, "Audio & Speed");
+    for r in &rows[9..] {
+        anim_row(ui, r, &mut edits, &mut toggles);
+    }
     let row = |ui: &mut Ui,
                label: &str,
                val: &mut f64,
@@ -1290,152 +1415,6 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         *changed |= r.changed;
         *done |= r.done;
     };
-    row(
-        ui,
-        "Position X",
-        &mut v.transform.position.0,
-        -cw..=cw,
-        0.0,
-        1,
-        "",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    row(
-        ui,
-        "Position Y",
-        &mut v.transform.position.1,
-        -ch..=ch,
-        0.0,
-        1,
-        "",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    let mut scale = v.transform.scale.0 * 100.0;
-    let mut scale_changed = false;
-    row(
-        ui,
-        "Scale",
-        &mut scale,
-        5.0..=400.0,
-        100.0,
-        1,
-        "%",
-        has_video,
-        &mut scale_changed,
-        &mut vdone,
-    );
-    if scale_changed {
-        v.transform.scale = (scale / 100.0, scale / 100.0);
-        vchanged = true;
-    }
-    row(
-        ui,
-        "Rotation",
-        &mut v.transform.rotation_deg,
-        -180.0..=180.0,
-        0.0,
-        1,
-        "°",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    let mut opacity = v.opacity * 100.0;
-    let mut op_changed = false;
-    row(
-        ui,
-        "Opacity",
-        &mut opacity,
-        0.0..=100.0,
-        100.0,
-        0,
-        "%",
-        has_video,
-        &mut op_changed,
-        &mut vdone,
-    );
-    if op_changed {
-        v.opacity = opacity / 100.0;
-        vchanged = true;
-    }
-    section(ui, "Color");
-    row(
-        ui,
-        "Exposure",
-        &mut v.color.exposure,
-        -3.0..=3.0,
-        0.0,
-        2,
-        "",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    row(
-        ui,
-        "Contrast",
-        &mut v.color.contrast,
-        0.2..=2.0,
-        1.0,
-        2,
-        "",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    row(
-        ui,
-        "Saturation",
-        &mut v.color.saturation,
-        0.0..=200.0,
-        100.0,
-        0,
-        "",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    row(
-        ui,
-        "Temperature",
-        &mut v.color.temperature,
-        2500.0..=10000.0,
-        ColorProps::NEUTRAL_KELVIN,
-        0,
-        "K",
-        has_video,
-        &mut vchanged,
-        &mut vdone,
-    );
-    section(ui, "Audio & Speed");
-    row(
-        ui,
-        "Volume",
-        &mut a.gain_db,
-        -60.0..=12.0,
-        0.0,
-        1,
-        " dB",
-        has_audio,
-        &mut achanged,
-        &mut adone,
-    );
-    row(
-        ui,
-        "Pan",
-        &mut a.pan,
-        -1.0..=1.0,
-        0.0,
-        2,
-        "",
-        has_audio,
-        &mut achanged,
-        &mut adone,
-    );
     let fps = app.fps();
     let max_fade = clip.duration.value as f64 / fps;
     let mut fin = a.fade_in as f64 / fps;
@@ -1504,6 +1483,50 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         }
     });
 
+    for (prop, val) in edits {
+        if clip.anim.has(prop) {
+            let mut keys = clip.anim.keys(prop).to_vec();
+            match keys.iter_mut().find(|k| k.t == local) {
+                Some(k) => k.v = val,
+                None => {
+                    keys.push(Keyframe::new(local, val));
+                    keys.sort_by_key(|k| k.t);
+                }
+            }
+            app.do_merging(
+                Op::SetAnimTrack {
+                    item: clip.id,
+                    prop: prop.into(),
+                    keys,
+                },
+                &format!("k:{key}:{prop}"),
+            );
+        } else {
+            set_base_value(&mut v, &mut a, prop, val);
+            if matches!(prop, "volume" | "pan") {
+                achanged = true;
+            } else {
+                vchanged = true;
+            }
+        }
+    }
+    for (prop, cur) in toggles {
+        let mut keys = clip.anim.keys(prop).to_vec();
+        match keys.iter().position(|k| k.t == local) {
+            Some(i) => {
+                keys.remove(i);
+            }
+            None => {
+                keys.push(Keyframe::new(local, cur));
+                keys.sort_by_key(|k| k.t);
+            }
+        }
+        app.do_op(Op::SetAnimTrack {
+            item: clip.id,
+            prop: prop.into(),
+            keys,
+        });
+    }
     if vchanged && has_video {
         app.do_merging(
             Op::SetVideo {
