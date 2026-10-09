@@ -323,6 +323,7 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "stabilize" => self.stabilize_tool(input),
             "attach_title_to_subject" => self.attach_title_tool(input),
             "reframe_sequence" => self.reframe_tool(input),
             "remove_background" => self.remove_background_tool(input),
@@ -1037,6 +1038,17 @@ impl ToolBox {
         )
     }
 
+    fn stabilize_tool(&mut self, input: &Value) -> R {
+        let (clip, media, _) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let smoothing = num(input, "smoothing").unwrap_or(15.0).clamp(1.0, 60.0) as u32;
+        let ops = crate::stabilize::stabilize(&clip, &media, smoothing)?;
+        self.commit(Op::Transaction {
+            description: "Copilot: stabilize".into(),
+            ops,
+        })?;
+        self.describe(clip.id)
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1246,6 +1258,7 @@ pub fn tool_definitions() -> Value {
         {"name": "remove_background", "description": "Cut the subject out of its background using Apple's on-device vision model (Mac only): the background becomes transparent, so whatever is on the tracks below shows through. mode 'subject' (default: people, animals, objects) or 'person'. Takes a few seconds per second of footage.", "input_schema": obj(json!({"item_id": item, "mode": {"type": "string", "enum": ["subject", "person"]}}), &["item_id"])},
         {"name": "attach_title_to_subject", "description": "Make a title (or shape layer) follow the main moving subject of a video clip, by tracking it with Apple's vision model (Mac only). Writes position keyframes on the title.", "input_schema": obj(json!({"clip_id": item, "title_id": item}), &["clip_id", "title_id"])},
         {"name": "reframe_sequence", "description": "Make a copy of the sequence in another aspect ratio (9:16 vertical, 1:1 square or 4:5 portrait): every video clip is scaled to fill the new frame and panned to keep its subject (a face if there is one) in view. Mac only; takes a few seconds per clip.", "input_schema": obj(json!({"aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5"]}}), &["aspect"])},
+        {"name": "stabilize", "description": "Steady shaky handheld footage: the part of the file the clip plays is analysed and re-rendered smoothed (a new, slightly zoomed copy of that stretch is made and the clip is pointed at it). smoothing is how many frames the camera path is averaged over (default 15; 30 for a walking shot). Takes about real time.", "input_schema": obj(json!({"item_id": item, "smoothing": {"type": "number"}}), &["item_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

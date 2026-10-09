@@ -135,6 +135,24 @@ impl App {
         self.vision_jobs.push(VisionJob { clip, what, rx });
     }
 
+    /// Replace the clip's footage by a steadied copy (in the background).
+    pub fn stabilize_clip(&mut self, clip_id: Id) {
+        let Some((clip, ..)) = self.clip_by_id(clip_id) else {
+            return;
+        };
+        let Some(media) = self.project().media.get(&clip.media).cloned() else {
+            return;
+        };
+        self.spawn_job(clip_id, "Stabilize", move || {
+            let ops = captaine_agent::stabilize(&clip, &media, 15)?;
+            Ok(Outcome::Edit {
+                description: "Stabilize".into(),
+                ops,
+                switch_to: None,
+            })
+        });
+    }
+
     /// Make the selected title follow the subject of the selected clip.
     pub fn track_attach_selected(&mut self) {
         let ids = self.selection_ids();

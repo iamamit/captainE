@@ -1635,6 +1635,18 @@ fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip, has_video: bool, ha
 fn subject_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
     section(ui, "AI");
     let busy = app.vision_jobs.iter().any(|j| j.clip == clip.id);
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, "Stabilize", false, !busy)
+            .on_hover_text("Steady shaky handheld footage (makes a slightly zoomed, smoothed copy)")
+            .clicked()
+        {
+            app.stabilize_clip(clip.id);
+        }
+        if busy {
+            ui.spinner();
+            ui.label(RichText::new("Working…").size(11.0).color(theme::MUTED));
+        }
+    });
     if let Some(why) = captaine_vision::unavailable() {
         ui.label(RichText::new(why).size(10.5).color(theme::FAINT));
         return;
@@ -1645,10 +1657,6 @@ fn subject_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
         }
         if chip(ui, "People only", false, !busy).clicked() {
             app.remove_background(clip.id, captaine_vision::MatteMode::Person);
-        }
-        if busy {
-            ui.spinner();
-            ui.label(RichText::new("Working…").size(11.0).color(theme::MUTED));
         }
     });
     ui.horizontal_wrapped(|ui| {

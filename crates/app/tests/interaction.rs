@@ -1491,3 +1491,43 @@ fn nesting_clips_into_a_sequence_and_stepping_into_it() {
     settle(&mut h);
     assert_eq!(app(&h).project(), &start);
 }
+
+#[test]
+fn stabilize_swaps_in_a_steadied_copy_as_one_undo_step() {
+    let has_vidstab = Command::new("ffmpeg")
+        .args(["-hide_banner", "-filters"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("vidstabdetect"));
+    if !have_ffmpeg() || !has_vidstab {
+        return;
+    }
+    let mut h = editor();
+    let first = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("a clip"),
+    };
+    let history = app(&h).session.editor.history().len();
+    app_mut(&mut h).stabilize_clip(first.id);
+    for _ in 0..2400 {
+        h.step();
+        if app(&h).vision_jobs.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(app(&h).vision_jobs.is_empty());
+    let now = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("a clip"),
+    };
+    assert_ne!(now.media, first.media);
+    assert_eq!(now.duration, first.duration);
+    assert_eq!(app(&h).session.editor.history().len(), history + 1);
+    app(&h).project().validate().unwrap();
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.media == first.media,
+        _ => false,
+    });
+}

@@ -26,7 +26,7 @@ v04	Video	Masks	3	0.5	rectangle/ellipse mask effect with feather, rotation, inve
 v05	Video	Chroma key	4	0.5	chroma key with tolerance/softness/spill; no matte view or edge refine
 v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0.5	blur, sharpen, vignette, mirror, crop, pixelate (CPU)
 v07	Video	Effects stack, inspector, presets	4	0.5	ordered stack on clips with on/off/remove and sliders; no presets, no keyframed effect params, clips only
-v08	Video	Stabilization	3	0	
+v08	Video	Stabilization	3	0.75	two-pass vid.stab on the part of the file the clip plays, swapped in as a cached steadied copy, one undo; measured wobble drops; smoothing setting via Copilot; no live preview or crop/zoom control
 v09	Video	Motion tracking	2	0.75	object tracking through Apple Vision attaches a title or shape to the moving subject (position keyframes; Copilot tool); one box, no manual track editing, no multi-point or planar tracking
 v10	Video	Text animators and animation presets	3	0.75	in/out animation presets (fade, slides, pop, zoom, typewriter) for titles and layers as editable keyframes; Copilot animate_title; no per-letter or word animators
 v11	Video	Adjustment layers	3	0.75	adjustment layer with the full effects stack, masks limit its reach, opacity mixes; applies to all tracks below

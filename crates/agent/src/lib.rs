@@ -13,6 +13,7 @@ mod matte;
 mod scenes;
 mod silence;
 mod speech;
+mod stabilize;
 mod tools;
 
 pub use follow::{reframe, track_attach};
@@ -22,4 +23,5 @@ pub use matte::remove_background;
 pub use scenes::split_at_scenes;
 pub use silence::remove_silences;
 pub use speech::{clip_transcript, cut_ranges};
+pub use stabilize::stabilize;
 pub use tools::{tool_definitions, ToolBox};
