@@ -9,6 +9,7 @@ pub mod copilot;
 pub mod effect_widgets;
 pub mod jobs;
 pub mod links;
+pub mod loudness_ops;
 pub mod markers_ui;
 pub mod multicam;
 pub mod nesting;

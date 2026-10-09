@@ -323,6 +323,9 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "measure_loudness" => self.measure_loudness_tool(input),
+            "normalize_loudness" => self.normalize_tool(input),
+            "learn_noise_reduction" => self.learn_noise_tool(input),
             "sync_by_audio" => self.sync_tool(input),
             "multicam_cut" => self.multicam_tool(input),
             "auto_color" => self.auto_color_tool(input),
@@ -1160,6 +1163,95 @@ impl ToolBox {
         Ok(json!({"ok": true, "now_showing": names[angle - 1]}).to_string())
     }
 
+    fn measure_loudness_tool(&mut self, input: &Value) -> R {
+        let l = match text(input, "item_id") {
+            Some(k) => {
+                let (clip, ..) = self.clip_with_media(k)?;
+                crate::loudness::clip_loudness(self.project(), &clip)?
+            }
+            None => crate::loudness::sequence_loudness(self.project(), self.timeline()?.id)?,
+        };
+        Ok(json!({
+            "integrated_lufs": r2(l.integrated_lufs),
+            "loudness_range_lu": r2(l.loudness_range_lu),
+            "sample_peak_db": r2(l.sample_peak_db),
+            "true_peak_db": r2(l.true_peak_db),
+        })
+        .to_string())
+    }
+
+    fn learn_noise_tool(&mut self, input: &Value) -> R {
+        let (clip, media, _) = self.clip_with_media(req_text(input, "item_id")?)?;
+        if !media.has_audio {
+            return Err(format!("{} has no audio to learn from", clip.name));
+        }
+        let from = num(input, "from_sec")
+            .ok_or("from_sec is required")?
+            .max(0.0);
+        let to = num(input, "to_sec").ok_or("to_sec is required")?;
+        let len = clip.duration.value as f64 / self.fps();
+        if to <= from || from >= len {
+            return Err(format!("pick a stretch inside the clip (0 to {len:.1} s)"));
+        }
+        let sr = self.project().settings.sample_rate;
+        let count = ((to.min(len) - from) * sr as f64) as usize;
+        let mono = captaine_audio::decode_mono_window(
+            &media.path,
+            clip.source_start.to_seconds_f64() + from,
+            count,
+            sr,
+        )
+        .map_err(|e| e.to_string())?;
+        let profile = captaine_audio::learn_noise_profile(&mono)?;
+        let mut effects = clip.effects.clone();
+        let mut fx = match effects
+            .iter()
+            .position(|e| e.kind == EffectKind::NoiseReduction)
+        {
+            Some(i) => effects.remove(i),
+            None => Effect::new(EffectKind::NoiseReduction),
+        };
+        fx.text = profile;
+        fx.enabled = true;
+        if let Some(v) = num(input, "reduction_db") {
+            fx.params[0] = v;
+        }
+        if let Some(v) = num(input, "sensitivity") {
+            fx.params[1] = v;
+        }
+        fx.check()?;
+        effects.push(fx);
+        self.commit(Op::SetEffects {
+            item: clip.id,
+            effects,
+        })?;
+        Ok(json!({"ok": true, "learned_seconds": r2(to.min(len) - from)}).to_string())
+    }
+
+    fn normalize_tool(&mut self, input: &Value) -> R {
+        let target = num(input, "target_lufs")
+            .unwrap_or(-16.0)
+            .clamp(-40.0, -5.0);
+        let (ops, gain) = match text(input, "item_id") {
+            Some(k) => {
+                let (clip, ..) = self.clip_with_media(k)?;
+                let before = crate::loudness::clip_loudness(self.project(), &clip)?;
+                (
+                    crate::loudness::normalize_clip(self.project(), &clip, target)?,
+                    crate::loudness::gain_for(&before, target)?,
+                )
+            }
+            None => {
+                crate::loudness::normalize_sequence(self.project(), self.timeline()?.id, target)?
+            }
+        };
+        self.commit(Op::Transaction {
+            description: format!("Copilot: normalize to {target} LUFS"),
+            ops,
+        })?;
+        Ok(json!({"ok": true, "target_lufs": target, "changed_by_db": r2(gain)}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1374,6 +1466,9 @@ pub fn tool_definitions() -> Value {
         {"name": "match_color", "description": "Make a clip look like another one (same brightness, colour balance and colour) by setting its basic colour settings from a comparison of frames of both. item_id is the clip to change, reference_id the one to match.", "input_schema": obj(json!({"item_id": item, "reference_id": item}), &["item_id", "reference_id"])},
         {"name": "sync_by_audio", "description": "Line up clips shot of the same event by their sound. The first clip stays; the others are moved in time so their sound matches it. Clips with no clear match are left alone and reported.", "input_schema": obj(json!({"item_ids": {"type": "array", "items": {"type": "string"}}}), &["item_ids"])},
         {"name": "multicam_cut", "description": "Multicam switching: cut every camera-angle track at a time and show only one angle from there on. angle_tracks are the track names in angle order; angle is 1-based. Call it once at the start (angle 1 at the first clip's time) and then at each switch.", "input_schema": obj(json!({"angle_tracks": {"type": "array", "items": {"type": "string"}}, "angle": {"type": "number"}, "at_sec": {"type": "number"}}), &["angle_tracks", "angle", "at_sec"])},
+        {"name": "measure_loudness", "description": "Measure loudness in LUFS (and loudness range, peaks) of one clip, or of the whole mix when item_id is left out. Read-only.", "input_schema": obj(json!({"item_id": item}), &[])},
+        {"name": "learn_noise_reduction", "description": "Remove steady background noise (hiss, hum, room tone) from a clip by learning what the noise sounds like from a stretch of the clip that has only noise (at least 0.2 s, about 1 s is better), then adding Noise Reduction using that sample. from_sec and to_sec are seconds into the clip.", "input_schema": obj(json!({"item_id": item, "from_sec": {"type": "number"}, "to_sec": {"type": "number"}, "reduction_db": {"type": "number"}, "sensitivity": {"type": "number"}}), &["item_id", "from_sec", "to_sec"])},
+        {"name": "normalize_loudness", "description": "Bring a clip (or, without item_id, the whole sequence by moving every track's level equally) to a target loudness in LUFS: -16 for web and podcasts, -14 for streaming music, -23 for broadcast (EBU R128). Default -16.", "input_schema": obj(json!({"item_id": item, "target_lufs": {"type": "number"}}), &[])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

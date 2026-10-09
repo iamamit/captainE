@@ -1551,6 +1551,21 @@ fn mixer_tab(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&t.name).strong().size(12.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mix = |t: &Track, pan: f64, solo: bool, locked: bool| Op::SetTrackMix {
+                    track: t.id,
+                    pan,
+                    solo,
+                    locked,
+                };
+                if chip(ui, "Lock", t.locked, true)
+                    .on_hover_text("Refuse edits on this track")
+                    .clicked()
+                {
+                    app.do_op(mix(t, t.pan, t.solo, !t.locked));
+                }
+                if chip(ui, "Solo", t.solo, true).clicked() {
+                    app.do_op(mix(t, t.pan, !t.solo, t.locked));
+                }
                 if t.kind == TrackKind::Audio && chip(ui, "Mute", !t.enabled, true).clicked() {
                     app.do_op(Op::SetTrack {
                         track: t.id,
@@ -1560,6 +1575,22 @@ fn mixer_tab(app: &mut App, ui: &mut Ui) {
                 }
             });
         });
+        let mut pan = t.pan;
+        let pr = slider_row(ui, "Pan", &mut pan, -1.0..=1.0, 0.0, 2, "", true);
+        if pr.changed {
+            app.do_merging(
+                Op::SetTrackMix {
+                    track: t.id,
+                    pan,
+                    solo: t.solo,
+                    locked: t.locked,
+                },
+                &format!("p:{}", t.id.to_full_string()),
+            );
+        }
+        if pr.done {
+            app.end_merge();
+        }
         let mut gain = t.gain_db;
         let r = slider_row(ui, "Fader", &mut gain, -60.0..=12.0, 0.0, 1, " dB", true);
         if r.changed {
@@ -1580,6 +1611,46 @@ fn mixer_tab(app: &mut App, ui: &mut Ui) {
     }
     section(ui, "Master");
     meter(ui, app.meters.last().copied().unwrap_or(0.0));
+    section(ui, "Loudness");
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, "Measure mix", false, true).clicked() {
+            app.measure_loudness();
+        }
+        for (t, label) in [
+            (-23.0, "-23 broadcast"),
+            (-16.0, "-16 web"),
+            (-14.0, "-14 streaming"),
+        ] {
+            if chip(ui, label, (app.loudness_target - t).abs() < 0.01, true).clicked() {
+                app.loudness_target = t;
+            }
+        }
+    });
+    if let Some(l) = app.loudness {
+        ui.label(
+            RichText::new(format!(
+                "{:.1} LUFS   range {:.1} LU   true peak {:.1} dBTP",
+                l.integrated_lufs, l.loudness_range_lu, l.true_peak_db
+            ))
+            .font(mono(11.0))
+            .color(theme::TEXT),
+        );
+    }
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, "Normalize mix", false, true).clicked() {
+            app.normalize_mix();
+        }
+        if chip(
+            ui,
+            "Normalize selected clip",
+            false,
+            app.selected().is_some(),
+        )
+        .clicked()
+        {
+            app.normalize_selected_clip();
+        }
+    });
     ui.label(
         RichText::new("Levels follow playback. Add EQ, compression, a limiter, a de-esser or noise reduction to a clip from the Inspector.")
             .size(10.5)
@@ -1825,6 +1896,72 @@ pub fn effects_stack(
                 changed |= c;
                 done |= d;
                 &[1, 2, 3, 5, 6, 7, 9, 10, 11]
+            }
+            EffectKind::Eq => {
+                crate::effect_widgets::eq_graph(ui, e, app.project().settings.sample_rate);
+                &[]
+            }
+            EffectKind::NoiseReduction => {
+                ui.horizontal(|ui| {
+                    let learned = !e.text.is_empty();
+                    ui.label(
+                        RichText::new(if learned {
+                            "Using a sample of the noise"
+                        } else {
+                            "Guessing the noise from the quietest parts"
+                        })
+                        .size(11.0)
+                        .color(theme::MUTED),
+                    );
+                    if chip(ui, "Learn from I–O range", false, true)
+                        .on_hover_text("Mark a stretch of only background noise, then click")
+                        .clicked()
+                    {
+                        match app.noise_profile_from_marks() {
+                            Ok(p) => {
+                                e.text = p;
+                                structural = true;
+                            }
+                            Err(m) => app.toast(m, true),
+                        }
+                    }
+                    if learned && chip(ui, "Forget", false, true).clicked() {
+                        e.text.clear();
+                        structural = true;
+                    }
+                });
+                &[]
+            }
+            EffectKind::Ducking => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_sized(
+                        [80.0, 22.0],
+                        egui::Label::new(RichText::new("Listen to").size(12.0)),
+                    );
+                    if chip(ui, "All other sound", e.text.is_empty(), true).clicked() {
+                        e.text.clear();
+                        changed = true;
+                        done = true;
+                    }
+                    let names: Vec<String> = app
+                        .timeline()
+                        .map(|t| {
+                            t.tracks
+                                .iter()
+                                .filter(|t| t.kind == TrackKind::Audio)
+                                .map(|t| t.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for n in names {
+                        if chip(ui, &n, e.text == n, true).clicked() {
+                            e.text = n;
+                            changed = true;
+                            done = true;
+                        }
+                    }
+                });
+                &[]
             }
             EffectKind::Curves => {
                 ui.horizontal(|ui| {

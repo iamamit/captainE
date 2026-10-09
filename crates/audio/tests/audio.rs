@@ -822,3 +822,285 @@ fn recordings_of_one_event_are_lined_up_by_their_sound() {
     .unwrap();
     assert!(weak.confidence < al.confidence * 0.8, "{weak:?} vs {al:?}");
 }
+
+#[test]
+fn track_pan_and_solo_shape_the_mix() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (pa, pb) = (scratch("pan-a.wav"), scratch("pan-b.wav"));
+    sine(&pa, 440.0, 0.5, 4.0);
+    sine(&pb, 880.0, 0.25, 4.0);
+    let mut f = fx();
+    let (ma, mb) = (media(&mut f, &pa), media(&mut f, &pb));
+    place(&mut f, 0, 0, clip(&ma, 0.0, 60));
+    place(&mut f, 1, 0, clip(&mb, 0.0, 60));
+    let both = mix(&f);
+    let n = SR as usize;
+    let (l, r) = (rms(&both[n..2 * n], 0), rms(&both[n..2 * n], 1));
+    assert!((l - r).abs() < 0.01 && l > 0.3, "centred: {l} {r}");
+    // track 1 panned hard left: its tone leaves the right channel
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a1,
+            pan: -1.0,
+            solo: false,
+            locked: false,
+        },
+    )
+    .unwrap();
+    let panned = mix(&f);
+    let (l, r) = (rms(&panned[n..2 * n], 0), rms(&panned[n..2 * n], 1));
+    assert!(l > r * 1.5, "left is louder: {l} {r}");
+    // solo track 2: only its tone is left, and it sits in the middle
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a2,
+            pan: 0.0,
+            solo: true,
+            locked: false,
+        },
+    )
+    .unwrap();
+    let solo = mix(&f);
+    let (l, r) = (rms(&solo[n..2 * n], 0), rms(&solo[n..2 * n], 1));
+    assert!(
+        (l - 0.25 / std::f64::consts::SQRT_2).abs() < 0.02 && (l - r).abs() < 0.01,
+        "{l} {r}"
+    );
+    // soloing both brings both back
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a1,
+            pan: -1.0,
+            solo: true,
+            locked: false,
+        },
+    )
+    .unwrap();
+    let again = mix(&f);
+    assert!(rms(&again[n..2 * n], 0) > l * 1.5);
+}
+
+#[test]
+fn locked_tracks_refuse_edits_but_not_undo_or_unlock() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let p = scratch("lock.wav");
+    sine(&p, 440.0, 0.5, 4.0);
+    let mut f = fx();
+    let m = media(&mut f, &p);
+    let id = place(&mut f, 0, 0, clip(&m, 0.0, 60));
+    let before = f.ed.snapshot();
+    let steps = f.ed.history().len();
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a1,
+            pan: 0.0,
+            solo: false,
+            locked: true,
+        },
+    )
+    .unwrap();
+    // a change of the clip, an insert and a transaction containing either are all refused
+    let e =
+        f.ed.apply(
+            Author::User,
+            Op::SetName {
+                item: id,
+                name: "x".into(),
+            },
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("locked"), "{e}");
+    assert!(f
+        .ed
+        .apply(Author::User, Op::RemoveItem { item: id })
+        .is_err());
+    let again = clip(&m, 0.0, 30);
+    assert!(f
+        .ed
+        .apply(
+            Author::User,
+            edit::append(f.ed.project(), f.a1, again.clone())
+        )
+        .is_err());
+    assert!(f
+        .ed
+        .apply(
+            Author::User,
+            Op::Transaction {
+                description: "t".into(),
+                ops: vec![Op::SetName {
+                    item: id,
+                    name: "y".into()
+                }]
+            }
+        )
+        .is_err());
+    // the other track and the track's own settings are fine
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.a2, again))
+        .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetTrack {
+            track: f.a1,
+            enabled: false,
+            gain_db: -3.0,
+        },
+    )
+    .unwrap();
+    // unlock, edit, and undo all the way back
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a1,
+            pan: 0.0,
+            solo: false,
+            locked: false,
+        },
+    )
+    .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetName {
+            item: id,
+            name: "ok".into(),
+        },
+    )
+    .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetTrackMix {
+            track: f.a1,
+            pan: 0.0,
+            solo: false,
+            locked: true,
+        },
+    )
+    .unwrap();
+    while f.ed.history().len() > steps {
+        assert!(f.ed.undo());
+    }
+    assert_eq!(f.ed.project(), &before, "undo works even through a lock");
+}
+
+#[test]
+fn ducking_can_listen_to_one_chosen_track() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let voice = scratch("duck-voice.wav");
+    let src =
+        format!("aevalsrc=if(between(t\\,1\\,2)\\,0.5*sin(2*PI*220*t)\\,0):s={SR}:d=4:c=stereo");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &src,
+            "-c:a",
+            "pcm_f32le"
+        ])
+        .arg(&voice)
+        .status()
+        .unwrap()
+        .success());
+    let (music, hum) = (scratch("duck-music.wav"), scratch("duck-hum.wav"));
+    sine(&music, 880.0, 0.2, 4.0);
+    sine(&hum, 110.0, 0.5, 4.0); // loud, constant: a room tone the music should not duck for
+    let mut f = fx();
+    let a3 = Id::new();
+    let tl = f.tl;
+    f.ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: tl,
+            index: 2,
+            track: Track::new(a3, "A3", TrackKind::Audio),
+        },
+    )
+    .unwrap();
+    let (mv, mm, mh) = (
+        media(&mut f, &voice),
+        media(&mut f, &music),
+        media(&mut f, &hum),
+    );
+    place(&mut f, 0, 0, clip(&mv, 0.0, 120)); // A1: the voice
+    let bed = place(&mut f, 1, 0, clip(&mm, 0.0, 120)); // A2: the music
+    let op = edit::overwrite(f.ed.project(), a3, t(0), clip(&mh, 0.0, 120)).unwrap(); // A3: the hum
+    f.ed.apply(Author::User, op).unwrap();
+    let level = |out: &[f32], a: f64, b: f64| {
+        rms(
+            &out[(a * SR as f64) as usize * 2..(b * SR as f64) as usize * 2],
+            0,
+        )
+    };
+    let mut duck = Effect::new(EffectKind::Ducking);
+    duck.params = vec![-30.0, 24.0, 30.0, 200.0];
+    // listening to everything: the constant hum keeps the music ducked even when the voice is quiet
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: bed,
+            effects: vec![duck.clone()],
+        },
+    )
+    .unwrap();
+    let all = mix(&f);
+    let quiet_part_all = level(&all, 3.2, 3.8);
+    // listening to the voice track only: the music is back at full level away from the voice
+    duck.text = "A1".into();
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: bed,
+            effects: vec![duck],
+        },
+    )
+    .unwrap();
+    let voice_only = mix(&f);
+    let quiet_part_voice = level(&voice_only, 3.2, 3.8);
+    assert!(
+        quiet_part_voice > quiet_part_all,
+        "{quiet_part_voice} vs {quiet_part_all}"
+    );
+    // and under the voice the music does duck
+    let during = level(&voice_only, 1.3, 1.9);
+    let plain = {
+        let mut g = fx();
+        let (mv2, mm2, mh2) = (
+            media(&mut g, &voice),
+            media(&mut g, &music),
+            media(&mut g, &hum),
+        );
+        place(&mut g, 0, 0, clip(&mv2, 0.0, 120));
+        place(&mut g, 1, 0, clip(&mm2, 0.0, 120));
+        let a3b = Id::new();
+        let tlb = g.tl;
+        g.ed.apply(
+            Author::User,
+            Op::AddTrack {
+                timeline: tlb,
+                index: 2,
+                track: Track::new(a3b, "A3", TrackKind::Audio),
+            },
+        )
+        .unwrap();
+        let op = edit::overwrite(g.ed.project(), a3b, t(0), clip(&mh2, 0.0, 120)).unwrap();
+        g.ed.apply(Author::User, op).unwrap();
+        level(&mix(&g), 1.3, 1.9)
+    };
+    assert!(
+        during < plain * 0.97,
+        "the music dipped under the voice: {during} vs {plain}"
+    );
+}

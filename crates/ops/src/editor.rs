@@ -69,6 +69,9 @@ impl Editor {
 
     /// Applies an op. On error nothing changes. A successful edit clears the redo stack.
     pub fn apply(&mut self, author: Author, op: Op) -> Result<(), OpError> {
+        if crate::lock::locked_hit(&self.project, &op).is_some() {
+            return Err(OpError::OutOfRange("that track is locked"));
+        }
         let (next, inverse) = apply(&self.project, &op)?;
         self.project = next;
         self.revision += 1;
@@ -88,6 +91,9 @@ impl Editor {
     /// Only for ops that *set* absolute values (`SetVideo`, `SetAudio`, `SetTrack`), so the latest op alone
     /// still reproduces the final state when the log is replayed.
     pub fn apply_merging(&mut self, author: Author, op: Op, key: &str) -> Result<(), OpError> {
+        if crate::lock::locked_hit(&self.project, &op).is_some() {
+            return Err(OpError::OutOfRange("that track is locked"));
+        }
         let (next, inverse) = apply(&self.project, &op)?;
         self.project = next;
         self.revision += 1;

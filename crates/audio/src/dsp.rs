@@ -4,6 +4,19 @@ use std::f64::consts::PI;
 
 use captaine_model::{Effect, EffectKind};
 
+/// The response of an EQ effect's settings: `(frequency Hz, gain dB)` at `points` frequencies spread evenly
+/// on a logarithmic scale from 20 Hz to 20 kHz.
+pub fn eq_response(params: &[f64], sample_rate: u32, points: usize) -> Vec<(f64, f64)> {
+    let sr = sample_rate as f64;
+    let bands = eq_bands(sr, params);
+    (0..points)
+        .map(|i| {
+            let f = 20.0 * 1000f64.powf(i as f64 / (points - 1).max(1) as f64);
+            (f, bands.iter().map(|b| b.response_db(sr, f)).sum())
+        })
+        .collect()
+}
+
 /// Run every enabled sound effect of the list, in order, over `buf` (interleaved stereo).
 pub fn apply_audio_effects(buf: &mut [f32], sr: u32, effects: &[Effect]) {
     for e in effects.iter().filter(|e| e.enabled && e.kind.is_audio()) {
@@ -13,7 +26,10 @@ pub fn apply_audio_effects(buf: &mut [f32], sr: u32, effects: &[Effect]) {
             EffectKind::Compressor => compressor(buf, sr, p[0], p[1], p[2], p[3], p[4]),
             EffectKind::Limiter => limiter(buf, sr, p[0], p[1]),
             EffectKind::DeEsser => de_esser(buf, sr, p[0], p[1] / 100.0),
-            EffectKind::NoiseReduction => noise_reduction(buf, p[0], p[1] / 100.0),
+            EffectKind::NoiseReduction => {
+                let learned = parse_profile(&e.text);
+                noise_reduction(buf, p[0], p[1] / 100.0, learned.as_deref());
+            }
             // needs the rest of the mix, so the mixer applies it
             EffectKind::Ducking => {}
             _ => {}
@@ -31,6 +47,19 @@ struct Biquad {
 }
 
 impl Biquad {
+    /// Gain in dB of the filter at `freq` Hz (its frequency response).
+    fn response_db(&self, sr: f64, freq: f64) -> f64 {
+        let w = 2.0 * PI * freq / sr;
+        let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
+        let num_re = self.b[0] + self.b[1] * c1 + self.b[2] * c2;
+        let num_im = -(self.b[1] * s1 + self.b[2] * s2);
+        let den_re = 1.0 + self.a[0] * c1 + self.a[1] * c2;
+        let den_im = -(self.a[0] * s1 + self.a[1] * s2);
+        let n = num_re.hypot(num_im);
+        let d = den_re.hypot(den_im);
+        20.0 * (n / d.max(1e-12)).max(1e-9).log10()
+    }
+
     fn from(b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64) -> Biquad {
         Biquad {
             b: [b0 / a0, b1 / a0, b2 / a0],
@@ -98,8 +127,8 @@ impl Biquad {
     }
 }
 
-fn eq(buf: &mut [f32], sr: u32, p: &[f64]) {
-    let sr = sr as f64;
+/// The filters of an EQ effect's settings, in the order they run.
+fn eq_bands(sr: f64, p: &[f64]) -> Vec<Biquad> {
     let mut bands = Vec::new();
     if p[0] != 0.0 {
         bands.push(Biquad::shelf(sr, p[1], p[0], false));
@@ -113,6 +142,11 @@ fn eq(buf: &mut [f32], sr: u32, p: &[f64]) {
     if p[8] != 0.0 {
         bands.push(Biquad::shelf(sr, p[9], p[8], true));
     }
+    bands
+}
+
+fn eq(buf: &mut [f32], sr: u32, p: &[f64]) {
+    let bands = eq_bands(sr as f64, p);
     if bands.is_empty() {
         return;
     }
@@ -251,9 +285,51 @@ pub(crate) fn fft(re: &mut [f32], im: &mut [f32], inverse: bool) {
     }
 }
 
+/// A learned noise profile as stored in an effect's text: `profile:` and the 1025 bin magnitudes.
+pub fn parse_profile(text: &str) -> Option<Vec<f32>> {
+    let rest = text.strip_prefix("profile:")?;
+    let v: Vec<f32> = rest
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
+    (v.len() == N / 2 + 1).then_some(v)
+}
+
+/// The average spectrum (magnitude per bin) of `mono` audio: what the noise in it looks like.
+/// Needs about half a second of sound that is only noise.
+pub fn learn_noise_profile(mono: &[f32]) -> Result<String, String> {
+    if mono.len() < N * 4 {
+        return Err("pick at least a fifth of a second of just background noise".into());
+    }
+    let window: Vec<f32> = (0..N)
+        .map(|i| (0.5 - 0.5 * (2.0 * PI * i as f64 / N as f64).cos()).sqrt() as f32)
+        .collect();
+    let bins = N / 2 + 1;
+    let mut acc = vec![0.0f64; bins];
+    let mut frames = 0.0;
+    let mut start = 0;
+    while start + N <= mono.len() {
+        let mut re: Vec<f32> = (0..N).map(|i| mono[start + i] * window[i]).collect();
+        let mut im = vec![0.0; N];
+        fft(&mut re, &mut im, false);
+        for k in 0..bins {
+            acc[k] += re[k].hypot(im[k]) as f64;
+        }
+        frames += 1.0;
+        start += HOP;
+    }
+    // a little above the average, since noise fluctuates around it
+    let text = acc
+        .iter()
+        .map(|a| format!("{:.5}", a / frames * 1.25))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!("profile:{text}"))
+}
+
 /// Spectral subtraction. The noise level of every frequency bin is learned from the quietest part of the
 /// buffer (a low percentile over time), then subtracted from every frame with a floor.
-fn noise_reduction(buf: &mut [f32], reduction_db: f64, sensitivity: f64) {
+fn noise_reduction(buf: &mut [f32], reduction_db: f64, sensitivity: f64, learned: Option<&[f32]>) {
     let frames = buf.len() / 2;
     if frames < N * 2 || reduction_db <= 0.0 {
         return;
@@ -283,6 +359,10 @@ fn noise_reduction(buf: &mut [f32], reduction_db: f64, sensitivity: f64) {
         let mut noise = vec![0.0f32; bins];
         let mut col = vec![0.0f32; spectra.len()];
         for (k, nz) in noise.iter_mut().enumerate() {
+            if let Some(profile) = learned.filter(|p| p.len() == bins) {
+                *nz = profile[k];
+                continue;
+            }
             for (t, (re, im)) in spectra.iter().enumerate() {
                 col[t] = re[k].hypot(im[k]);
             }
@@ -386,6 +466,29 @@ mod tests {
     }
 
     #[test]
+    fn eq_response_matches_the_settings() {
+        let mut e = Effect::new(EffectKind::Eq);
+        e.params[2] = 9.0; // mid 1: +9 dB at 500 Hz
+        e.params[0] = -6.0; // low shelf -6 dB under 100 Hz
+        let curve = eq_response(&e.params, SR, 200);
+        let at = |hz: f64| {
+            curve
+                .iter()
+                .min_by(|a, b| (a.0 - hz).abs().total_cmp(&(b.0 - hz).abs()))
+                .unwrap()
+                .1
+        };
+        assert!((at(500.0) - 9.0).abs() < 0.8, "{}", at(500.0));
+        assert!(at(30.0) < -4.0, "{}", at(30.0));
+        assert!(at(8000.0).abs() < 1.0, "{}", at(8000.0));
+        assert_eq!(curve.len(), 200);
+        assert!((curve[0].0 - 20.0).abs() < 1e-9 && (curve[199].0 - 20000.0).abs() < 1.0);
+        // a flat EQ is a flat line
+        let flat = eq_response(&Effect::new(EffectKind::Eq).params, SR, 50);
+        assert!(flat.iter().all(|p| p.1.abs() < 1e-6));
+    }
+
+    #[test]
     fn compressor_reduces_loud_parts_by_the_ratio() {
         // 0.5 amplitude sine = -9 dBFS peak; threshold -21, ratio 4 -> ~9 dB of reduction on 12 dB over
         let mut t = tone(300.0, 0.5, 1.5);
@@ -463,6 +566,73 @@ mod tests {
             "the tone survives: {burst_before} -> {burst_after}"
         );
         assert!(b.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn a_learned_noise_profile_removes_steady_hiss_under_a_steady_tone() {
+        // hiss all the time, and a tone that never stops: with nothing "between words" to learn from,
+        // the automatic estimate cannot tell the tone from the noise, but a profile of the hiss alone can
+        let mut seed = 777u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+        };
+        let hiss_only: Vec<f32> = (0..SR as usize).map(|_| noise() * 0.08).collect();
+        let profile = learn_noise_profile(&hiss_only).unwrap();
+        assert!(parse_profile(&profile).is_some_and(|p| p.len() == 1025));
+        let mut mixed = tone(440.0, 0.3, 3.0);
+        for s in mixed.iter_mut() {
+            *s += noise() * 0.08;
+        }
+        let mut with_profile = Effect::new(EffectKind::NoiseReduction);
+        with_profile.params = vec![30.0, 50.0];
+        with_profile.text = profile;
+        let mut auto = with_profile.clone();
+        auto.text.clear();
+        let (mut a, mut b) = (mixed.clone(), mixed.clone());
+        apply_audio_effects(&mut a, SR, &[with_profile]);
+        apply_audio_effects(&mut b, SR, &[auto]);
+        let tone_level = |buf: &[f32]| {
+            // the 440 Hz part: correlate with a sine
+            let n = buf.len() / 2 / 4;
+            let (mut s, mut c) = (0.0f64, 0.0f64);
+            for i in (n..3 * n).map(|i| i * 2) {
+                let t = (i / 2) as f64 / SR as f64;
+                s += buf[i] as f64 * (2.0 * PI * 440.0 * t).sin();
+                c += buf[i] as f64 * (2.0 * PI * 440.0 * t).cos();
+            }
+            s.hypot(c) / n as f64 / 2.0 * 2.0
+        };
+        let (kept_learned, kept_auto) = (tone_level(&a), tone_level(&b));
+        assert!(
+            kept_learned > 0.2,
+            "the tone survives with the profile: {kept_learned}"
+        );
+        assert!(
+            kept_learned > kept_auto,
+            "better than the guess: {kept_learned} vs {kept_auto}"
+        );
+        // and the hiss is down: the distance from the clean tone shrinks
+        let clean = tone(440.0, 0.3, 3.0);
+        let error = |buf: &[f32]| {
+            let n = buf.len() / 2;
+            let r: f64 = (n / 4..3 * n / 4)
+                .map(|i| (buf[i * 2] - clean[i * 2]) as f64)
+                .map(|v| v * v)
+                .sum::<f64>()
+                / (n / 2) as f64;
+            r.sqrt()
+        };
+        assert!(
+            error(&a) < error(&mixed) * 0.7,
+            "{} -> {}",
+            error(&mixed),
+            error(&a)
+        );
+        assert!(
+            learn_noise_profile(&[0.0; 100]).is_err(),
+            "too short to learn from"
+        );
     }
 
     #[test]

@@ -985,6 +985,15 @@ pub struct Track {
     /// Applied to every clip's audio on this track.
     #[serde(default)]
     pub gain_db: f64,
+    /// Left-right balance of the whole track, -1 (left) to 1 (right)
+    #[serde(default)]
+    pub pan: f64,
+    /// While any track is soloed only soloed tracks are heard
+    #[serde(default)]
+    pub solo: bool,
+    /// Edits are refused on a locked track
+    #[serde(default)]
+    pub locked: bool,
 }
 
 impl Track {
@@ -996,6 +1005,9 @@ impl Track {
             items: Vec::new(),
             enabled: true,
             gain_db: 0.0,
+            pan: 0.0,
+            solo: false,
+            locked: false,
         }
     }
 

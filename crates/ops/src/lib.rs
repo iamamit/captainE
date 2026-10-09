@@ -6,6 +6,7 @@
 mod apply;
 pub mod edit;
 mod editor;
+pub mod lock;
 mod op;
 
 pub use apply::{apply, check_transition, OpError};

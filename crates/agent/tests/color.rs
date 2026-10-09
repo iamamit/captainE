@@ -227,3 +227,199 @@ fn auto_color_and_match_color_move_the_picture_the_right_way() {
     // a clip without footage is refused clearly
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn loudness_is_measured_and_normalized_to_a_target() {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("captaine-loud-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("tone.wav");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=5:sample_rate=48000",
+            "-af",
+            "volume=0.6",
+            "-c:a",
+            "pcm_s16le"
+        ])
+        .arg(&wav)
+        .status()
+        .unwrap()
+        .success());
+    let rate = Rational::FPS_30;
+    let m = media_ref(&wav, Id::new()).unwrap();
+    let mut ed = Editor::new(Project::new(ProjectSettings {
+        frame_rate: rate,
+        width: 320,
+        height: 180,
+        sample_rate: 48_000,
+    }));
+    let (tl, tr) = (Id::new(), Id::new());
+    ed.apply(Author::User, Op::AddMedia { media: m.clone() })
+        .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTimeline {
+            timeline: Timeline::new(tl, "m", rate),
+        },
+    )
+    .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: tl,
+            index: 0,
+            track: Track::new(tr, "A1", TrackKind::Audio),
+        },
+    )
+    .unwrap();
+    let clip = Clip::new(
+        Id::new(),
+        "tone",
+        m.id,
+        RationalTime::new(0, m.duration.unwrap().rate),
+        RationalTime::new(150, rate),
+    );
+    let id = clip.id;
+    ed.apply(Author::User, edit::append(ed.project(), tr, clip))
+        .unwrap();
+    let mut tools = ToolBox::new(ed.project(), &[], None, 0.0).unwrap();
+    let out: serde_json::Value = serde_json::from_str(
+        &tools
+            .call("measure_loudness", &json!({"item_id": id.to_string()}))
+            .unwrap(),
+    )
+    .unwrap();
+    let before = out["integrated_lufs"].as_f64().unwrap();
+    // ffmpeg's sine is 0.125 of full scale; at 0.6 of that it is about -22.5 dBFS, so near -25 LUFS
+    assert!((-29.0..-22.0).contains(&before), "{before}");
+    // bring the clip to -16
+    tools
+        .call(
+            "normalize_loudness",
+            &json!({"item_id": id.to_string(), "target_lufs": -16}),
+        )
+        .unwrap();
+    let after: serde_json::Value = serde_json::from_str(
+        &tools
+            .call("measure_loudness", &json!({"item_id": id.to_string()}))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        (after["integrated_lufs"].as_f64().unwrap() + 16.0).abs() < 0.5,
+        "{after}"
+    );
+    // the whole mix to -23 moves the track fader instead
+    let mut t2 = ToolBox::new(ed.project(), &[], None, 0.0).unwrap();
+    t2.call("normalize_loudness", &json!({"target_lufs": -23}))
+        .unwrap();
+    let track = t2.project().timeline(tl).unwrap().tracks[0].clone();
+    assert!(
+        (track.gain_db - (-23.0 - before)).abs() < 0.2,
+        "{} vs {}",
+        track.gain_db,
+        -23.0 - before
+    );
+    let mix: serde_json::Value =
+        serde_json::from_str(&t2.call("measure_loudness", &json!({})).unwrap()).unwrap();
+    assert!(
+        (mix["integrated_lufs"].as_f64().unwrap() + 23.0).abs() < 0.5,
+        "{mix}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn noise_is_learned_from_a_stretch_of_the_clip_and_attached_as_an_effect() {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("captaine-noise-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("hiss.wav");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=d=3:c=white:a=0.05:r=48000",
+            "-c:a",
+            "pcm_s16le"
+        ])
+        .arg(&wav)
+        .status()
+        .unwrap()
+        .success());
+    let rate = Rational::FPS_30;
+    let m = media_ref(&wav, Id::new()).unwrap();
+    let mut ed = Editor::new(Project::new(ProjectSettings {
+        frame_rate: rate,
+        width: 320,
+        height: 180,
+        sample_rate: 48_000,
+    }));
+    let (tl, tr) = (Id::new(), Id::new());
+    ed.apply(Author::User, Op::AddMedia { media: m.clone() })
+        .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTimeline {
+            timeline: Timeline::new(tl, "m", rate),
+        },
+    )
+    .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: tl,
+            index: 0,
+            track: Track::new(tr, "A1", TrackKind::Audio),
+        },
+    )
+    .unwrap();
+    let clip = Clip::new(
+        Id::new(),
+        "hiss",
+        m.id,
+        RationalTime::new(0, m.duration.unwrap().rate),
+        RationalTime::new(90, rate),
+    );
+    let id = clip.id;
+    ed.apply(Author::User, edit::append(ed.project(), tr, clip))
+        .unwrap();
+    let mut tools = ToolBox::new(ed.project(), &[], None, 0.0).unwrap();
+    // too short is refused clearly
+    assert!(tools
+        .call(
+            "learn_noise_reduction",
+            &json!({"item_id": id.to_string(), "from_sec": 0, "to_sec": 0.05})
+        )
+        .is_err());
+    tools
+        .call(
+            "learn_noise_reduction",
+            &json!({"item_id": id.to_string(), "from_sec": 0, "to_sec": 1.0, "reduction_db": 18}),
+        )
+        .unwrap();
+    let after = tools.project();
+    let Item::Clip(c) = after.timelines[&tl].tracks[0].items[0].clone() else {
+        panic!()
+    };
+    let fx = &c.effects[0];
+    assert_eq!(fx.kind, EffectKind::NoiseReduction);
+    assert_eq!(fx.params[0], 18.0);
+    assert_eq!(fx.text.split(',').count(), 1025);
+    let _ = std::fs::remove_dir_all(dir);
+}

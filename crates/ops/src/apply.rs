@@ -975,6 +975,30 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             t.gain_db = *gain_db;
             Ok(prev)
         }
+        Op::SetTrackMix {
+            track,
+            pan,
+            solo,
+            locked,
+        } => {
+            if !pan.is_finite() || !(-1.0..=1.0).contains(pan) {
+                return Err(OpError::BadProps("track pan is -1 to 1"));
+            }
+            let (tl, ti) = p
+                .find_track(*track)
+                .ok_or(OpError::NotFound("track", *track))?;
+            let t = p.timeline_mut(tl).expect("located").track_mut(ti);
+            let prev = Op::SetTrackMix {
+                track: *track,
+                pan: t.pan,
+                solo: t.solo,
+                locked: t.locked,
+            };
+            t.pan = *pan;
+            t.solo = *solo;
+            t.locked = *locked;
+            Ok(prev)
+        }
         Op::MoveTrack { track, index } => {
             let (tl_id, ti) = p
                 .find_track(*track)

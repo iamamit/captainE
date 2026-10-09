@@ -239,3 +239,63 @@ pub fn curve_editor(ui: &mut Ui, e: &mut Effect, which: usize) -> (bool, bool) {
     }
     (changed, done)
 }
+
+/// The frequency response of an EQ effect: log frequency across, ±18 dB up and down.
+pub fn eq_graph(ui: &mut Ui, e: &Effect, sample_rate: u32) {
+    debug_assert_eq!(e.kind, EffectKind::Eq);
+    let size = vec2(ui.available_width().min(260.0), 90.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "EQ response graph")
+    });
+    let p = ui.painter();
+    p.rect_filled(rect, 3.0, theme::FIELD);
+    let y_of =
+        |db: f64| rect.center().y - (db.clamp(-18.0, 18.0) / 18.0) as f32 * rect.height() / 2.0;
+    for db in [-12.0, -6.0, 0.0, 6.0, 12.0] {
+        let col = if db == 0.0 {
+            theme::FAINT
+        } else {
+            theme::BORDER
+        };
+        p.line_segment(
+            [pos2(rect.left(), y_of(db)), pos2(rect.right(), y_of(db))],
+            Stroke::new(1.0, col),
+        );
+    }
+    for hz in [100.0f64, 1000.0, 10000.0] {
+        let x = rect.left() + rect.width() * ((hz / 20.0).log10() / 3.0) as f32;
+        p.line_segment(
+            [pos2(x, rect.top()), pos2(x, rect.bottom())],
+            Stroke::new(1.0, theme::BORDER),
+        );
+        p.text(
+            pos2(x + 2.0, rect.bottom() - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            if hz >= 1000.0 {
+                format!("{}k", hz / 1000.0)
+            } else {
+                format!("{hz}")
+            },
+            crate::theme::mono(8.5),
+            theme::FAINT,
+        );
+    }
+    let curve = captaine_audio::eq_response(&e.params, sample_rate, 96);
+    let pts: Vec<Pos2> = curve
+        .iter()
+        .enumerate()
+        .map(|(i, (_, db))| pos2(rect.left() + rect.width() * i as f32 / 95.0, y_of(*db)))
+        .collect();
+    p.add(Shape::line(
+        pts,
+        Stroke::new(
+            1.8,
+            if e.enabled {
+                theme::ACCENT
+            } else {
+                theme::FAINT
+            },
+        ),
+    ));
+}

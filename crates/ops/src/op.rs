@@ -120,6 +120,13 @@ pub enum Op {
         enabled: bool,
         gain_db: f64,
     },
+    /// A track's pan, solo and lock.
+    SetTrackMix {
+        track: Id,
+        pan: f64,
+        solo: bool,
+        locked: bool,
+    },
     /// Reorder tracks within their timeline (index 0 is the bottom video layer).
     MoveTrack {
         track: Id,
@@ -206,6 +213,7 @@ impl Op {
             Op::SetVideo { item, .. } => format!("Set video properties of {item}"),
             Op::SetAudio { item, .. } => format!("Set audio properties of {item}"),
             Op::SetTrack { track, .. } => format!("Set track {track}"),
+            Op::SetTrackMix { track, .. } => format!("Set pan, solo or lock of track {track}"),
             Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
             Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
             Op::SetTitle { item, .. } => format!("Edit title {item}"),

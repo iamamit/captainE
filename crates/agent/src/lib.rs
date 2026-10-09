@@ -10,6 +10,7 @@ mod color;
 mod follow;
 mod http;
 mod loop_;
+mod loudness;
 mod matte;
 mod scenes;
 mod silence;
@@ -21,6 +22,9 @@ pub use color::{auto_color, clip_stats, match_color};
 pub use follow::{reframe, track_attach};
 pub use http::{AnthropicTransport, Credentials, Transport};
 pub use loop_::{run, AgentConfig, AgentError, AgentRequest, AgentResult, ChatTurn, Event};
+pub use loudness::{
+    clip_loudness, gain_for, normalize_clip, normalize_sequence, sequence_loudness,
+};
 pub use matte::remove_background;
 pub use scenes::split_at_scenes;
 pub use silence::remove_silences;

@@ -6,7 +6,7 @@ e03	Editing	Snapping, zoom, scrub, JKL shuttle	3	1
 e04	Editing	Linked audio and video clips	4	0.75	separate audio into a linked audio-track clip; linked clips select, move (any track change), trim, cut and delete together; Link toggle; link/unlink; multi-selection moves as a group; no sync-offset badge
 e05	Editing	Multi-select, copy, paste, duplicate	4	0.75	shift-click multi-select, select all, copy/paste at playhead, duplicate (ripple), multi lift/ripple delete; no marquee or group drag
 e06	Editing	Undo, redo, history	5	1	also branches
-e07	Editing	Track controls: lock, solo, mute, target, add and remove	3	0.5	hide/mute and add exist
+e07	Editing	Track controls: lock, solo, mute, target, add and remove	3	0.75	hide/mute, solo, lock (enforced in the editor), add/remove, reorder
 e08	Editing	Nested sequences / compound clips	3	0.75	nest selected clips into a new sequence, insert a sequence into another, step into it; plays picture and sound live, follows edits; cycles refused; no unnest, no per-instance overrides
 e09	Editing	Multicam	2	0.75	sync clips by audio (cross-correlation, ~5 ms), multicam mode on the angle tracks with number-key and button cuts, undoable; Copilot tools; no multi-angle viewer grid, no audio follow-video choice
 e10	Editing	Source monitor with 3-point and 4-point edits	4	0.75	source monitor (scrub, marks, Insert/Overwrite via , and .), 3-point and 4-point (fit to fill via speed) edits; no playback or audio scrub in the source
@@ -38,11 +38,11 @@ c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, 
 c04	Color	LUTs	3	0.5	.cube 3D LUT with strength per clip; no 1D LUTs, no LUT browser
 c05	Color	Auto color and shot matching	2	0.75	auto colour from measured frames (exposure, contrast, cast, saturation) and shot matching to a reference clip; Copilot tools; no per-shot histogram match or skin-tone protection
 a01	Audio	Gain, pan, fades, mute, waveforms	4	1	
-a02	Audio	Mixer panel with track faders and live meters	4	0.5	mixer tab: per-track faders, mute, live peak meters and master meter; no pan/solo/buses/automation
-a03	Audio	Loudness measure and normalize to a target	4	0.5	measure only
-a04	Audio	EQ, compressor, limiter, de-esser	4	0.5	4-band EQ, compressor, limiter, de-esser per clip; no sidechain, no spectrum display
-a05	Audio	Noise reduction and voice cleanup	4	0.5	spectral-subtraction noise reduction with sensitivity; no learn-profile or voice isolation model
-a06	Audio	Auto ducking	3	0.5	Auto duck effect on a clip: dips under any other sound with attack/release; no per-track sidechain choice
+a02	Audio	Mixer panel with track faders and live meters	4	0.75	mixer tab: per-track faders, pan, mute, solo, live peak and master meters
+a03	Audio	Loudness measure and normalize to a target	4	0.75	LUFS/LRA/true-peak measure; normalize a clip or the mix to a target; Copilot tools and mixer UI
+a04	Audio	EQ, compressor, limiter, de-esser	4	0.75	4-band EQ with response graph, compressor, limiter, de-esser; no multiband
+a05	Audio	Noise reduction and voice cleanup	4	0.75	spectral noise reduction with sensitivity and learn-from-range noise profile (UI + Copilot); no voice isolation model
+a06	Audio	Auto ducking	3	0.75	Auto duck effect with attack/release and a chosen source track
 a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
 a08	Audio	Voice-over recording	2	0	
 i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0.75	local Whisper (mlx): transcribe a clip, word timings, caption titles on a Captions track, SRT export/import, burn-in through export; no styled caption presets or speaker labels

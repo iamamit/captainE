@@ -12,8 +12,9 @@ mod sync;
 mod waveform;
 
 pub use analyze::{find_silences, silences_in};
+pub use decode::decode_mono_window;
 pub use decode::{decode_pcm, AudioError};
-pub use dsp::apply_audio_effects;
+pub use dsp::{apply_audio_effects, eq_response, learn_noise_profile};
 pub use loudness::{measure, Loudness};
 pub use mixer::Mixer;
 pub use sync::{find_offset, Alignment};

@@ -456,6 +456,15 @@ pub fn merge(
                     if c.fields.iter().any(|f| f == "gain_db") {
                         t.gain_db = tt.gain_db;
                     }
+                    for (f, apply) in [("pan", 0), ("solo", 1), ("locked", 2)] {
+                        if c.fields.iter().any(|x| x == f) {
+                            match apply {
+                                0 => t.pan = tt.pan,
+                                1 => t.solo = tt.solo,
+                                _ => t.locked = tt.locked,
+                            }
+                        }
+                    }
                     if c.fields.iter().any(|f| f == "name") {
                         t.name = tt.name.clone();
                     }

@@ -201,6 +201,9 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Last measurement of the mix, and the loudness to normalise to (LUFS)
+    pub loudness: Option<captaine_audio::Loudness>,
+    pub loudness_target: f64,
     /// A copied effect stack, and the name being typed for a new preset
     pub fx_clipboard: Vec<captaine_model::Effect>,
     pub preset_save: Option<String>,
@@ -305,6 +308,8 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            loudness: None,
+            loudness_target: -16.0,
             fx_clipboard: Vec::new(),
             preset_save: None,
             preset_effects: Vec::new(),

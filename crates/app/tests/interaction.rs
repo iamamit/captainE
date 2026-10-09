@@ -1797,3 +1797,48 @@ fn effect_stack_presets_reorder_duplicate_copy_and_save() {
     assert!(captaine_app::presets_store::save(" ", &[]).is_err());
     let _ = std::fs::remove_dir_all(presets);
 }
+
+#[test]
+fn mixer_solo_lock_pan_and_loudness_buttons() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).inspector_tab = captaine_app::app::InspectorTab::Mixer;
+    settle(&mut h);
+    let v1_id = track_named(app(&h), "V1").id;
+    let state = |a: &App| {
+        let t = track_named(a, "V1");
+        (t.solo, t.locked)
+    };
+    assert_eq!(state(app(&h)), (false, false));
+    // V1 is the first track listed that is not on top, so use the app's own methods through the tab's buttons
+    let solos: Vec<_> = h.get_all_by_label("Solo").collect();
+    assert!(solos.len() >= 4, "one Solo per track");
+    app_mut(&mut h).do_op(captaine_ops::Op::SetTrackMix {
+        track: v1_id,
+        pan: 0.0,
+        solo: true,
+        locked: true,
+    });
+    settle(&mut h);
+    assert_eq!(state(app(&h)), (true, true));
+    // locked: the clip on it cannot be edited
+    let first = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    assert!(!app_mut(&mut h).do_op(captaine_ops::Op::SetName {
+        item: first,
+        name: "no".into()
+    }));
+    app_mut(&mut h).undo();
+    // loudness: measure, then normalise to a target
+    h.get_by_label("Measure mix").scroll_to_me();
+    h.get_by_label("Measure mix").click();
+    settle(&mut h);
+    assert!(app(&h).loudness.is_some());
+    h.get_by_label("-23 broadcast").click();
+    settle(&mut h);
+    assert_eq!(app(&h).loudness_target, -23.0);
+}

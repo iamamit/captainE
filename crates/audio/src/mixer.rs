@@ -18,6 +18,8 @@ struct MixClip {
     effects: Vec<Effect>,
     /// threshold dB, reduction dB, attack ms, release ms of an Auto duck effect
     duck: Option<[f64; 4]>,
+    /// The track a ducking effect listens to (None: everything else)
+    duck_source: Option<usize>,
     /// The sequence this clip plays, when it nests one instead of reading a file
     nested: Option<Id>,
     path: String,
@@ -31,6 +33,8 @@ struct MixClip {
     reverse: bool,
     gain_db: f64,
     track_db: f64,
+    /// Left-right balance of the whole track
+    track_pan: f64,
     pan: f64,
     /// Keyframes of volume (dB) and pan, times in output samples from the start of the clip
     vol_keys: Vec<Keyframe>,
@@ -88,7 +92,14 @@ impl Mixer {
                 .map_or(0, |t| t.value)
         };
         let mut clips = Vec::new();
-        for (track_ix, track) in tl.tracks.iter().enumerate().filter(|(_, t)| t.enabled) {
+        // while any track is soloed, only soloed tracks are heard
+        let any_solo = tl.tracks.iter().any(|t| t.solo && t.enabled);
+        for (track_ix, track) in tl
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.enabled && (!any_solo || t.solo))
+        {
             // the clip just before, if it made sound: (item index, index in `clips`)
             let mut prev: Option<(usize, usize)> = None;
             for (ii, (item, start)) in track.items.iter().zip(track.item_starts()).enumerate() {
@@ -116,6 +127,15 @@ impl Mixer {
                         .iter()
                         .find(|e| e.enabled && e.kind == captaine_model::EffectKind::Ducking)
                         .map(|e| [e.params[0], e.params[1], e.params[2], e.params[3]]),
+                    duck_source: c
+                        .effects
+                        .iter()
+                        .find(|e| {
+                            e.enabled
+                                && e.kind == captaine_model::EffectKind::Ducking
+                                && !e.text.is_empty()
+                        })
+                        .and_then(|e| tl.tracks.iter().position(|t| t.name == e.text)),
                     nested: m.nested_timeline(),
                     path: m.path.clone(),
                     start: s,
@@ -126,6 +146,7 @@ impl Mixer {
                     reverse: c.retime.reverse,
                     gain_db: c.audio.gain_db,
                     track_db: track.gain_db,
+                    track_pan: track.pan,
                     pan: c.audio.pan,
                     vol_keys: c
                         .anim
@@ -275,6 +296,15 @@ impl Mixer {
             .filter(|i| self.clips[*i].duck.is_some())
             .collect();
         let mut sidechain: Option<Vec<f32>> = None;
+        // each track's own sound, kept only when a ducking effect listens to one track
+        let want_tracks = ducked
+            .iter()
+            .any(|ci| self.clips[*ci].duck_source.is_some());
+        let mut track_bufs: Vec<Vec<f32>> = if want_tracks {
+            vec![vec![0.0f32; count * 2]; self.tracks]
+        } else {
+            Vec::new()
+        };
         order.extend(ducked.iter().copied());
         for ci in order {
             if self.clips[ci].duck.is_some() && sidechain.is_none() {
@@ -290,36 +320,41 @@ impl Mixer {
                 !self.clips[ci].vol_keys.is_empty() || !self.clips[ci].pan_keys.is_empty();
             let (mut gl, mut gr) = {
                 let c = &self.clips[ci];
-                left_right(db_to_gain(c.gain_db + c.track_db), c.pan)
+                let (l, r) = left_right(db_to_gain(c.gain_db + c.track_db), c.pan);
+                let (tl, tr) = left_right(1.0, c.track_pan);
+                (l * tl, r * tr)
             };
-            let duck_gain: Option<Vec<f32>> = match (self.clips[ci].duck, &sidechain) {
-                (Some(d), Some(side)) => {
-                    let id = self.clips[ci].id;
-                    let (mut env, mut red) = self.ducks.get(&id).copied().unwrap_or((0.0, 0.0));
-                    let sr = self.sample_rate as f64;
-                    let coef = |ms: f64| (-1.0 / (ms * 0.001 * sr)).exp();
-                    let (atk, rel) = (coef(d[2]), coef(d[3]));
-                    // the level detector is quick; the user's attack and release shape the reduction
-                    let (det_up, det_down) = (coef(5.0), coef(60.0));
-                    let mut g = Vec::with_capacity(count);
-                    for f in side.chunks_exact(2) {
-                        let level = f[0].abs().max(f[1].abs()) as f64;
-                        env = if level > env {
-                            det_up * env + (1.0 - det_up) * level
-                        } else {
-                            det_down * env + (1.0 - det_down) * level
-                        };
-                        let over = 20.0 * env.max(1e-9).log10() > d[0];
-                        let target = if over { d[1] } else { 0.0 };
-                        let c = if target > red { atk } else { rel };
-                        red = c * red + (1.0 - c) * target;
-                        g.push(10f64.powf(-red / 20.0) as f32);
+            let own_side: Option<&Vec<f32>> =
+                self.clips[ci].duck_source.and_then(|t| track_bufs.get(t));
+            let duck_gain: Option<Vec<f32>> =
+                match (self.clips[ci].duck, own_side.or(sidechain.as_ref())) {
+                    (Some(d), Some(side)) => {
+                        let id = self.clips[ci].id;
+                        let (mut env, mut red) = self.ducks.get(&id).copied().unwrap_or((0.0, 0.0));
+                        let sr = self.sample_rate as f64;
+                        let coef = |ms: f64| (-1.0 / (ms * 0.001 * sr)).exp();
+                        let (atk, rel) = (coef(d[2]), coef(d[3]));
+                        // the level detector is quick; the user's attack and release shape the reduction
+                        let (det_up, det_down) = (coef(5.0), coef(60.0));
+                        let mut g = Vec::with_capacity(count);
+                        for f in side.chunks_exact(2) {
+                            let level = f[0].abs().max(f[1].abs()) as f64;
+                            env = if level > env {
+                                det_up * env + (1.0 - det_up) * level
+                            } else {
+                                det_down * env + (1.0 - det_down) * level
+                            };
+                            let over = 20.0 * env.max(1e-9).log10() > d[0];
+                            let target = if over { d[1] } else { 0.0 };
+                            let c = if target > red { atk } else { rel };
+                            red = c * red + (1.0 - c) * target;
+                            g.push(10f64.powf(-red / 20.0) as f32);
+                        }
+                        self.ducks.insert(id, (env, red));
+                        Some(g)
                     }
-                    self.ducks.insert(id, (env, red));
-                    Some(g)
-                }
-                _ => None,
-            };
+                    _ => None,
+                };
             let mut pos = a - cs; // clip-relative
             let stop = b - cs;
             while pos < stop {
@@ -331,7 +366,9 @@ impl Mixer {
                         let c = &self.clips[ci];
                         let db = value_at(&c.vol_keys, p).unwrap_or(c.gain_db);
                         let pan = value_at(&c.pan_keys, p).unwrap_or(c.pan).clamp(-1.0, 1.0);
-                        (gl, gr) = left_right(db_to_gain(db + c.track_db), pan);
+                        let (l, r) = left_right(db_to_gain(db + c.track_db), pan);
+                        let (tl, tr) = left_right(1.0, c.track_pan);
+                        (gl, gr) = (l * tl, r * tr);
                     }
                     let mut g = 1.0f32;
                     if p < fi {
@@ -346,6 +383,11 @@ impl Mixer {
                     let (l, r) = (win[si] * gl * g * dg, win[si + 1] * gr * g * dg);
                     out[oi] += l;
                     out[oi + 1] += r;
+                    if want_tracks && self.clips[ci].duck.is_none() {
+                        let t = self.clips[ci].track;
+                        track_bufs[t][oi] += l;
+                        track_bufs[t][oi + 1] += r;
+                    }
                     if let Some(pk) = peaks.as_deref_mut() {
                         let t = self.clips[ci].track;
                         pk[t] = pk[t].max(l.abs()).max(r.abs());

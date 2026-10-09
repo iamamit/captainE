@@ -127,3 +127,13 @@ pub(crate) fn decode_filtered(
     out.resize(want, 0.0);
     Ok(out)
 }
+
+/// `count` mono samples at `sample_rate` starting `start_secs` into the file.
+pub fn decode_mono_window(
+    path: &str,
+    start_secs: f64,
+    count: usize,
+    sample_rate: u32,
+) -> Result<Vec<f32>, AudioError> {
+    decode(path, start_secs, count, sample_rate, 1)
+}

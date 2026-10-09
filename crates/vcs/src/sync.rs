@@ -183,6 +183,14 @@ pub fn sync_ops(from: &Project, to: &Project) -> Result<Vec<Op>, String> {
                 if ft.name != tt.name {
                     return Err(format!("track '{}' was renamed, which has no op", ft.name));
                 }
+                if ft.pan != tt.pan || ft.solo != tt.solo || ft.locked != tt.locked {
+                    ops.push(Op::SetTrackMix {
+                        track: tt.id,
+                        pan: tt.pan,
+                        solo: tt.solo,
+                        locked: tt.locked,
+                    });
+                }
                 if ft.enabled != tt.enabled || ft.gain_db != tt.gain_db {
                     ops.push(Op::SetTrack {
                         track: tt.id,
