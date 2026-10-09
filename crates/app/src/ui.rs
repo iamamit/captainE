@@ -1902,7 +1902,26 @@ pub fn effects_stack(
                         structural = true;
                     }
                 }
+                if chip(ui, "Browse a folder…", app.lut_folder.is_some(), true).clicked() {
+                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                        app.lut_folder = Some(d);
+                    }
+                }
             });
+            if let Some(dir) = app.lut_folder.clone() {
+                ui.horizontal_wrapped(|ui| {
+                    for f in crate::effect_widgets::lut_files(&dir).into_iter().take(60) {
+                        let name = f
+                            .file_stem()
+                            .map_or(String::new(), |n| n.to_string_lossy().into());
+                        let path: String = f.to_string_lossy().into();
+                        if chip(ui, &name, e.text == path, true).clicked() {
+                            e.text = path;
+                            structural = true;
+                        }
+                    }
+                });
+            }
         }
         // colour effects get pictures to drag; the other settings are plain sliders
         let hidden: &[usize] = match e.kind {

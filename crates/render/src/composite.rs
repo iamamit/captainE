@@ -139,6 +139,10 @@ pub struct LayerFx {
     pub shift: (f64, f64),
     /// Only this part of the canvas is drawn: `[left, top, right, bottom]` as fractions
     pub mask: Option<[f64; 4]>,
+    /// Multiplies the layer's size
+    pub scale: f64,
+    /// Only a circle of this radius, as a fraction of half the canvas diagonal, around the middle is drawn
+    pub iris: Option<f64>,
 }
 
 impl Default for LayerFx {
@@ -147,6 +151,8 @@ impl Default for LayerFx {
             opacity: 1.0,
             shift: (0.0, 0.0),
             mask: None,
+            scale: 1.0,
+            iris: None,
         }
     }
 }
@@ -159,7 +165,7 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
     }
     let t = &props.transform;
     let fit = (cw / fw).min(ch / fh);
-    let (sx, sy) = (fit * t.scale.0, fit * t.scale.1);
+    let (sx, sy) = (fit * t.scale.0 * fx.scale, fit * t.scale.1 * fx.scale);
     let (sin, cos) = t.rotation_deg.to_radians().sin_cos();
 
     // bounding box of the drawn picture on the canvas
@@ -179,12 +185,19 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
     let mask = fx
         .mask
         .map(|m| [m[0] * cw, m[1] * ch, m[2] * cw, m[3] * ch]);
+    let iris = fx.iris.map(|f| f * (cw * cw + ch * ch).sqrt() / 2.0);
     let graded_neutral = props.color.is_neutral();
     for y in y0..y1 {
         for x in x0..x1 {
             if let Some(m) = mask {
                 let (mx, my) = (x as f64 + 0.5, y as f64 + 0.5);
                 if mx < m[0] || mx >= m[2] || my < m[1] || my >= m[3] {
+                    continue;
+                }
+            }
+            if let Some(r) = iris {
+                let (ix, iy) = (x as f64 + 0.5 - cw / 2.0, y as f64 + 0.5 - ch / 2.0);
+                if ix * ix + iy * iy > r * r {
                     continue;
                 }
             }

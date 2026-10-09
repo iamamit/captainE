@@ -192,6 +192,8 @@ pub struct App {
     pub last_requested: Option<i64>,
     audio: Option<AudioEngine>,
     pub voiceover: Option<crate::voiceover::Recorder>,
+    /// The folder the LUT browser lists
+    pub lut_folder: Option<PathBuf>,
     audio_live: bool,
 
     // engine plumbing
@@ -303,6 +305,7 @@ impl App {
             last_requested: None,
             audio: AudioEngine::new(),
             voiceover: None,
+            lut_folder: None,
             audio_live: false,
             worker: RenderWorker::spawn(ctx.clone()),
             jobs: Jobs::spawn(ctx.clone()),

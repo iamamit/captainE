@@ -531,3 +531,55 @@ fn a_keyed_clip_shows_what_is_under_it() {
         )
         .is_err());
 }
+
+#[test]
+fn the_other_transitions_reveal_the_new_picture_their_own_way() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (red, blue) = (scratch("t2-red.mp4"), scratch("t2-blue.mp4"));
+    solid_video(&red, "0xff0000");
+    solid_video(&blue, "0x0000ff");
+    let mut f = fixture((96, 54));
+    let (mr, mb) = (add_media(&mut f, &red), add_media(&mut f, &blue));
+    let (a, b) = (clip(&mr, 10, 30), clip(&mb, 10, 30));
+    let bid = b.id;
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, a))
+        .unwrap();
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, b))
+        .unwrap();
+    let mut set = |f: &mut Fixture, kind| {
+        f.ed.apply(
+            Author::User,
+            Op::SetTransition {
+                item: bid,
+                transition: Some(Transition { kind, duration: 10 }),
+            },
+        )
+        .unwrap();
+    };
+    let px = |f: &Fixture, tick: i64, x: u32, y: u32| -> [u8; 3] {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        rgb_of(&r.render(tick).unwrap(), x, y)
+    };
+    // wipe down: the top is already blue, the bottom still red
+    set(&mut f, TransitionKind::WipeDown);
+    assert!(px(&f, 27, 48, 4)[2] > 250 && px(&f, 27, 48, 50)[0] > 250);
+    // wipe up is the other way round
+    set(&mut f, TransitionKind::WipeUp);
+    assert!(px(&f, 27, 48, 50)[2] > 250 && px(&f, 27, 48, 4)[0] > 250);
+    // slide: the old picture stays under the new one sliding in from the right
+    set(&mut f, TransitionKind::SlideLeft);
+    assert!(px(&f, 27, 4, 27)[0] > 250, "the old picture has not moved");
+    assert!(px(&f, 27, 92, 27)[2] > 250, "the new one is arriving");
+    assert!(px(&f, 35, 4, 27)[2] > 250);
+    // iris: the middle opens first, the corners stay old until late
+    set(&mut f, TransitionKind::Iris);
+    assert!(px(&f, 27, 48, 27)[2] > 250 && px(&f, 27, 2, 2)[0] > 250);
+    assert!(px(&f, 35, 2, 2)[2] > 250);
+    // zoom in: starts small and faint over the old picture, ends full size
+    set(&mut f, TransitionKind::ZoomIn);
+    assert!(px(&f, 26, 2, 2)[0] > 250 && px(&f, 26, 2, 2)[2] < 20);
+    assert!(px(&f, 35, 2, 2)[2] > 250);
+    assert_eq!(TransitionKind::ALL.len(), 12);
+}

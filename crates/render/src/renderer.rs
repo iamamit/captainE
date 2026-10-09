@@ -358,6 +358,19 @@ fn transition_fx(t: TransitionState) -> LayerFx {
         (TransitionKind::PushLeft, false) => fx.shift.0 = -p,
         (TransitionKind::PushRight, true) => fx.shift.0 = -(1.0 - p),
         (TransitionKind::PushRight, false) => fx.shift.0 = p,
+        (TransitionKind::WipeDown, true) => fx.mask = Some([0.0, 0.0, 1.0, p]),
+        (TransitionKind::WipeUp, true) => fx.mask = Some([0.0, 1.0 - p, 1.0, 1.0]),
+        (TransitionKind::WipeDown | TransitionKind::WipeUp, false) => {}
+        (TransitionKind::SlideLeft, true) => fx.shift.0 = 1.0 - p,
+        (TransitionKind::SlideRight, true) => fx.shift.0 = -(1.0 - p),
+        (TransitionKind::SlideLeft | TransitionKind::SlideRight, false) => {}
+        (TransitionKind::Iris, true) => fx.iris = Some(p),
+        (TransitionKind::Iris, false) => {}
+        (TransitionKind::ZoomIn, true) => {
+            fx.scale = 0.3 + 0.7 * p;
+            fx.opacity = p;
+        }
+        (TransitionKind::ZoomIn, false) => {}
     }
     fx
 }

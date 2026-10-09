@@ -750,11 +750,14 @@ pub struct Lut3d {
     min: [f32; 3],
     max: [f32; 3],
     data: Vec<[f32; 3]>,
+    /// A 1D LUT: `size` entries, one curve per channel (red, green and blue are looked up apart)
+    one_d: bool,
 }
 
 impl Lut3d {
     pub fn parse(text: &str) -> Result<Lut3d, String> {
         let mut size = 0usize;
+        let mut one_d = false;
         let (mut min, mut max) = ([0.0f32; 3], [1.0f32; 3]);
         let mut data = Vec::new();
         for line in text.lines() {
@@ -768,10 +771,13 @@ impl Lut3d {
                 w.filter_map(|x| x.parse().ok()).collect()
             };
             match first {
-                "TITLE" | "LUT_1D_SIZE" => {
-                    if first == "LUT_1D_SIZE" {
-                        return Err("1D LUTs are not supported".into());
-                    }
+                "TITLE" => {}
+                "LUT_1D_SIZE" => {
+                    one_d = true;
+                    size = w
+                        .next()
+                        .and_then(|x| x.parse().ok())
+                        .ok_or("bad LUT_1D_SIZE")?
                 }
                 "LUT_3D_SIZE" => {
                     size = w
@@ -802,14 +808,25 @@ impl Lut3d {
                 }
             }
         }
-        if !(2..=129).contains(&size) || data.len() != size * size * size {
-            return Err(format!("expected {size}^3 entries, found {}", data.len()));
+        let want = if one_d { size } else { size * size * size };
+        let ok = if one_d {
+            (2..=65536).contains(&size)
+        } else {
+            (2..=129).contains(&size)
+        };
+        if !ok || data.len() != want {
+            return Err(if one_d {
+                format!("expected {size} entries, found {}", data.len())
+            } else {
+                format!("expected {size}^3 entries, found {}", data.len())
+            });
         }
         Ok(Lut3d {
             size,
             min,
             max,
             data,
+            one_d,
         })
     }
 
@@ -820,6 +837,16 @@ impl Lut3d {
     /// Trilinear lookup of a colour in 0..1.
     pub fn sample(&self, rgb: [f32; 3]) -> [f32; 3] {
         let n = (self.size - 1) as f32;
+        if self.one_d {
+            let mut out = [0f32; 3];
+            for c in 0..3 {
+                let t = ((rgb[c] - self.min[c]) / (self.max[c] - self.min[c])).clamp(0.0, 1.0) * n;
+                let i = (t.floor() as usize).min(self.size - 2);
+                let f = t - i as f32;
+                out[c] = self.data[i][c] * (1.0 - f) + self.data[i + 1][c] * f;
+            }
+            return out;
+        }
         let mut idx = [0usize; 3];
         let mut fr = [0f32; 3];
         for c in 0..3 {
@@ -1205,6 +1232,14 @@ mod tests {
         assert_eq!(o, [0.0, 0.0, 1.0]);
         assert!(Lut3d::parse("LUT_3D_SIZE 2\n0 0 0").is_err());
         assert!(Lut3d::parse("LUT_1D_SIZE 4").is_err());
+        // a 1D LUT: red is inverted, green passes, blue is raised to full at the top half
+        let one = Lut3d::parse("LUT_1D_SIZE 3\n1 0 0\n0.5 0.5 1\n0 1 1\n").unwrap();
+        let o = one.sample([0.25, 0.5, 0.25]);
+        assert!(
+            (o[0] - 0.75).abs() < 1e-5 && (o[1] - 0.5).abs() < 1e-5 && (o[2] - 0.5).abs() < 1e-5,
+            "{o:?}"
+        );
+        assert_eq!(one.sample([1.0, 1.0, 1.0]), [0.0, 1.0, 1.0]);
         let path = std::env::temp_dir().join(format!("captaine-lut-{}.cube", std::process::id()));
         std::fs::write(&path, &text).unwrap();
         let f = Frame8::solid(2, 2, [255, 0, 0, 255]);

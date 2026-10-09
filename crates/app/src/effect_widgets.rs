@@ -299,3 +299,19 @@ pub fn eq_graph(ui: &mut Ui, e: &Effect, sample_rate: u32) {
         ),
     ));
 }
+
+/// The .cube files in a folder, by name (the LUT browser's list).
+pub fn lut_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("cube"))
+        })
+        .collect();
+    v.sort_by_key(|p| p.file_name().map(|n| n.to_ascii_lowercase()));
+    v
+}

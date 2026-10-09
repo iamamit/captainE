@@ -253,16 +253,32 @@ pub enum TransitionKind {
     /// The next picture pushes the last one out sideways
     PushLeft,
     PushRight,
+    /// Wipes that run down or up the picture
+    WipeDown,
+    WipeUp,
+    /// The next picture slides in over the last, which stays put
+    SlideLeft,
+    SlideRight,
+    /// A circle opens from the middle onto the next picture
+    Iris,
+    /// The next picture grows from the middle while it fades in
+    ZoomIn,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 6] = [
+    pub const ALL: [TransitionKind; 12] = [
         TransitionKind::Dissolve,
         TransitionKind::Dip,
         TransitionKind::WipeRight,
         TransitionKind::WipeLeft,
         TransitionKind::PushLeft,
         TransitionKind::PushRight,
+        TransitionKind::WipeDown,
+        TransitionKind::WipeUp,
+        TransitionKind::SlideLeft,
+        TransitionKind::SlideRight,
+        TransitionKind::Iris,
+        TransitionKind::ZoomIn,
     ];
 
     pub fn label(self) -> &'static str {
@@ -273,6 +289,12 @@ impl TransitionKind {
             TransitionKind::WipeLeft => "Wipe left",
             TransitionKind::PushLeft => "Push left",
             TransitionKind::PushRight => "Push right",
+            TransitionKind::WipeDown => "Wipe down",
+            TransitionKind::WipeUp => "Wipe up",
+            TransitionKind::SlideLeft => "Slide left",
+            TransitionKind::SlideRight => "Slide right",
+            TransitionKind::Iris => "Iris",
+            TransitionKind::ZoomIn => "Zoom in",
         }
     }
 }

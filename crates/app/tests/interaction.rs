@@ -1907,3 +1907,19 @@ fn a_voice_over_take_lands_on_an_audio_track_at_the_playhead() {
     assert_eq!(app(&h).project().media.len(), before);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_lut_browser_lists_cube_files_by_name() {
+    let dir = std::env::temp_dir().join(format!("captaine-luts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["warm.cube", "Cold.CUBE", "notes.txt", "amber.cube"] {
+        std::fs::write(dir.join(n), "x").unwrap();
+    }
+    let names: Vec<String> = captaine_app::effect_widgets::lut_files(&dir)
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into())
+        .collect();
+    assert_eq!(names, ["amber.cube", "Cold.CUBE", "warm.cube"]);
+    assert!(captaine_app::effect_widgets::lut_files(&dir.join("missing")).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
