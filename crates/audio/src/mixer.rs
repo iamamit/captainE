@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use captaine_model::{value_at, Id, Item, Keyframe, Project};
+use captaine_model::{value_at, Clip, Id, Item, Keyframe, Project};
 use captaine_time::{Rational, RationalTime, Rounding};
 
 use crate::decode::decode_filtered;
@@ -74,12 +74,15 @@ impl Mixer {
         };
         let mut clips = Vec::new();
         for track in tl.tracks.iter().filter(|t| t.enabled) {
-            for (item, start) in track.items.iter().zip(track.item_starts()) {
+            // the clip just before, if it made sound: (item index, index in `clips`)
+            let mut prev: Option<(usize, usize)> = None;
+            for (ii, (item, start)) in track.items.iter().zip(track.item_starts()).enumerate() {
                 let Item::Clip(c) = item else { continue };
                 let Some(m) = project.media.get(&c.media) else {
                     continue;
                 };
                 if !c.enabled || c.audio.muted || !m.has_audio || c.retime.freeze {
+                    prev = None;
                     continue;
                 }
                 let end = start + c.duration.value;
@@ -117,6 +120,42 @@ impl Mixer {
                     fade_in: to_samples(c.audio.fade_in),
                     fade_out: to_samples(c.audio.fade_out),
                 });
+                let this = clips.len() - 1;
+                // a transition from the previous clip: both play through the overlap, one fading out
+                // as the other fades in
+                if let (Some(t), Some((pi, pc))) = (c.transition, prev) {
+                    if pi + 1 == ii {
+                        if let Item::Clip(pclip) = &track.items[pi] {
+                            let d = t
+                                .duration
+                                .min(2 * pclip.duration.value.min(c.duration.value));
+                            let (a, b) = (
+                                to_samples(start) - to_samples(start - d / 2),
+                                to_samples(start + (d - d / 2)) - to_samples(start),
+                            );
+                            let simple = |x: &Clip| !x.retime.reverse && x.retime.speed == 1.0;
+                            if d >= 2 && simple(c) && simple(pclip) {
+                                // the incoming clip can only start earlier if its source has room
+                                let room = (clips[this].src_secs * sr as f64).floor() as i64;
+                                let a = a.min(room.max(0));
+                                {
+                                    let out = &mut clips[pc];
+                                    out.len += b;
+                                    out.fade_out = out.fade_out.max(a + b);
+                                }
+                                let inc = &mut clips[this];
+                                inc.start -= a;
+                                inc.len += a;
+                                inc.src_secs -= a as f64 / sr as f64;
+                                inc.fade_in = inc.fade_in.max(a + b);
+                                for k in inc.vol_keys.iter_mut().chain(inc.pan_keys.iter_mut()) {
+                                    k.t += a;
+                                }
+                            }
+                        }
+                    }
+                }
+                prev = Some((ii, this));
             }
         }
         let total = to_samples(tl.duration().value);

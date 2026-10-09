@@ -635,3 +635,56 @@ fn inspector_reverse_and_freeze_frame_shortcut() {
         "one undo puts it all back"
     );
 }
+
+#[test]
+fn transition_shortcut_and_inspector_chips() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let second = |a: &App| match &v1(a).items[1] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("second item is a clip"),
+    };
+    let (first_id, second_id) = (
+        match &v1(app(&h)).items[0] {
+            Item::Clip(c) => c.id,
+            _ => panic!(),
+        },
+        second(app(&h)).id,
+    );
+    // the first clip has nothing before it
+    app_mut(&mut h).selected_clip = Some(first_id);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::T);
+    settle(&mut h);
+    assert!(match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.transition.is_none(),
+        _ => false,
+    });
+    app_mut(&mut h).selected_clip = Some(second_id);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::T);
+    settle(&mut h);
+    let t = second(app(&h)).transition.expect("a dissolve was added");
+    assert_eq!(t.kind, TransitionKind::Dissolve);
+    h.get_by_label("Wipe left").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Wipe left").click();
+    settle(&mut h);
+    let t2 = second(app(&h)).transition.unwrap();
+    assert_eq!(
+        (t2.kind, t2.duration),
+        (TransitionKind::WipeLeft, t.duration)
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::T);
+    settle(&mut h);
+    assert!(
+        second(app(&h)).transition.is_none(),
+        "the shortcut toggles it off"
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(
+        second(app(&h)).transition.unwrap().kind,
+        TransitionKind::WipeLeft
+    );
+}

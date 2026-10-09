@@ -1,4 +1,4 @@
-use captaine_model::{Clip, Id, Item, MediaRef, Project, Title, TrackKind};
+use captaine_model::{Clip, Id, Item, MediaRef, Project, Title, TrackKind, TransitionKind};
 
 /// `(start, end, item index)` of each clip on one track, sorted by start.
 type Spans = Vec<(i64, i64, usize)>;
@@ -45,6 +45,18 @@ pub struct ClipLayer<'a> {
     /// Ticks since the clip began (animation time)
     pub local_tick: i64,
     pub track: usize,
+    /// Set while a transition is drawing this clip
+    pub transition: Option<TransitionState>,
+}
+
+/// Which transition a layer belongs to and how far along it is.
+#[derive(Clone, Copy, Debug)]
+pub struct TransitionState {
+    pub kind: TransitionKind,
+    /// 0 at the start of the transition, 1 at its end
+    pub progress: f64,
+    /// true for the clip that is coming in
+    pub incoming: bool,
 }
 
 /// A title contributing to a frame.
@@ -97,16 +109,69 @@ pub fn layers_at<'a>(
         }
         match &tl.tracks[*ti].items[item] {
             Item::Clip(clip) => {
-                let Some(media) = project.media.get(&clip.media).filter(|m| m.has_video) else {
-                    continue;
+                let items = &tl.tracks[*ti].items;
+                let make = |c: &'a Clip, at: i64, state: Option<TransitionState>| {
+                    let media = project.media.get(&c.media).filter(|m| m.has_video)?;
+                    let local = tick - at;
+                    let mut frame = c.source_frame_beyond(local).max(0);
+                    if let Some(len) = media.duration {
+                        frame = frame.min((len.value - 1).max(0));
+                    }
+                    Some(Layer::Clip(ClipLayer {
+                        clip: c,
+                        media,
+                        source_frame: frame,
+                        local_tick: local.clamp(0, (c.duration.value - 1).max(0)),
+                        track: *ti,
+                        transition: state,
+                    }))
                 };
-                out.push(Layer::Clip(ClipLayer {
-                    clip,
-                    media,
-                    source_frame: clip.source_frame_at(tick - start),
-                    local_tick: tick - start,
-                    track: *ti,
-                }));
+                // is this tick inside a transition at the cut before `pos` or the one after?
+                let neighbour = |p: usize| -> Option<(i64, i64, usize)> { spans.get(p).copied() };
+                let mut cands = Vec::new();
+                if let (Some(t), true) = (clip.transition, pos > 0) {
+                    if let Some((_, pend, pi)) = neighbour(pos - 1) {
+                        if pi + 1 == item && pend == start {
+                            cands.push((pi, item, start, t));
+                        }
+                    }
+                }
+                {
+                    if let Some((nstart, _, ni)) = neighbour(pos + 1) {
+                        if ni == item + 1 && nstart == start + clip.duration.value {
+                            if let Item::Clip(n) = &items[ni] {
+                                if let Some(t) = n.transition {
+                                    cands.push((item, ni, nstart, t));
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut blended = false;
+                for (oi, ii, cut, t) in cands {
+                    if let (Item::Clip(o), Item::Clip(i)) = (&items[oi], &items[ii]) {
+                        let d = t.duration.min(2 * o.duration.value.min(i.duration.value));
+                        let (a, b) = (d / 2, d - d / 2);
+                        if d >= 2 && tick >= cut - a && tick < cut + b {
+                            let progress = ((tick - (cut - a)) as f64 + 0.5) / d as f64;
+                            let st = |incoming| {
+                                Some(TransitionState {
+                                    kind: t.kind,
+                                    progress,
+                                    incoming,
+                                })
+                            };
+                            let ostart = cut - o.duration.value;
+                            out.extend(make(o, ostart, st(false)));
+                            out.extend(make(i, cut, st(true)));
+                            blended = true;
+                            break;
+                        }
+                    }
+                }
+                if !blended {
+                    out.extend(make(clip, start, None));
+                }
             }
             Item::Title(title) => out.push(Layer::Title(TitleLayer {
                 title,

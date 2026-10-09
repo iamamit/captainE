@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use std::hash::{Hash, Hasher};
 
-use captaine_model::{Id, Project, Title, VideoProps};
+use captaine_model::{Id, Project, Title, TransitionKind, VideoProps};
 
 use crate::{
-    draw_layer, layers_at, render_title, Canvas, Frame8, FrameCache, Layer, TimelineIndex,
-    VideoReader,
+    draw_layer, draw_layer_fx, layers_at, render_title, Canvas, Frame8, FrameCache, Layer, LayerFx,
+    TimelineIndex, TransitionState, VideoReader,
 };
 
 #[derive(Debug)]
@@ -192,6 +192,7 @@ impl Renderer {
                 frame: i64,
                 props: VideoProps,
                 back: bool,
+                fx: LayerFx,
             },
             Title {
                 title: Title,
@@ -207,6 +208,7 @@ impl Renderer {
                     frame: c.source_frame,
                     props: c.clip.video_at(c.local_tick),
                     back: c.clip.retime.backwards(),
+                    fx: c.transition.map(transition_fx).unwrap_or_default(),
                 },
                 Layer::Title(t) => {
                     let dur = t.title.duration.value;
@@ -240,9 +242,10 @@ impl Renderer {
                     frame,
                     props,
                     back,
+                    fx,
                 } => {
                     let f = self.fetch(clip, media, frame, back)?;
-                    draw_layer(&mut canvas, &f, &props);
+                    draw_layer_fx(&mut canvas, &f, &props, &fx);
                 }
                 Want::Title { title, props } => {
                     let f = self.title_picture(&title);
@@ -252,4 +255,24 @@ impl Renderer {
         }
         Ok(canvas)
     }
+}
+
+/// What a transition does to the layer it is drawing at this moment.
+fn transition_fx(t: TransitionState) -> LayerFx {
+    let p = t.progress.clamp(0.0, 1.0);
+    let mut fx = LayerFx::default();
+    match (t.kind, t.incoming) {
+        (TransitionKind::Dissolve, true) => fx.opacity = p,
+        (TransitionKind::Dissolve, false) => {}
+        (TransitionKind::Dip, true) => fx.opacity = (2.0 * p - 1.0).max(0.0),
+        (TransitionKind::Dip, false) => fx.opacity = (1.0 - 2.0 * p).max(0.0),
+        (TransitionKind::WipeRight, true) => fx.mask = Some([0.0, 0.0, p, 1.0]),
+        (TransitionKind::WipeLeft, true) => fx.mask = Some([1.0 - p, 0.0, 1.0, 1.0]),
+        (TransitionKind::WipeRight | TransitionKind::WipeLeft, false) => {}
+        (TransitionKind::PushLeft, true) => fx.shift.0 = 1.0 - p,
+        (TransitionKind::PushLeft, false) => fx.shift.0 = -p,
+        (TransitionKind::PushRight, true) => fx.shift.0 = -(1.0 - p),
+        (TransitionKind::PushRight, false) => fx.shift.0 = p,
+    }
+    fx
 }

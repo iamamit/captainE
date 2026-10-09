@@ -901,6 +901,9 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(Modifiers::SHIFT, Key::F) {
         freeze_frame(app);
     }
+    if pressed(Modifiers::COMMAND, Key::T) {
+        toggle_transition(app);
+    }
     if pressed(Modifiers::COMMAND, Key::I) {
         import_dialog(app);
     }
@@ -1337,6 +1340,118 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(2.0);
 }
 
+/// The clip right before `clip` on its track, if there is one without a gap between.
+fn clip_before(app: &App, track: Id, clip: Id) -> Option<Clip> {
+    let tl = app.timeline()?;
+    let t = tl.tracks.iter().find(|t| t.id == track)?;
+    let i = t.items.iter().position(|it| it.id() == clip)?;
+    match t.items.get(i.checked_sub(1)?)? {
+        Item::Clip(c) => Some(c.clone()),
+        _ => None,
+    }
+}
+
+/// Add (or toggle off) a one-second dissolve before the selected clip.
+pub fn toggle_transition(app: &mut App) {
+    let Some((clip, track, _)) = app.selected() else {
+        app.toast("Select the clip that the transition leads into", false);
+        return;
+    };
+    let Some(prev) = clip_before(app, track, clip.id) else {
+        app.toast("A transition needs a clip right before this one", false);
+        return;
+    };
+    let transition = if clip.transition.is_some() {
+        None
+    } else {
+        let max = 2 * prev.duration.value.min(clip.duration.value);
+        Some(Transition {
+            kind: TransitionKind::Dissolve,
+            duration: (app.fps().round() as i64).min(max).max(2),
+        })
+    };
+    if let Some(t) = &transition {
+        if let Err(e) = captaine_ops::check_transition(app.project(), clip.id, t) {
+            app.toast(e.to_string(), true);
+            return;
+        }
+    }
+    app.do_op(Op::SetTransition {
+        item: clip.id,
+        transition,
+    });
+}
+
+fn transition_controls(app: &mut App, ui: &mut Ui, clip: &Clip, track: Id) {
+    section(ui, "Transition");
+    let Some(prev) = clip_before(app, track, clip.id) else {
+        ui.label(
+            RichText::new("Needs a clip right before this one.")
+                .size(10.5)
+                .color(theme::FAINT),
+        );
+        return;
+    };
+    let max = 2 * prev.duration.value.min(clip.duration.value);
+    let default_len = (app.fps().round() as i64).min(max).max(2);
+    let cur = clip.transition;
+    let mut want = cur;
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, "None", cur.is_none(), true).clicked() {
+            want = None;
+        }
+        for kind in TransitionKind::ALL {
+            if chip(
+                ui,
+                kind.label(),
+                cur.is_some_and(|t| t.kind == kind),
+                max >= 2,
+            )
+            .clicked()
+            {
+                want = Some(Transition {
+                    kind,
+                    duration: cur.map_or(default_len, |t| t.duration).min(max),
+                });
+            }
+        }
+    });
+    if let Some(t) = cur {
+        let mut frames = t.duration as f64;
+        let r = slider_row(
+            ui,
+            "Length",
+            &mut frames,
+            2.0..=max as f64,
+            default_len as f64,
+            0,
+            " f",
+            true,
+        );
+        if r.changed {
+            app.do_merging(
+                Op::SetTransition {
+                    item: clip.id,
+                    transition: Some(Transition {
+                        duration: frames.round() as i64,
+                        ..t
+                    }),
+                },
+                &format!("x:{}", clip.id.to_full_string()),
+            );
+        }
+        if r.done {
+            app.end_merge();
+        }
+    }
+    if want != cur {
+        app.do_op(Op::SetTransition {
+            item: clip.id,
+            transition: want,
+        });
+    }
+}
+
 fn clip_controls(app: &mut App, ui: &mut Ui) {
     if app.selected_title().is_some() {
         crate::titles_ui::controls(app, ui);
@@ -1638,6 +1753,9 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
             prop: prop.into(),
             keys,
         });
+    }
+    if has_video {
+        transition_controls(app, ui, &clip, track);
     }
     if vchanged && has_video {
         app.do_merging(

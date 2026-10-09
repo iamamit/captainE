@@ -8,6 +8,6 @@ pub mod edit;
 mod editor;
 mod op;
 
-pub use apply::{apply, OpError};
+pub use apply::{apply, check_transition, OpError};
 pub use editor::{Author, Editor, HistoryEntry};
 pub use op::{Edge, Op};

@@ -93,9 +93,34 @@ fn blend(mode: BlendMode, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
 /// The picture is fitted inside the canvas (letterboxed), scaled by `transform.scale`, rotated clockwise
 /// by `rotation_deg` about its center, moved by `position`, then blended with `opacity`.
 pub fn draw_layer(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps) {
+    draw_layer_fx(canvas, frame, props, &LayerFx::default());
+}
+
+/// Extra, per-draw changes that a transition makes to a layer without touching its properties.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerFx {
+    /// Multiplies the layer's opacity
+    pub opacity: f64,
+    /// Moves the layer, as fractions of the canvas width and height
+    pub shift: (f64, f64),
+    /// Only this part of the canvas is drawn: `[left, top, right, bottom]` as fractions
+    pub mask: Option<[f64; 4]>,
+}
+
+impl Default for LayerFx {
+    fn default() -> LayerFx {
+        LayerFx {
+            opacity: 1.0,
+            shift: (0.0, 0.0),
+            mask: None,
+        }
+    }
+}
+
+pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx: &LayerFx) {
     let (cw, ch) = (canvas.width as f64, canvas.height as f64);
     let (fw, fh) = (frame.width as f64, frame.height as f64);
-    if fw == 0.0 || fh == 0.0 || props.opacity <= 0.0 {
+    if fw == 0.0 || fh == 0.0 || props.opacity * fx.opacity <= 0.0 {
         return;
     }
     let t = &props.transform;
@@ -105,7 +130,10 @@ pub fn draw_layer(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps) {
 
     // bounding box of the drawn picture on the canvas
     let (hw, hh) = (fw * sx.abs() / 2.0, fh * sy.abs() / 2.0);
-    let (cx, cy) = (cw / 2.0 + t.position.0, ch / 2.0 + t.position.1);
+    let (cx, cy) = (
+        cw / 2.0 + t.position.0 + fx.shift.0 * cw,
+        ch / 2.0 + t.position.1 + fx.shift.1 * ch,
+    );
     let ex = hw * cos.abs() + hh * sin.abs();
     let ey = hw * sin.abs() + hh * cos.abs();
     let x0 = ((cx - ex - 1.0).floor().max(0.0)) as u32;
@@ -113,10 +141,19 @@ pub fn draw_layer(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps) {
     let x1 = ((cx + ex + 1.0).ceil().min(cw)).max(0.0) as u32;
     let y1 = ((cy + ey + 1.0).ceil().min(ch)).max(0.0) as u32;
 
-    let opacity = props.opacity as f32;
+    let opacity = (props.opacity * fx.opacity) as f32;
+    let mask = fx
+        .mask
+        .map(|m| [m[0] * cw, m[1] * ch, m[2] * cw, m[3] * ch]);
     let graded_neutral = props.color.is_neutral();
     for y in y0..y1 {
         for x in x0..x1 {
+            if let Some(m) = mask {
+                let (mx, my) = (x as f64 + 0.5, y as f64 + 0.5);
+                if mx < m[0] || mx >= m[2] || my < m[1] || my >= m[3] {
+                    continue;
+                }
+            }
             let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
             // inverse of (scale, then clockwise rotation): rotate back, then unscale
             let (ux, uy) = (dx * cos + dy * sin, -dx * sin + dy * cos);

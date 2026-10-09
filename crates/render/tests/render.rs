@@ -378,3 +378,93 @@ fn speed_reverse_and_freeze_pick_the_right_source_frames() {
     }
     assert_eq!(shown(&f, &[0, 29]), [10, 39]);
 }
+
+fn rgb_of(canvas: &Canvas, x: u32, y: u32) -> [u8; 3] {
+    let rgba = canvas.to_rgba8();
+    let i = ((y * canvas.width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2]]
+}
+
+#[test]
+fn transitions_blend_the_two_clips_around_the_cut() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (red, blue) = (scratch("t-red.mp4"), scratch("t-blue.mp4"));
+    solid_video(&red, "0xff0000");
+    solid_video(&blue, "0x0000ff");
+    let mut f = fixture((96, 54));
+    let (mr, mb) = (add_media(&mut f, &red), add_media(&mut f, &blue));
+    // red ticks 0..30 (source 10..40), blue ticks 30..60 (source 10..40)
+    let (a, b) = (clip(&mr, 10, 30), clip(&mb, 10, 30));
+    let bid = b.id;
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, a))
+        .unwrap();
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, b))
+        .unwrap();
+    let set = |f: &mut Fixture, kind, duration| {
+        f.ed.apply(
+            Author::User,
+            Op::SetTransition {
+                item: bid,
+                transition: Some(Transition { kind, duration }),
+            },
+        )
+        .unwrap();
+    };
+    let at = |f: &Fixture, tick: i64| -> [u8; 3] {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        rgb_of(&r.render(tick).unwrap(), 48, 27)
+    };
+    let left = |f: &Fixture, tick: i64| -> [u8; 3] {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        rgb_of(&r.render(tick).unwrap(), 8, 27)
+    };
+    // no transition: a hard cut
+    assert!(at(&f, 29)[0] > 250);
+    assert!(at(&f, 30)[2] > 250);
+    // a 10-frame dissolve covers ticks 25..35
+    set(&mut f, TransitionKind::Dissolve, 10);
+    assert!(at(&f, 24)[0] > 250 && at(&f, 24)[2] < 5, "before it starts");
+    assert!(at(&f, 35)[2] > 250 && at(&f, 35)[0] < 5, "after it ends");
+    let (early, late) = (at(&f, 26), at(&f, 33));
+    assert!(early[0] > 200 && early[2] < 130, "{early:?}");
+    assert!(late[2] > 190 && late[0] < 130, "{late:?}");
+    let mid = at(&f, 30);
+    assert!(
+        mid[0] > 100 && mid[2] > 100 && mid[1] < 10,
+        "a purple mix {mid:?}"
+    );
+    // dip to black: nearly black at the cut
+    set(&mut f, TransitionKind::Dip, 10);
+    let m = at(&f, 29);
+    assert!(m[0] < 100 && m[2] < 100, "{m:?}");
+    assert!(at(&f, 26)[0] > 90);
+    // wipe right: the new picture grows from the left edge
+    set(&mut f, TransitionKind::WipeRight, 10);
+    assert!(left(&f, 27)[2] > 250, "left edge is already blue");
+    assert!(at(&f, 27)[0] > 250, "the middle is still red");
+    assert!(at(&f, 33)[2] > 250);
+    // push left: the new picture slides in from the right
+    set(&mut f, TransitionKind::PushLeft, 10);
+    assert!(
+        left(&f, 27)[0] > 250,
+        "the old picture is leaving to the left"
+    );
+    assert!(at(&f, 33)[2] > 250);
+    // the transition is part of the project: undo removes it
+    f.ed.undo();
+    f.ed.undo();
+    f.ed.undo();
+    f.ed.undo();
+    assert!(at(&f, 29)[0] > 250);
+    // asking for a transition the clips cannot hold is caught by the check
+    let first = f.ed.project().timeline(f.tl).unwrap().tracks[0].items[0].id();
+    let t = |duration| Transition {
+        kind: TransitionKind::Dissolve,
+        duration,
+    };
+    assert!(check_transition(f.ed.project(), first, &t(10)).is_err());
+    assert!(check_transition(f.ed.project(), bid, &t(61)).is_err());
+    assert!(check_transition(f.ed.project(), bid, &t(60)).is_ok());
+}

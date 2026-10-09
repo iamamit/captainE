@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project, Title};
+use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project, Title, Transition};
 use captaine_time::{Rational, RationalTime};
 
 use crate::{Edge, Op};
@@ -70,6 +70,30 @@ fn ensure_free(p: &Project, id: Id) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Whether `item` may carry transition `t` right now: a clip must sit directly before it and be long
+/// enough. Applying the op does not insist (later edits can make a transition too long, and undo must
+/// always be able to put one back); the renderer shortens it to fit.
+pub fn check_transition(p: &Project, item: Id, t: &Transition) -> Result<()> {
+    let loc = item_loc(p, item)?;
+    let tl = p.timeline(loc.timeline).expect("located");
+    let items = &tl.tracks[loc.track].items;
+    let Some(Item::Clip(c)) = items.get(loc.index) else {
+        return Err(OpError::NotFound("clip", item));
+    };
+    let prev = loc.index.checked_sub(1).and_then(|i| items.get(i));
+    let Some(Item::Clip(prev)) = prev else {
+        return Err(OpError::OutOfRange(
+            "a transition needs a clip right before this one",
+        ));
+    };
+    if t.duration < 2 || t.duration > 2 * prev.duration.value.min(c.duration.value) {
+        return Err(OpError::OutOfRange(
+            "the transition is longer than the two clips allow",
+        ));
+    }
+    Ok(())
 }
 
 /// An item that may be placed on a timeline running at `rate`.
@@ -289,6 +313,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                             ..c.audio
                         },
                         anim: c.anim.window(at.value, c.duration.value),
+                        transition: None,
                         ..c.clone()
                     };
                     (Item::Clip(l), Item::Clip(r))
@@ -365,6 +390,9 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         let end = a.source_start.value + a.advance(a.duration.value);
                         (end - b.source_start.value).abs() <= 1
                     } && a.source_start.rate == b.source_start.rate;
+                    if b.transition.is_some() {
+                        return Err(OpError::NotJoinable("a transition lies between the clips"));
+                    }
                     if a.media != b.media
                         || a.retime != b.retime
                         || a.name != b.name
@@ -678,6 +706,27 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 item: *item,
                 source_start: c.source_start,
                 duration: c.duration,
+            })
+        }
+        Op::SetTransition { item, transition } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let old = p.item(loc).expect("located").clone();
+            let Item::Clip(c) = &old else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            let new = Item::Clip(Clip {
+                transition: *transition,
+                ..c.clone()
+            });
+            check_item(p, rate, &new)?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::SetTransition {
+                item: *item,
+                transition: c.transition,
             })
         }
         Op::SetRetime { item, retime } => {

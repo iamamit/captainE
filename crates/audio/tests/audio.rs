@@ -471,3 +471,61 @@ fn speed_reverse_and_freeze_reach_the_mix() {
     let out = retime(1.0, false, true);
     assert!(out.iter().all(|s| s.abs() < 1e-6));
 }
+
+#[test]
+fn a_transition_crossfades_the_sound_around_the_cut() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let level = |path: &Path, v: f64| {
+        let src = format!("aevalsrc={v}:s={SR}:d=6:c=stereo");
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                &src,
+                "-c:a",
+                "pcm_f32le"
+            ])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success());
+    };
+    let (pa, pb) = (scratch("dc-a.wav"), scratch("dc-b.wav"));
+    level(&pa, 0.5);
+    level(&pb, 0.25);
+    let mut f = fx();
+    let (ma, mb) = (media(&mut f, &pa), media(&mut f, &pb));
+    // 2 s of A (ticks 0..60), then 2 s of B taken from 2 s into its file
+    place(&mut f, 0, 0, clip(&ma, 1.0, 60));
+    let b = place(&mut f, 0, 60, clip(&mb, 2.0, 60));
+    let at = |out: &[f32], secs: f64| out[(secs * SR as f64) as usize * 2];
+    let hard = mix(&f);
+    assert!((at(&hard, 1.9) - 0.5).abs() < 1e-3 && (at(&hard, 2.1) - 0.25).abs() < 1e-3);
+    // a one-second crossfade covers 1.5 s .. 2.5 s
+    f.ed.apply(
+        Author::User,
+        Op::SetTransition {
+            item: b,
+            transition: Some(Transition {
+                kind: TransitionKind::Dissolve,
+                duration: 30,
+            }),
+        },
+    )
+    .unwrap();
+    let out = mix(&f);
+    assert_eq!(out.len(), hard.len(), "the timeline does not get longer");
+    assert!((at(&out, 1.4) - 0.5).abs() < 1e-3, "before: only A");
+    assert!((at(&out, 2.6) - 0.25).abs() < 1e-3, "after: only B");
+    assert!(
+        (at(&out, 2.0) - 0.375).abs() < 0.01,
+        "halfway: both at half"
+    );
+    assert!(at(&out, 1.75) > at(&out, 2.0) && at(&out, 2.0) > at(&out, 2.25));
+}

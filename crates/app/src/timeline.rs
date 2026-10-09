@@ -915,6 +915,20 @@ fn draw_clip(
         ui_font(11.0),
         label_color,
     );
+    if let Some(t) = clip.transition {
+        // the overlap sits on the cut: half before this clip's start, half after
+        let ppt = rect.width() / clip.duration.value.max(1) as f32;
+        let (a, b) = t.split();
+        let r = Rect::from_min_max(
+            pos2(rect.left() - a as f32 * ppt, rect.top()),
+            pos2(rect.left() + b as f32 * ppt, rect.bottom()),
+        );
+        let glass = Color32::from_white_alpha(70);
+        p.rect_filled(r, 3.0, glass);
+        let line = Stroke::new(1.2, Color32::from_white_alpha(190));
+        p.line_segment([r.left_bottom(), r.right_top()], line);
+        p.line_segment([r.left_top(), r.right_bottom()], line);
+    }
     if !clip.retime.is_identity() {
         let rt = clip.retime;
         let badge = if rt.freeze {

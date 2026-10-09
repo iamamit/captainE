@@ -186,6 +186,59 @@ pub struct Clip {
     /// Speed, direction and freeze; the identity (normal speed, forward) is not stored
     #[serde(default, skip_serializing_if = "Retime::is_identity")]
     pub retime: Retime,
+    /// A transition from the clip before this one, centred on the cut between them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TransitionKind {
+    /// The next picture fades in over the last
+    Dissolve,
+    /// Fade out to nothing, then in
+    Dip,
+    /// A hard edge sweeps across: left to right, or right to left
+    WipeRight,
+    WipeLeft,
+    /// The next picture pushes the last one out sideways
+    PushLeft,
+    PushRight,
+}
+
+impl TransitionKind {
+    pub const ALL: [TransitionKind; 6] = [
+        TransitionKind::Dissolve,
+        TransitionKind::Dip,
+        TransitionKind::WipeRight,
+        TransitionKind::WipeLeft,
+        TransitionKind::PushLeft,
+        TransitionKind::PushRight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TransitionKind::Dissolve => "Dissolve",
+            TransitionKind::Dip => "Dip to black",
+            TransitionKind::WipeRight => "Wipe right",
+            TransitionKind::WipeLeft => "Wipe left",
+            TransitionKind::PushLeft => "Push left",
+            TransitionKind::PushRight => "Push right",
+        }
+    }
+}
+
+/// `duration` ticks of the timeline rate, half before the cut and half after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transition {
+    pub kind: TransitionKind,
+    pub duration: i64,
+}
+
+impl Transition {
+    /// How much of the transition falls before the cut, and how much after.
+    pub fn split(&self) -> (i64, i64) {
+        (self.duration / 2, self.duration - self.duration / 2)
+    }
 }
 
 /// How a clip's source plays back. `speed` is a ratio (2.0 = twice as fast); a freeze shows one source
@@ -256,6 +309,17 @@ impl Clip {
         }
     }
 
+    /// The source frame `local` ticks into the clip, also before its start or after its end (negative or
+    /// past the media: the caller clamps). Used for the overlap of a transition.
+    pub fn source_frame_beyond(&self, local: i64) -> i64 {
+        let ss = self.source_start.value;
+        if self.retime.backwards() {
+            ss + self.source_span() - 1 - self.advance(local)
+        } else {
+            ss + self.advance(local)
+        }
+    }
+
     /// The source frame shown `local` ticks into the clip.
     pub fn source_frame_at(&self, local: i64) -> i64 {
         let ss = self.source_start.value;
@@ -283,6 +347,7 @@ impl Clip {
             video: VideoProps::default(),
             anim: Anim::default(),
             retime: Retime::default(),
+            transition: None,
             audio: AudioProps::default(),
         }
     }
@@ -332,6 +397,9 @@ impl Clip {
         let (a, b) = (self.audio.fade_in, self.audio.fade_out);
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the clip");
+        }
+        if self.transition.is_some_and(|t| t.duration < 2) {
+            return Err("a transition needs at least two frames");
         }
         let sp = self.retime.speed;
         if !sp.is_finite() || !(Retime::MIN_SPEED..=Retime::MAX_SPEED).contains(&sp) {
@@ -912,6 +980,7 @@ mod tests {
             audio: AudioProps::default(),
             anim: Default::default(),
             retime: Default::default(),
+            transition: None,
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

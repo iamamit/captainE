@@ -1,5 +1,6 @@
 use captaine_model::{
-    AudioProps, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, VideoProps,
+    AudioProps, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, Transition,
+    VideoProps,
 };
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -123,6 +124,11 @@ pub enum Op {
         item: Id,
         retime: Retime,
     },
+    /// Put a transition between this clip and the one before it, or take it away (None).
+    SetTransition {
+        item: Id,
+        transition: Option<Transition>,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -181,6 +187,10 @@ impl Op {
                     )
                 }
             }
+            Op::SetTransition { item, transition } => match transition {
+                Some(t) => format!("{} before {item} ({} frames)", t.kind.label(), t.duration),
+                None => format!("Remove transition before {item}"),
+            },
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

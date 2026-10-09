@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 15);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 16);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -478,4 +478,31 @@ fn set_speed_retimes_a_clip() {
         [(0, 48), (48, 96)],
         "later clips ripple earlier"
     );
+}
+
+#[test]
+fn set_transition_puts_a_dissolve_on_the_cut() {
+    let (p, ids) = project();
+    let model = Scripted::new(vec![
+        tool(
+            "t1",
+            "set_transition",
+            json!({"item_id": ids[0].to_string(), "kind": "dissolve"}),
+        ),
+        tool(
+            "t2",
+            "set_transition",
+            json!({"item_id": ids[1].to_string(), "kind": "wipe_left", "duration_sec": 1.0}),
+        ),
+        end("Added a wipe between the clips."),
+    ]);
+    let r = ask(&model, &p, "wipe between the two clips", None).unwrap();
+    assert_eq!(r.new_ops.len(), 1, "the first clip has nothing before it");
+    let after = apply_all(&p, &r.new_ops);
+    let second = after.timelines.values().next().unwrap().tracks[0].items[1]
+        .as_clip()
+        .unwrap()
+        .clone();
+    let t = second.transition.unwrap();
+    assert_eq!((t.kind, t.duration), (TransitionKind::WipeLeft, 24));
 }

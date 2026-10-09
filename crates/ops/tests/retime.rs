@@ -163,7 +163,14 @@ fn fuzz_retime_with_cuts_trims_and_undo() {
             let items: Vec<Id> = clips(&ed).iter().map(|c| c.id).collect();
             let pick = items[rng.below(items.len())];
             next += 1;
-            let op = match rng.below(6) {
+            let op = match rng.below(7) {
+                6 => Op::SetTransition {
+                    item: pick,
+                    transition: (rng.below(3) > 0).then(|| Transition {
+                        kind: TransitionKind::ALL[rng.below(6)],
+                        duration: 2 + rng.below(80) as i64,
+                    }),
+                },
                 0 | 1 => Op::SetRetime {
                     item: pick,
                     retime: Retime {
