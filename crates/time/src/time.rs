@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 use crate::Rational;
 
 /// How to resolve a value that falls between two ticks of the target rate.
@@ -15,7 +17,7 @@ pub enum Rounding {
 ///
 /// Equality and ordering compare the instant in time, not the representation:
 /// `48 @ 24` equals `2 @ 1`. Hashing is therefore not provided.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RationalTime {
     pub value: i64,
     pub rate: Rational,
@@ -128,6 +130,16 @@ mod tests {
     use super::*;
 
     const R24: Rational = Rational::FPS_24;
+
+    #[test]
+    fn serde_round_trip_and_validation() {
+        let t = RationalTime::new(5, Rational::FPS_29_97);
+        let j = serde_json::to_string(&t).unwrap();
+        let back: RationalTime = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.value, 5);
+        assert_eq!(back.rate, Rational::FPS_29_97);
+        assert!(serde_json::from_str::<Rational>(r#"{"num":1,"den":0}"#).is_err());
+    }
 
     #[test]
     fn equality_is_by_instant() {

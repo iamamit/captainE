@@ -1,0 +1,18 @@
+[package]
+name = "captaine-model"
+description = "Immutable project model: media pool, timelines, tracks, clips (see docs/03)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_model"
+
+[dependencies]
+captaine-time.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

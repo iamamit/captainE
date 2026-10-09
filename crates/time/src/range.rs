@@ -1,8 +1,10 @@
+use serde::{Deserialize, Serialize};
+
 use crate::RationalTime;
 
 /// Half-open time range `[start, start + duration)`. Defined once, used everywhere
 /// (docs/03: avoids inclusive/exclusive end-frame bugs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
     pub start: RationalTime,
     pub duration: RationalTime,

@@ -1,10 +1,35 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// A positive rational number, always stored in lowest terms with `den > 0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawRational", into = "RawRational")]
 pub struct Rational {
     num: i64,
     den: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RawRational {
+    num: i64,
+    den: i64,
+}
+
+impl From<Rational> for RawRational {
+    fn from(r: Rational) -> Self {
+        RawRational {
+            num: r.num,
+            den: r.den,
+        }
+    }
+}
+
+impl TryFrom<RawRational> for Rational {
+    type Error = String;
+    fn try_from(r: RawRational) -> Result<Self, String> {
+        Rational::new(r.num, r.den).ok_or_else(|| format!("invalid rational {}/{}", r.num, r.den))
+    }
 }
 
 fn gcd(mut a: i128, mut b: i128) -> i128 {

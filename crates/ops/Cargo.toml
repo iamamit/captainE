@@ -1,0 +1,18 @@
+[package]
+name = "captaine-ops"
+description = "Typed operations, undo/redo and the operation log: the only way to change a project (see docs/02, 03)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_ops"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
