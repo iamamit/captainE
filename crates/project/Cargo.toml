@@ -1,6 +1,6 @@
 [package]
 name = "captaine-project"
-description = "Project files: settings plus the operation log, replayed into an Editor"
+description = "The open project: working edits on a branch, commits, branches, merge and the project file"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,5 +12,7 @@ name = "captaine_project"
 [dependencies]
 captaine-model.workspace = true
 captaine-ops.workspace = true
+captaine-vcs.workspace = true
+captaine-time.workspace = true
 serde.workspace = true
 serde_json.workspace = true
