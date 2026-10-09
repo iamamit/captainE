@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use captaine_time::{Rational, RationalTime};
+use captaine_time::{Rational, RationalTime, Rounding};
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{is_property, Anim};
@@ -183,9 +183,89 @@ pub struct Clip {
     /// Keyframes, by property (times relative to the start of the clip)
     #[serde(default, skip_serializing_if = "Anim::is_empty")]
     pub anim: Anim,
+    /// Speed, direction and freeze; the identity (normal speed, forward) is not stored
+    #[serde(default, skip_serializing_if = "Retime::is_identity")]
+    pub retime: Retime,
+}
+
+/// How a clip's source plays back. `speed` is a ratio (2.0 = twice as fast); a freeze shows one source
+/// frame (the first of the window) for the whole clip and has no sound.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Retime {
+    pub speed: f64,
+    #[serde(default)]
+    pub reverse: bool,
+    #[serde(default)]
+    pub freeze: bool,
+}
+
+impl Default for Retime {
+    fn default() -> Retime {
+        Retime {
+            speed: 1.0,
+            reverse: false,
+            freeze: false,
+        }
+    }
+}
+
+impl Retime {
+    pub const MIN_SPEED: f64 = 0.05;
+    pub const MAX_SPEED: f64 = 20.0;
+
+    pub fn is_identity(&self) -> bool {
+        *self == Retime::default()
+    }
+
+    /// Plays the window back to front (a freeze has no direction).
+    pub fn backwards(&self) -> bool {
+        self.reverse && !self.freeze
+    }
 }
 
 impl Clip {
+    /// Source frames (at the source rate) that `ticks` timeline ticks of this clip pass through, rounded
+    /// down or up. Normal speed uses exact rational arithmetic, like the renderer always has.
+    fn source_frames(&self, ticks: i64, up: bool) -> i64 {
+        if self.retime.freeze {
+            return 0;
+        }
+        let tl = self.duration.rate;
+        let src = self.source_start.rate;
+        let mode = if up { Rounding::Ceil } else { Rounding::Floor };
+        if self.retime.speed == 1.0 {
+            return RationalTime::new(ticks, tl)
+                .rescale(src, mode)
+                .map_or(0, |t| t.value);
+        }
+        let x = ticks as f64 * self.retime.speed * src.as_f64() / tl.as_f64();
+        (if up { x.ceil() } else { x.floor() }) as i64
+    }
+
+    /// How far into the source the clip has played after `ticks` timeline ticks (rounded down).
+    pub fn advance(&self, ticks: i64) -> i64 {
+        self.source_frames(ticks, false)
+    }
+
+    /// Number of source frames the window covers: what the clip reads from the media.
+    pub fn source_span(&self) -> i64 {
+        if self.retime.freeze {
+            1
+        } else {
+            self.source_frames(self.duration.value, true).max(1)
+        }
+    }
+
+    /// The source frame shown `local` ticks into the clip.
+    pub fn source_frame_at(&self, local: i64) -> i64 {
+        let ss = self.source_start.value;
+        if self.retime.backwards() {
+            (ss + self.source_span() - 1 - self.advance(local)).max(ss)
+        } else {
+            ss + self.advance(local)
+        }
+    }
+
     pub fn new(
         id: Id,
         name: impl Into<String>,
@@ -202,6 +282,7 @@ impl Clip {
             enabled: true,
             video: VideoProps::default(),
             anim: Anim::default(),
+            retime: Retime::default(),
             audio: AudioProps::default(),
         }
     }
@@ -251,6 +332,10 @@ impl Clip {
         let (a, b) = (self.audio.fade_in, self.audio.fade_out);
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the clip");
+        }
+        let sp = self.retime.speed;
+        if !sp.is_finite() || !(Retime::MIN_SPEED..=Retime::MAX_SPEED).contains(&sp) {
+            return Err("speed must be between 5% and 2000%");
         }
         check_anim(&self.anim, true)
     }
@@ -766,15 +851,9 @@ impl Project {
                                 if c.source_start.value < 0 {
                                     errs.push(format!("clip {} starts before its media", c.id));
                                 }
-                                if let (Some(len), Some(src_dur)) = (
-                                    m.duration,
-                                    c.duration.rescale(
-                                        c.source_start.rate,
-                                        captaine_time::Rounding::Ceil,
-                                    ),
-                                ) {
+                                if let Some(len) = m.duration {
                                     let end = RationalTime::new(
-                                        c.source_start.value + src_dur.value,
+                                        c.source_start.value + c.source_span(),
                                         c.source_start.rate,
                                     );
                                     if end > len {
@@ -832,6 +911,7 @@ mod tests {
             video: VideoProps::default(),
             audio: AudioProps::default(),
             anim: Default::default(),
+            retime: Default::default(),
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

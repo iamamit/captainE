@@ -54,6 +54,9 @@ impl Default for RenderOptions {
 }
 
 /// Renders frames of one timeline from a project snapshot.
+/// How many frames a reversed clip decodes at a time.
+const REVERSE_RUN: i64 = 24;
+
 pub struct Renderer {
     project: Project,
     timeline: Id,
@@ -99,7 +102,13 @@ impl Renderer {
         (self.project.settings.width, self.project.settings.height)
     }
 
-    fn fetch(&mut self, clip: Id, media: Id, frame: i64) -> Result<Arc<Frame8>, RenderError> {
+    fn fetch(
+        &mut self,
+        clip: Id,
+        media: Id,
+        frame: i64,
+        back: bool,
+    ) -> Result<Arc<Frame8>, RenderError> {
         if let Some(f) = self.cache.get(media, frame) {
             return Ok(f);
         }
@@ -113,6 +122,27 @@ impl Renderer {
             .map(|d| d.rate)
             .unwrap_or(self.project.settings.frame_rate);
         self.clock += 1;
+        // previews decode at the size they will be shown, not the size of the file
+        let even = |v: u32| (((v as f64 * self.opts.decode_scale).round() as u32).max(2)) & !1;
+        let (dw, dh) = if self.opts.decode_scale < 1.0 {
+            (even(w), even(h))
+        } else {
+            (w, h)
+        };
+        if back {
+            // a decoder only runs forwards: read a run of frames ending at this one and keep them all,
+            // so the next frames of a reversed clip come from the cache
+            let lo = (frame - REVERSE_RUN + 1).max(0);
+            let mut r = VideoReader::open_with(&path, dw, dh, fps, lo, self.opts.hw_decode)
+                .map_err(RenderError::Decode)?;
+            let mut last = None;
+            for i in lo..=frame {
+                let f = r.frame(i).map_err(RenderError::Decode)?;
+                self.cache.insert(media, i, f.clone());
+                last = Some(f);
+            }
+            return last.ok_or_else(|| RenderError::Decode("no frames decoded".into()));
+        }
         if !self.readers.contains_key(&clip) {
             if self.readers.len() >= self.opts.max_readers {
                 let oldest = *self
@@ -123,14 +153,7 @@ impl Renderer {
                     .expect("non-empty");
                 self.readers.remove(&oldest);
             }
-            // previews decode at the size they will be shown, not the size of the file
-            let even = |v: u32| (((v as f64 * self.opts.decode_scale).round() as u32).max(2)) & !1;
-            let (w, h) = if self.opts.decode_scale < 1.0 {
-                (even(w), even(h))
-            } else {
-                (w, h)
-            };
-            let r = VideoReader::open_with(&path, w, h, fps, frame, self.opts.hw_decode)
+            let r = VideoReader::open_with(&path, dw, dh, fps, frame, self.opts.hw_decode)
                 .map_err(RenderError::Decode)?;
             self.readers.insert(clip, (r, self.clock));
         }
@@ -168,6 +191,7 @@ impl Renderer {
                 media: Id,
                 frame: i64,
                 props: VideoProps,
+                back: bool,
             },
             Title {
                 title: Title,
@@ -182,6 +206,7 @@ impl Renderer {
                     media: c.media.id,
                     frame: c.source_frame,
                     props: c.clip.video_at(c.local_tick),
+                    back: c.clip.retime.backwards(),
                 },
                 Layer::Title(t) => {
                     let dur = t.title.duration.value;
@@ -214,8 +239,9 @@ impl Renderer {
                     media,
                     frame,
                     props,
+                    back,
                 } => {
-                    let f = self.fetch(clip, media, frame)?;
+                    let f = self.fetch(clip, media, frame, back)?;
                     draw_layer(&mut canvas, &f, &props);
                 }
                 Want::Title { title, props } => {

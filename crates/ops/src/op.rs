@@ -1,5 +1,5 @@
 use captaine_model::{
-    AudioProps, Id, Item, Keyframe, MediaRef, Timeline, Title, Track, VideoProps,
+    AudioProps, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, VideoProps,
 };
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -117,6 +117,12 @@ pub enum Op {
         prop: String,
         keys: Vec<Keyframe>,
     },
+    /// Change a clip's speed, direction or freeze. The same stretch of source plays, so the clip
+    /// gets shorter or longer (ripple).
+    SetRetime {
+        item: Id,
+        retime: Retime,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -162,6 +168,17 @@ impl Op {
                     format!("Remove {prop} animation of {item}")
                 } else {
                     format!("Animate {prop} of {item} ({} keys)", keys.len())
+                }
+            }
+            Op::SetRetime { item, retime } => {
+                if retime.freeze {
+                    format!("Freeze frame of {item}")
+                } else {
+                    format!(
+                        "Set speed of {item} to {:.0}%{}",
+                        retime.speed * 100.0,
+                        if retime.reverse { " reversed" } else { "" }
+                    )
                 }
             }
             Op::SetEnabled { item, enabled } => {

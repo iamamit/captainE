@@ -403,3 +403,71 @@ fn animated_volume_and_pan_sweep_through_the_mix() {
     let flat = mix(&f);
     assert!((rms(&flat, 0) - HALF).abs() < 0.003 && (rms(&flat, 1) - HALF).abs() < 0.003);
 }
+
+#[test]
+fn speed_reverse_and_freeze_reach_the_mix() {
+    if !have_ffmpeg() {
+        return;
+    }
+    // loud for the first 2 s of 4, then silence
+    let p = scratch("step.wav");
+    let src = format!("aevalsrc=if(lt(t\\,2)\\,0.5*sin(2*PI*440*t)\\,0):s={SR}:d=4:c=stereo");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &src,
+            "-c:a",
+            "pcm_f32le"
+        ])
+        .arg(&p)
+        .status()
+        .unwrap()
+        .success());
+    let level = |out: &[f32], a: f64, b: f64| {
+        let sr = SR as f64;
+        rms(&out[(a * sr) as usize * 2..(b * sr) as usize * 2], 0)
+    };
+    let retime = |speed: f64, reverse: bool, freeze: bool| {
+        let mut f = fx();
+        let m = media(&mut f, &p);
+        let id = place(&mut f, 0, 0, clip(&m, 0.0, 120));
+        f.ed.apply(
+            Author::User,
+            Op::SetRetime {
+                item: id,
+                retime: Retime {
+                    speed,
+                    reverse,
+                    freeze,
+                },
+            },
+        )
+        .unwrap();
+        mix(&f)
+    };
+    // double speed: 2 s long, loud for the first second
+    let out = retime(2.0, false, false);
+    assert!(out.len() / 2 <= 2 * SR as usize + 100 && out.len() / 2 >= 2 * SR as usize - 100);
+    assert!(
+        level(&out, 0.1, 0.9) > 0.8 * HALF,
+        "{}",
+        level(&out, 0.1, 0.9)
+    );
+    assert!(level(&out, 1.1, 1.9) < 0.02);
+    // reversed: silence first, then the loud half
+    let out = retime(1.0, true, false);
+    assert!(level(&out, 0.1, 1.9) < 0.02);
+    assert!(level(&out, 2.1, 3.9) > 0.8 * HALF);
+    // half speed: 8 s long, loud for 4 s
+    let out = retime(0.5, false, false);
+    assert!(level(&out, 0.2, 3.8) > 0.8 * HALF);
+    assert!(level(&out, 4.2, 7.8) < 0.02);
+    // a freeze has no sound
+    let out = retime(1.0, false, true);
+    assert!(out.iter().all(|s| s.abs() < 1e-6));
+}

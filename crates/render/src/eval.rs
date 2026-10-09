@@ -1,5 +1,4 @@
 use captaine_model::{Clip, Id, Item, MediaRef, Project, Title, TrackKind};
-use captaine_time::{RationalTime, Rounding};
 
 /// `(start, end, item index)` of each clip on one track, sorted by start.
 type Spans = Vec<(i64, i64, usize)>;
@@ -101,13 +100,10 @@ pub fn layers_at<'a>(
                 let Some(media) = project.media.get(&clip.media).filter(|m| m.has_video) else {
                     continue;
                 };
-                let offset = RationalTime::new(tick - start, tl.rate)
-                    .rescale(clip.source_start.rate, Rounding::Floor)
-                    .map_or(0, |t| t.value);
                 out.push(Layer::Clip(ClipLayer {
                     clip,
                     media,
-                    source_frame: clip.source_start.value + offset,
+                    source_frame: clip.source_frame_at(tick - start),
                     local_tick: tick - start,
                     track: *ti,
                 }));
@@ -128,7 +124,7 @@ mod tests {
     use std::sync::Arc;
 
     use captaine_model::*;
-    use captaine_time::Rational;
+    use captaine_time::{Rational, RationalTime};
 
     use super::*;
 

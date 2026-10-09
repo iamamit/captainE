@@ -4,7 +4,7 @@ use std::sync::Arc;
 use captaine_model::{value_at, Id, Item, Keyframe, Project};
 use captaine_time::{Rational, RationalTime, Rounding};
 
-use crate::decode::decode_pcm;
+use crate::decode::decode_filtered;
 use crate::AudioError;
 
 /// Decode this much of a clip at a time so long recordings never sit in memory whole.
@@ -16,8 +16,11 @@ struct MixClip {
     /// where the clip starts and how long it is, in output samples
     start: i64,
     len: i64,
-    /// seconds into the source file at the clip's first sample
+    /// seconds into the source file where the clip's window begins, and how long the window is
     src_secs: f64,
+    span_secs: f64,
+    speed: f64,
+    reverse: bool,
     gain_db: f64,
     track_db: f64,
     pan: f64,
@@ -76,7 +79,7 @@ impl Mixer {
                 let Some(m) = project.media.get(&c.media) else {
                     continue;
                 };
-                if !c.enabled || c.audio.muted || !m.has_audio {
+                if !c.enabled || c.audio.muted || !m.has_audio || c.retime.freeze {
                     continue;
                 }
                 let end = start + c.duration.value;
@@ -87,6 +90,9 @@ impl Mixer {
                     start: s,
                     len: e - s,
                     src_secs: c.source_start.to_seconds_f64(),
+                    span_secs: c.source_span() as f64 / c.source_start.rate.as_f64(),
+                    speed: c.retime.speed,
+                    reverse: c.retime.reverse,
                     gain_db: c.audio.gain_db,
                     track_db: track.gain_db,
                     pan: c.audio.pan,
@@ -140,8 +146,22 @@ impl Mixer {
         let c = &self.clips[ci];
         let from = w * wl;
         let n = (c.len - from).min(wl).max(0) as usize;
-        let secs = c.src_secs + from as f64 / self.sample_rate as f64;
-        let pcm = Arc::new(decode_pcm(&c.path, secs, n, self.sample_rate)?);
+        let sr = self.sample_rate as f64;
+        let secs = if c.reverse {
+            // output runs from the top of the source window downwards
+            c.src_secs + c.span_secs - (from + n as i64) as f64 * c.speed / sr
+        } else {
+            c.src_secs + from as f64 * c.speed / sr
+        };
+        let pcm = Arc::new(decode_filtered(
+            &c.path,
+            secs,
+            n,
+            self.sample_rate,
+            2,
+            c.speed,
+            c.reverse,
+        )?);
         self.windows.insert((id, w), pcm.clone());
         Ok(pcm)
     }

@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 14);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 15);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -452,4 +452,30 @@ fn set_keyframes_animates_a_property_and_bad_input_is_reported() {
     assert_eq!(clip.anim.keys("opacity")[0].t, 0, "keys are sorted");
     assert_eq!(clip.video_at(0).opacity, 0.0);
     assert_eq!(clip.video_at(48).opacity, 1.0);
+}
+
+#[test]
+fn set_speed_retimes_a_clip() {
+    let (p, ids) = project();
+    let model = Scripted::new(vec![
+        tool(
+            "t1",
+            "set_speed",
+            json!({"item_id": ids[0].to_string(), "speed_percent": 200}),
+        ),
+        end("Sped up the first clip."),
+    ]);
+    let r = ask(
+        &model,
+        &p,
+        "double the speed of the first clip",
+        Some(ids[0]),
+    )
+    .unwrap();
+    let after = apply_all(&p, &r.new_ops);
+    assert_eq!(
+        v1(&after),
+        [(0, 48), (48, 96)],
+        "later clips ripple earlier"
+    );
 }

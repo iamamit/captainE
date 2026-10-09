@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use captaine_export::Codec;
 use captaine_model::*;
 use captaine_ops::{edit, Op};
-use captaine_time::Rational;
+use captaine_time::{Rational, RationalTime};
 use egui::{
     pos2, vec2, Align, Align2, Color32, Context, Key, Layout, Modifiers, Rect, Response, RichText,
     Sense, Stroke, Ui,
@@ -678,6 +678,73 @@ pub fn import_dialog(app: &mut App) {
 
 // ---- editing commands shared by menus, keys and buttons ------------------------------------------
 
+/// Hold the frame under the playhead for two seconds: cut the clip there and slot in a still.
+pub fn freeze_frame(app: &mut App) {
+    let Some((clip, track, start)) = app.selected() else {
+        app.toast(
+            "Select a clip first, then put the playhead on the frame to hold",
+            false,
+        );
+        return;
+    };
+    let local = app.playhead - start;
+    if local < 0 || local >= clip.duration.value {
+        app.toast("Move the playhead inside the selected clip", false);
+        return;
+    }
+    if !app
+        .project()
+        .media
+        .get(&clip.media)
+        .is_some_and(|m| m.has_video)
+    {
+        app.toast("Only video clips can be frozen", false);
+        return;
+    }
+    let Some(tl) = app.timeline() else { return };
+    let Some(index) = tl
+        .tracks
+        .iter()
+        .find(|t| t.id == track)
+        .and_then(|t| t.items.iter().position(|i| i.id() == clip.id))
+    else {
+        return;
+    };
+    let rate = clip.duration.rate;
+    let mut still = Clip::new(
+        Id::new(),
+        format!("{} (freeze)", clip.name),
+        clip.media,
+        RationalTime::new(clip.source_frame_at(local), clip.source_start.rate),
+        RationalTime::new(((2.0 * app.fps()).round() as i64).max(1), rate),
+    );
+    still.retime = Retime {
+        freeze: true,
+        ..Retime::default()
+    };
+    still.video = clip.video_at(local);
+    let mut ops = Vec::new();
+    let at = if local > 0 {
+        ops.push(Op::Split {
+            item: clip.id,
+            at: RationalTime::new(local, rate),
+            new_id: Id::new(),
+        });
+        index + 1
+    } else {
+        index
+    };
+    ops.push(Op::InsertItem {
+        track,
+        index: at,
+        item: Item::Clip(still),
+    });
+    app.do_op(Op::Transaction {
+        description: "Freeze frame".into(),
+        ops,
+    });
+}
+
 pub fn split_at_playhead(app: &mut App) {
     let Some(tl) = app.timeline().cloned() else {
         return;
@@ -830,6 +897,9 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     }
     if pressed(Modifiers::COMMAND, Key::B) {
         split_at_playhead(app);
+    }
+    if pressed(Modifiers::SHIFT, Key::F) {
+        freeze_frame(app);
     }
     if pressed(Modifiers::COMMAND, Key::I) {
         import_dialog(app);
@@ -1458,15 +1528,57 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         }
         achanged = true;
     }
-    let mut speed = 100.0;
-    slider_row(ui, "Speed", &mut speed, 10.0..=400.0, 100.0, 0, "%", false)
-        .changed
-        .then_some(());
-    ui.label(
-        RichText::new("Speed changes are planned for the next phase.")
-            .size(10.5)
-            .color(theme::FAINT),
+    let mut rt = clip.retime;
+    let mut speed = rt.speed * 100.0;
+    let sp = slider_row(
+        ui,
+        "Speed",
+        &mut speed,
+        5.0..=400.0,
+        100.0,
+        0,
+        "%",
+        has_video || has_audio,
     );
+    let mut retime_now = false;
+    if sp.changed {
+        // dragging re-times the clip live, as one undo step
+        let to = Retime {
+            speed: (speed / 100.0).clamp(Retime::MIN_SPEED, Retime::MAX_SPEED),
+            ..rt
+        };
+        if to != clip.retime {
+            app.do_merging(
+                Op::SetRetime {
+                    item: clip.id,
+                    retime: to,
+                },
+                &format!("s:{key}"),
+            );
+        }
+    }
+    if sp.done {
+        app.end_merge();
+    }
+    ui.horizontal(|ui| {
+        if chip(ui, "Reverse", rt.reverse, !rt.freeze).clicked() {
+            rt.reverse = !rt.reverse;
+            retime_now = true;
+        }
+        if chip(ui, "Freeze", rt.freeze, true).clicked() {
+            rt.freeze = !rt.freeze;
+            retime_now = true;
+        }
+        if chip(ui, "Hold frame at playhead", false, inside).clicked() {
+            freeze_frame(app);
+        }
+    });
+    if retime_now && rt != clip.retime {
+        app.do_op(Op::SetRetime {
+            item: clip.id,
+            retime: rt,
+        });
+    }
     section(ui, "Blend");
     ui.horizontal(|ui| {
         for (mode, name) in [

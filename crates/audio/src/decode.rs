@@ -37,10 +37,47 @@ pub(crate) fn decode(
     sample_rate: u32,
     channels: u32,
 ) -> Result<Vec<f32>, AudioError> {
+    decode_filtered(path, start_secs, count, sample_rate, channels, 1.0, false)
+}
+
+/// ffmpeg `atempo` only takes 0.5..=2 per stage, so a speed is split into a chain of them.
+fn tempo_chain(mut speed: f64) -> String {
+    let mut parts = Vec::new();
+    while speed > 2.0 {
+        parts.push("atempo=2".to_string());
+        speed /= 2.0;
+    }
+    while speed < 0.5 {
+        parts.push("atempo=0.5".to_string());
+        speed *= 2.0;
+    }
+    parts.push(format!("atempo={speed:.6}"));
+    parts.join(",")
+}
+
+/// Like [`decode`], but the source is played at `speed` (pitch kept) and optionally backwards.
+/// `start_secs` is where the source stretch to read begins; `count` output frames come back, padded with
+/// silence if the file ends early. When reversed, the stretch is read forwards and flipped.
+pub(crate) fn decode_filtered(
+    path: &str,
+    start_secs: f64,
+    count: usize,
+    sample_rate: u32,
+    channels: u32,
+    speed: f64,
+    reverse: bool,
+) -> Result<Vec<f32>, AudioError> {
     if !Path::new(path).exists() {
         return Err(AudioError::Decode(format!("media file not found: {path}")));
     }
-    let secs = count as f64 / sample_rate as f64;
+    let secs = count as f64 * speed / sample_rate as f64;
+    let mut filters = Vec::new();
+    if reverse {
+        filters.push("areverse".to_string());
+    }
+    if speed != 1.0 {
+        filters.push(tempo_chain(speed));
+    }
     let mut child = Command::new("ffmpeg")
         .args([
             "-v",
@@ -49,7 +86,7 @@ pub(crate) fn decode(
             "-ss",
             &format!("{:.6}", start_secs.max(0.0)),
             "-t",
-            &format!("{:.6}", secs + 0.01),
+            &format!("{:.6}", secs + if reverse { 0.0 } else { 0.01 }),
         ])
         .args([
             "-i",
@@ -61,6 +98,11 @@ pub(crate) fn decode(
             "-ar",
             &sample_rate.to_string(),
         ])
+        .args(if filters.is_empty() {
+            vec![]
+        } else {
+            vec!["-af".to_string(), filters.join(",")]
+        })
         .args(["-f", "f32le", "-"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -587,3 +587,51 @@ fn keyframe_diamonds_in_the_inspector_add_and_remove_keys_with_undo() {
     settle(&mut h);
     assert_eq!(keys(app(&h)).len(), 2);
 }
+
+#[test]
+fn inspector_reverse_and_freeze_frame_shortcut() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let first = |a: &App| match &v1(a).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("first item is a clip"),
+    };
+    let id = first(app(&h)).id;
+    let len = first(app(&h)).duration.value;
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    h.get_by_label("Reverse").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Reverse").click();
+    settle(&mut h);
+    assert!(first(app(&h)).retime.reverse);
+    h.get_by_label("Reverse").click();
+    settle(&mut h);
+    assert!(!first(app(&h)).retime.reverse);
+    // Shift+F holds the frame under the playhead: the clip is cut and a still goes in between
+    let items_before = v1(app(&h)).items.len();
+    app_mut(&mut h).playhead = 10;
+    h.key_press_modifiers(Modifiers::SHIFT, Key::F);
+    settle(&mut h);
+    let items = v1(app(&h)).items;
+    assert_eq!(items.len(), items_before + 2);
+    let still = match &items[1] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("a still clip"),
+    };
+    assert!(still.retime.freeze);
+    assert_eq!(
+        still.source_start.value,
+        first(app(&h)).source_start.value + 10
+    );
+    assert_eq!(first(app(&h)).duration.value, 10);
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(
+        first(app(&h)).duration.value,
+        len,
+        "one undo puts it all back"
+    );
+}

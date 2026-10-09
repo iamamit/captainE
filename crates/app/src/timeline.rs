@@ -915,6 +915,25 @@ fn draw_clip(
         ui_font(11.0),
         label_color,
     );
+    if !clip.retime.is_identity() {
+        let rt = clip.retime;
+        let badge = if rt.freeze {
+            "❄ freeze".to_string()
+        } else {
+            format!(
+                "{}{:.0}%",
+                if rt.reverse { "◀ " } else { "" },
+                rt.speed * 100.0
+            )
+        };
+        inner.text(
+            rect.left_bottom() + vec2(7.0, -4.0),
+            Align2::LEFT_BOTTOM,
+            badge,
+            mono(9.5),
+            Color32::from_white_alpha(200),
+        );
+    }
     if clip.video.opacity < 1.0 && row.kind == TrackKind::Video {
         inner.text(
             rect.right_top() + vec2(-6.0, 4.0),

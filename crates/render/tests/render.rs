@@ -289,3 +289,92 @@ fn decoding_at_a_fraction_of_the_size_still_picks_the_right_frames() {
         assert_eq!(frame_no(grey_of(&canvas, 24, 13)), 10 + tick, "tick {tick}");
     }
 }
+
+#[test]
+fn speed_reverse_and_freeze_pick_the_right_source_frames() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let path = scratch("counter-retime.mp4");
+    counter_video(&path, 60);
+    let mut f = fixture((96, 54));
+    let m = add_media(&mut f, &path);
+    // source 10..40 as a 30-tick clip
+    let c = clip(&m, 10, 30);
+    let id = c.id;
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, c))
+        .unwrap();
+    let shown = |f: &Fixture, ticks: &[i64]| -> Vec<i64> {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        ticks
+            .iter()
+            .map(|&k| frame_no(grey_of(&r.render(k).unwrap(), 48, 27)))
+            .collect()
+    };
+    // double speed: the same 30 source frames take 15 ticks
+    f.ed.apply(
+        Author::User,
+        Op::SetRetime {
+            item: id,
+            retime: Retime {
+                speed: 2.0,
+                ..Retime::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(shown(&f, &[0, 1, 2, 14]), [10, 12, 14, 38]);
+    assert_eq!(
+        f.ed.project().timeline(f.tl).unwrap().duration().value,
+        15,
+        "the clip got shorter"
+    );
+    // half speed: 60 ticks, each source frame twice
+    f.ed.apply(
+        Author::User,
+        Op::SetRetime {
+            item: id,
+            retime: Retime {
+                speed: 0.5,
+                ..Retime::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(f.ed.project().timeline(f.tl).unwrap().duration().value, 60);
+    assert_eq!(shown(&f, &[0, 1, 2, 3, 59]), [10, 10, 11, 11, 39]);
+    // reversed at normal speed: 39, 38, ... 10
+    f.ed.apply(
+        Author::User,
+        Op::SetRetime {
+            item: id,
+            retime: Retime {
+                reverse: true,
+                ..Retime::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(f.ed.project().timeline(f.tl).unwrap().duration().value, 30);
+    assert_eq!(shown(&f, &[0, 1, 2, 29, 3]), [39, 38, 37, 10, 36]);
+    // sequential playback of a reversed clip comes out of the run cache
+    let seq = shown(&f, &(0..30).collect::<Vec<_>>());
+    assert_eq!(seq, (10..40).rev().collect::<Vec<_>>());
+    // a freeze holds one frame for the whole clip, and undo walks back to the start
+    f.ed.apply(
+        Author::User,
+        Op::SetRetime {
+            item: id,
+            retime: Retime {
+                freeze: true,
+                ..Retime::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(shown(&f, &[0, 15, 29]), [10, 10, 10]);
+    for _ in 0..4 {
+        f.ed.undo();
+    }
+    assert_eq!(shown(&f, &[0, 29]), [10, 39]);
+}

@@ -2,7 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project, Title};
-use captaine_time::{Rational, RationalTime, Rounding};
+use captaine_time::{Rational, RationalTime};
 
 use crate::{Edge, Op};
 
@@ -91,25 +91,14 @@ fn check_item(p: &Project, rate: Rational, item: &Item) -> Result<()> {
             return Err(OpError::OutOfRange("clip starts before its media"));
         }
         if let Some(len) = m.duration {
-            let src = c
-                .duration
-                .rescale(c.source_start.rate, Rounding::Ceil)
-                .ok_or(OpError::Inexact("clip length"))?;
-            let end = RationalTime::new(c.source_start.value + src.value, c.source_start.rate);
+            let end =
+                RationalTime::new(c.source_start.value + c.source_span(), c.source_start.rate);
             if end > len {
                 return Err(OpError::OutOfRange("clip runs past the end of its media"));
             }
         }
     }
     Ok(())
-}
-
-/// Timeline time as a source offset at `rate`, rounded down (the renderer's rule: the source frame shown
-/// `k` ticks into a clip is `floor(k * source_rate / timeline_rate)`), so cuts never change what is on screen.
-fn source_offset(delta: RationalTime, rate: Rational) -> Result<RationalTime> {
-    delta
-        .rescale(rate, Rounding::Floor)
-        .ok_or(OpError::Inexact("time in source"))
 }
 
 /// Shrink fade lengths so they fit a clip of `duration` ticks (fade-out has priority).
@@ -268,9 +257,9 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let (left, right) = match &old {
                 Item::Clip(c) => {
                     // the right half's first frame is the source frame the original showed at `at`
-                    let off = source_offset(*at, c.source_start.rate)?;
+                    let off = RationalTime::new(c.advance(at.value), c.source_start.rate);
                     // a fade-in stays with the left half and a fade-out with the right one; clamp to fit
-                    let l = Clip {
+                    let mut l = Clip {
                         duration: *at,
                         audio: AudioProps {
                             fade_in: c.audio.fade_in.min(at.value),
@@ -280,9 +269,19 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         anim: c.anim.window(0, at.value),
                         ..c.clone()
                     };
+                    let r_start = if c.retime.backwards() {
+                        // played back to front: the first half keeps the top of the window
+                        l.source_start = RationalTime::new(
+                            c.source_start.value + c.source_span() - l.source_span(),
+                            c.source_start.rate,
+                        );
+                        c.source_start
+                    } else {
+                        arith(c.source_start.checked_add(off))?
+                    };
                     let r = Clip {
                         id: *new_id,
-                        source_start: arith(c.source_start.checked_add(off))?,
+                        source_start: r_start,
                         duration: rest,
                         audio: AudioProps {
                             fade_in: 0,
@@ -358,11 +357,16 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 (Item::Clip(a), Item::Clip(b)) => {
                     // contiguous = the right clip starts where the left one ends, give or take the
                     // one source frame lost when a cut falls between source frames
-                    let end = source_offset(a.duration, a.source_start.rate)?;
-                    let end = arith(a.source_start.checked_add(end))?;
-                    let slack = (end.value - b.source_start.value).abs() <= 1
-                        && end.rate == b.source_start.rate;
+                    let slack = if a.retime.backwards() {
+                        // the later half sits below the earlier one in the source
+                        let end = b.source_start.value + b.source_span();
+                        (end - a.source_start.value).abs() <= 1
+                    } else {
+                        let end = a.source_start.value + a.advance(a.duration.value);
+                        (end - b.source_start.value).abs() <= 1
+                    } && a.source_start.rate == b.source_start.rate;
                     if a.media != b.media
+                        || a.retime != b.retime
                         || a.name != b.name
                         || a.enabled != b.enabled
                         || a.video != b.video
@@ -396,6 +400,11 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         ));
                     }
                     Item::Clip(Clip {
+                        source_start: if a.retime.backwards() {
+                            b.source_start
+                        } else {
+                            a.source_start
+                        },
                         duration: arith(a.duration.checked_add(b.duration))?,
                         audio,
                         anim,
@@ -473,15 +482,31 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let old = p.item(loc).expect("located").clone();
             let (new, inverse) = match (&old, edge) {
                 (Item::Clip(c), _) => {
-                    let (start, duration) = match edge {
-                        Edge::In => (
-                            arith(
-                                c.source_start
-                                    .checked_add(source_offset(*delta, c.source_start.rate)?),
-                            )?,
-                            arith(c.duration.checked_sub(*delta))?,
-                        ),
-                        Edge::Out => (c.source_start, arith(c.duration.checked_add(*delta))?),
+                    let duration = match edge {
+                        Edge::In => arith(c.duration.checked_sub(*delta))?,
+                        Edge::Out => arith(c.duration.checked_add(*delta))?,
+                    };
+                    let start = if c.retime.backwards() {
+                        // the top of the window stays put on an Out trim and moves down with an In trim
+                        let moved = Clip {
+                            duration,
+                            ..c.clone()
+                        };
+                        let top = c.source_start.value + c.source_span()
+                            - 1
+                            - if *edge == Edge::In {
+                                c.advance(delta.value)
+                            } else {
+                                0
+                            };
+                        RationalTime::new(top + 1 - moved.source_span(), c.source_start.rate)
+                    } else if *edge == Edge::In {
+                        arith(c.source_start.checked_add(RationalTime::new(
+                            c.advance(delta.value),
+                            c.source_start.rate,
+                        )))?
+                    } else {
+                        c.source_start
                     };
                     // fades that no longer fit are shortened; undo puts them back
                     let (fi, fo) = fit_fades(c.audio.fade_in, c.audio.fade_out, duration.value);
@@ -632,7 +657,14 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let Item::Clip(c) = p.item(loc).expect("located").clone() else {
                 return Err(OpError::NotFound("clip", *item));
             };
-            let d = source_offset(*delta, c.source_start.rate)?;
+            let d = RationalTime::new(
+                if c.retime.backwards() {
+                    -c.advance(delta.value)
+                } else {
+                    c.advance(delta.value)
+                },
+                c.source_start.rate,
+            );
             let new = Item::Clip(Clip {
                 source_start: arith(c.source_start.checked_add(d))?,
                 ..c.clone()
@@ -646,6 +678,50 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 item: *item,
                 source_start: c.source_start,
                 duration: c.duration,
+            })
+        }
+        Op::SetRetime { item, retime } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let old = p.item(loc).expect("located").clone();
+            let Item::Clip(c) = &old else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            // the same stretch of source plays at the new speed, so the clip gets shorter or longer;
+            // freezing and un-freezing keep its length
+            let keep = c.retime.freeze || retime.freeze;
+            let mut ticks = if keep {
+                c.duration.value
+            } else {
+                ((c.duration.value as f64 * c.retime.speed / retime.speed).round() as i64).max(1)
+            };
+            let new = loop {
+                let (fi, fo) = fit_fades(c.audio.fade_in, c.audio.fade_out, ticks);
+                let cand = Item::Clip(Clip {
+                    retime: *retime,
+                    duration: RationalTime::new(ticks, rate),
+                    audio: AudioProps {
+                        fade_in: fi,
+                        fade_out: fo,
+                        ..c.audio
+                    },
+                    anim: c.anim.window(0, ticks),
+                    ..c.clone()
+                });
+                match check_item(p, rate, &cand) {
+                    // rounding may push the window one frame past the end of the media
+                    Err(OpError::OutOfRange(_)) if !keep && ticks > 1 => ticks -= 1,
+                    Err(e) => return Err(e),
+                    Ok(()) => break cand,
+                }
+            };
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::ReplaceRaw {
+                item: *item,
+                with: old,
             })
         }
         Op::SetVideo { item, video } => {
