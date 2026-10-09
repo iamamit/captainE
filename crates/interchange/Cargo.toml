@@ -1,0 +1,18 @@
+[package]
+name = "captaine-interchange"
+description = "Exchange timelines with other editors: CMX3600 EDL, OpenTimelineIO, Final Cut Pro XML"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_interchange"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+captaine-ops.workspace = true
+captaine-media.workspace = true
+serde.workspace = true
+serde_json.workspace = true

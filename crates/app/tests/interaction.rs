@@ -979,3 +979,59 @@ fn source_monitor_three_and_four_point_edits() {
     settle(&mut h);
     assert!(!app(&h).source.open);
 }
+
+#[test]
+fn several_sequences_can_be_made_switched_renamed_and_deleted() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let first = app(&h).timeline_id().unwrap();
+    let first_len = app(&h).duration_ticks();
+    assert!(first_len > 0);
+    app_mut(&mut h).new_sequence();
+    settle(&mut h);
+    let second = app(&h).timeline_id().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(app(&h).duration_ticks(), 0, "a new sequence is empty");
+    assert_eq!(app(&h).project().timelines.len(), 2);
+    // the first one is untouched
+    app_mut(&mut h).set_active_timeline(first);
+    settle(&mut h);
+    assert_eq!(app(&h).duration_ticks(), first_len);
+    // duplicating gives a copy with fresh ids
+    app_mut(&mut h).duplicate_sequence();
+    settle(&mut h);
+    let copy = app(&h).timeline().unwrap().clone();
+    assert_ne!(copy.id, first);
+    assert!(copy.name.contains("copy"));
+    let ids = |t: &Timeline| -> Vec<Id> {
+        t.tracks
+            .iter()
+            .flat_map(|tr| tr.items.iter().map(|i| i.id()))
+            .collect()
+    };
+    let original = app(&h).project().timeline(first).unwrap().clone();
+    assert!(ids(&copy).iter().all(|i| !ids(&original).contains(i)));
+    assert_eq!(copy.duration().value, first_len);
+    assert!(app(&h).project().validate().is_ok());
+    // rename (undoable, and part of the history)
+    app_mut(&mut h).rename_sequence(copy.id, "Director's cut".into());
+    assert_eq!(app(&h).timeline().unwrap().name, "Director's cut");
+    app_mut(&mut h).undo();
+    assert!(app(&h).timeline().unwrap().name.contains("copy"));
+    // delete the active one: another becomes active
+    let before = app(&h).project().timelines.len();
+    app_mut(&mut h).delete_sequence(copy.id);
+    settle(&mut h);
+    assert_eq!(app(&h).project().timelines.len(), before - 1);
+    assert_ne!(app(&h).timeline_id(), Some(copy.id));
+    // the last one cannot be deleted
+    while app(&h).project().timelines.len() > 1 {
+        let id = app(&h).timeline_id().unwrap();
+        app_mut(&mut h).delete_sequence(id);
+    }
+    let only = app(&h).timeline_id().unwrap();
+    app_mut(&mut h).delete_sequence(only);
+    assert_eq!(app(&h).project().timelines.len(), 1);
+}

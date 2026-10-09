@@ -195,11 +195,14 @@ pub struct App {
     // engine plumbing
     worker: RenderWorker,
     jobs: Jobs,
-    sent_revision: Option<(u64, u64)>,
+    pub(crate) sent_revision: Option<(u64, u64)>,
     pub program: Option<TextureHandle>,
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Which sequence is being edited (the first one when unset)
+    pub active_timeline: Option<Id>,
+    pub rename_sequence: Option<(Id, String)>,
     pub source: crate::source::SourceMonitor,
     /// Smoothed peak levels: one per timeline track, then the master
     pub meters: Vec<f32>,
@@ -276,6 +279,8 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            active_timeline: None,
+            rename_sequence: None,
             source: crate::source::SourceMonitor::new(ctx.clone()),
             meters: Vec::new(),
             scope_kind: crate::scopes::ScopeKind::Waveform,
@@ -355,7 +360,9 @@ impl App {
     }
 
     pub fn timeline(&self) -> Option<&Timeline> {
-        self.project().timelines.values().next().map(|t| t.as_ref())
+        self.active_timeline
+            .and_then(|id| self.project().timeline(id))
+            .or_else(|| self.project().timelines.values().next().map(|t| t.as_ref()))
     }
 
     pub fn timeline_id(&self) -> Option<Id> {

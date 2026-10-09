@@ -236,10 +236,14 @@ fn sync_ops_reproduce_the_target_exactly() {
             "no change, no ops"
         );
     }
-    // changes it cannot express say so instead of guessing
+    // renaming a timeline is an op; changing its frame rate has none and says so instead of guessing
     let mut renamed = a.clone();
     renamed.timeline_mut(id(TL)).unwrap().name = "other".into();
-    assert!(sync_ops(&a, &renamed).unwrap_err().contains("renamed"));
+    let ops = sync_ops(&a, &renamed).unwrap();
+    assert_eq!(&run(&a, &ops), &renamed);
+    let mut retimed = a.clone();
+    retimed.timeline_mut(id(TL)).unwrap().rate = captaine_time::Rational::FPS_25;
+    assert!(sync_ops(&a, &retimed).unwrap_err().contains("retimed"));
 }
 
 #[test]

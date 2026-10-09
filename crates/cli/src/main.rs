@@ -300,6 +300,16 @@ enum Cmd {
     Loudness {
         project: PathBuf,
     },
+    /// Write the timeline for another editor: .otio, .edl or .fcpxml (by the file name's extension)
+    ExportTimeline {
+        project: PathBuf,
+        out: PathBuf,
+    },
+    /// Read a .otio (as a new sequence) or .edl (onto the current timeline) into the project
+    ImportTimeline {
+        project: PathBuf,
+        file: PathBuf,
+    },
     /// Render the timeline to a video file
     Render {
         project: PathBuf,
@@ -1301,6 +1311,46 @@ fn run(cmd: Cmd) -> Result<(), String> {
             println!("integrated {:.1} LUFS   range {:.1} LU   sample peak {:.1} dBFS   true peak {:.1} dBTP", l.integrated_lufs, l.loudness_range_lu, l.sample_peak_db, l.true_peak_db);
             Ok(())
         }
+        Cmd::ExportTimeline { project, out } => {
+            let s = Session::load(&project)?;
+            let tl = timeline(&s)?;
+            let p = s.editor.project();
+            let ext = out
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let text = match ext.as_str() {
+                "otio" => captaine_interchange::otio::export(p, tl.id)?,
+                "edl" => captaine_interchange::edl::export(p, tl.id, false)?,
+                "fcpxml" => captaine_interchange::fcpxml::export(p, tl.id)?,
+                _ => return Err("the output name must end in .otio, .edl or .fcpxml".into()),
+            };
+            std::fs::write(&out, text).map_err(|e| e.to_string())?;
+            println!("wrote {}", out.display());
+            Ok(())
+        }
+        Cmd::ImportTimeline { project, file } => edit_with(&project, &|s| {
+            let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+            let ext = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let ops = match ext.as_str() {
+                "otio" => captaine_interchange::otio::import(s.editor.project(), &text)?,
+                "edl" => {
+                    captaine_interchange::edl::import(s.editor.project(), timeline(s)?.id, &text)?
+                }
+                _ => return Err("only .otio and .edl files can be imported".into()),
+            };
+            let n = ops.len();
+            s.apply(Op::Transaction {
+                description: format!("Import {}", file.display()),
+                ops,
+            })?;
+            Ok(format!("imported {} ({n} changes)", file.display()))
+        }),
         Cmd::Render {
             project,
             out,

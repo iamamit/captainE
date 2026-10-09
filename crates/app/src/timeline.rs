@@ -111,7 +111,43 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                     }
                     ui.add_space(8.0);
                     let name = app.timeline().map_or(String::new(), |t| t.name.clone());
-                    ui.label(RichText::new(name).strong().size(12.0));
+                    let cur = app.timeline_id();
+                    ui.menu_button(
+                        RichText::new(format!("{name} ▾")).strong().size(12.0),
+                        |ui| {
+                            for (id, n) in app.sequences() {
+                                if ui.selectable_label(Some(id) == cur, n).clicked() {
+                                    app.set_active_timeline(id);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("New Sequence").clicked() {
+                                app.new_sequence();
+                                ui.close();
+                            }
+                            if ui.button("Duplicate Sequence").clicked() {
+                                app.duplicate_sequence();
+                                ui.close();
+                            }
+                            if ui.button("Rename Sequence…").clicked() {
+                                app.rename_sequence = cur.map(|id| (id, name.clone()));
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(
+                                    app.sequences().len() > 1,
+                                    egui::Button::new("Delete Sequence"),
+                                )
+                                .clicked()
+                            {
+                                if let Some(id) = cur {
+                                    app.delete_sequence(id);
+                                }
+                                ui.close();
+                            }
+                        },
+                    );
                 });
             });
         });

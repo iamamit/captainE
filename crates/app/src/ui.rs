@@ -523,6 +523,22 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 app.export.open = true;
                 ui.close();
             }
+            ui.menu_button("Export Timeline As", |ui| {
+                for (label, ext) in [
+                    ("OpenTimelineIO (.otio)", "otio"),
+                    ("Edit Decision List (.edl)", "edl"),
+                    ("Final Cut Pro XML (.fcpxml)", "fcpxml"),
+                ] {
+                    if ui.button(label).clicked() {
+                        ui.close();
+                        export_interchange(app, ext);
+                    }
+                }
+            });
+            if ui.button("Import Timeline…").clicked() {
+                ui.close();
+                import_interchange(app);
+            }
         });
         ui.menu_button("Edit", |ui| {
             if ui
@@ -659,6 +675,41 @@ fn menus(app: &mut App, ui: &mut Ui) {
             }
         });
     });
+}
+
+/// Write the current timeline in an interchange format other editors read.
+fn export_interchange(app: &mut App, ext: &str) {
+    let Some(tl) = app.timeline_id() else { return };
+    let text = match ext {
+        "otio" => captaine_interchange::otio::export(app.project(), tl),
+        "edl" => captaine_interchange::edl::export(app.project(), tl, false),
+        _ => captaine_interchange::fcpxml::export(app.project(), tl),
+    };
+    let text = match text {
+        Ok(t) => t,
+        Err(e) => return app.toast(e, true),
+    };
+    if let Some(path) = rfd::FileDialog::new()
+        .set_file_name(format!("{}.{ext}", app.project_title()))
+        .add_filter("timeline", &[ext])
+        .save_file()
+    {
+        match std::fs::write(&path, text) {
+            Ok(()) => app.toast(format!("Wrote {}", path.display()), false),
+            Err(e) => app.toast(format!("cannot write {}: {e}", path.display()), true),
+        }
+    }
+}
+
+/// Read a timeline from an OTIO or EDL file: OTIO becomes a new timeline, an EDL is laid onto the current one.
+fn import_interchange(app: &mut App) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("timeline", &["otio", "edl"])
+        .pick_file()
+    else {
+        return;
+    };
+    app.import_timeline_file(&path);
 }
 
 pub fn import_dialog(app: &mut App) {
@@ -2107,6 +2158,30 @@ fn metadata(app: &mut App, ui: &mut Ui) {
 // ---- dialogs ---------------------------------------------------------------------------------------
 
 pub fn dialogs(app: &mut App, ctx: &Context) {
+    if let Some((id, mut name)) = app.rename_sequence.take() {
+        let (mut keep, mut done) = (true, false);
+        egui::Window::new("Rename sequence")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let r = ui.text_edit_singleline(&mut name);
+                r.request_focus();
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                        done = true;
+                    }
+                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                        keep = false;
+                    }
+                });
+            });
+        if done {
+            app.rename_sequence(id, name);
+        } else if keep {
+            app.rename_sequence = Some((id, name));
+        }
+    }
     if app.show_shortcuts {
         let mut open = true;
         egui::Window::new("Keyboard shortcuts")

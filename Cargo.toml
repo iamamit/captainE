@@ -31,4 +31,5 @@ cpal = "0.18"
 captaine-agent = { path = "crates/agent" }
 ureq = "3"
 captaine-vcs = { path = "crates/vcs" }
+captaine-interchange = { path = "crates/interchange" }
 blake3 = "1"

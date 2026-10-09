@@ -284,3 +284,42 @@ fn fresh(item: &Item) -> Item {
 
 #[allow(dead_code)]
 fn _assert_project_is_used(_: &Project) {}
+
+impl App {
+    /// Bring a timeline in from an `.otio` or `.edl` file.
+    pub fn import_timeline_file(&mut self, path: &std::path::Path) {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => return self.toast(format!("cannot read {}: {e}", path.display()), true),
+        };
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let plan = match ext.as_str() {
+            "otio" => captaine_interchange::otio::import(self.project(), &text),
+            "edl" => match self.timeline_id() {
+                Some(tl) => captaine_interchange::edl::import(self.project(), tl, &text),
+                None => Err("open or create a timeline first".into()),
+            },
+            _ => Err("only .otio and .edl files can be imported".into()),
+        };
+        match plan {
+            Ok(ops) => {
+                let n = ops.len();
+                if self.do_op(Op::Transaction {
+                    description: format!(
+                        "Import {}",
+                        path.file_name()
+                            .map_or(String::new(), |n| n.to_string_lossy().into())
+                    ),
+                    ops,
+                }) {
+                    self.toast(format!("Imported {} ({n} changes)", path.display()), false);
+                }
+            }
+            Err(e) => self.toast(e, true),
+        }
+    }
+}

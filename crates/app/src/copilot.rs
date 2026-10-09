@@ -735,7 +735,11 @@ fn ask_claude(app: &mut App, text: String, key: String) {
     app.copilot.working = Some(rx);
     app.copilot.steps.clear();
     app.copilot.pending_user = text.clone();
-    let project = app.project().clone();
+    // the assistant sees the sequence being edited; the edits it suggests apply to the real project by id
+    let mut project = app.project().clone();
+    if let Some(active) = app.timeline_id() {
+        project.timelines.retain(|id, _| *id == active);
+    }
     let (selection, playhead) = (app.selected_clip, app.playhead as f64 / app.fps());
     let history = app.copilot.history.clone();
     let ctx = app.ctx.clone();

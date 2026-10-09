@@ -78,11 +78,17 @@ pub fn sync_ops(from: &Project, to: &Project) -> Result<Vec<Op>, String> {
         .collect();
     for tid in &both {
         let (f, t) = (&from.timelines[tid], &to.timelines[tid]);
-        if f.name != t.name || f.rate != t.rate {
+        if f.rate != t.rate {
             return Err(format!(
-                "timeline '{}' was renamed or retimed, which has no op",
+                "timeline '{}' was retimed, which has no op",
                 t.name
             ));
+        }
+        if f.name != t.name {
+            ops.push(Op::RenameTimeline {
+                id: *tid,
+                name: t.name.clone(),
+            });
         }
     }
 

@@ -681,6 +681,7 @@ dependencies = [
  "captaine-agent",
  "captaine-audio",
  "captaine-export",
+ "captaine-interchange",
  "captaine-media",
  "captaine-model",
  "captaine-ops",
@@ -712,6 +713,7 @@ version = "0.0.1"
 dependencies = [
  "captaine-audio",
  "captaine-export",
+ "captaine-interchange",
  "captaine-media",
  "captaine-model",
  "captaine-ops",
@@ -733,6 +735,18 @@ dependencies = [
  "captaine-ops",
  "captaine-render",
  "captaine-time",
+]
+
+[[package]]
+name = "captaine-interchange"
+version = "0.0.1"
+dependencies = [
+ "captaine-media",
+ "captaine-model",
+ "captaine-ops",
+ "captaine-time",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

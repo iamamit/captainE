@@ -177,6 +177,13 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 timeline: (*tl).clone(),
             })
         }
+        Op::RenameTimeline { id, name } => {
+            let tl = p
+                .timeline_mut(*id)
+                .ok_or(OpError::NotFound("timeline", *id))?;
+            let old = std::mem::replace(&mut tl.name, name.clone());
+            Ok(Op::RenameTimeline { id: *id, name: old })
+        }
         Op::AddTrack {
             timeline,
             index,

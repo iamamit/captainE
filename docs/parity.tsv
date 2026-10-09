@@ -16,8 +16,8 @@ e13	Editing	Video transitions (dissolve, dip, wipe, slide)	5	0.5	6 kinds (dissol
 e14	Editing	Keyframe animation on any property	5	0.75	inspector diamonds, auto-key edits, mixer+render; no curve editor/timeline markers yet
 e15	Editing	Markers and chapters	2	0	
 e16	Editing	Media bins, search, metadata	3	0.5	
-e17	Editing	Several sequences open and switchable	3	0.25	model supports it
-e18	Editing	Interchange: EDL, FCPXML, OTIO, SRT import/export	3	0	
+e17	Editing	Several sequences open and switchable	3	0.75	sequence menu: new, duplicate, rename, delete, switch; Copilot sees the active one; no side-by-side tabs
+e18	Editing	Interchange: EDL, FCPXML, OTIO, SRT import/export	3	0.75	OTIO read/write (lossless round trip within captainE), CMX3600 EDL read/write incl. speed, FCPXML 1.9 write; no FCPXML import, no AAF
 e19	Editing	Autosave and versioning	3	1	commits, branches, merge
 v01	Video	Transform, opacity, blend modes	4	0.75	4 blend modes
 v02	Video	Titles and text with templates and styling	4	0.5	3 templates, one font

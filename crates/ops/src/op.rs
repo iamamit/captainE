@@ -28,6 +28,10 @@ pub enum Op {
     RemoveTimeline {
         id: Id,
     },
+    RenameTimeline {
+        id: Id,
+        name: String,
+    },
     AddTrack {
         timeline: Id,
         index: usize,
@@ -157,6 +161,7 @@ impl Op {
             Op::RemoveMedia { id } => format!("Remove media {id}"),
             Op::AddTimeline { timeline } => format!("Add timeline {}", timeline.name),
             Op::RemoveTimeline { id } => format!("Remove timeline {id}"),
+            Op::RenameTimeline { name, .. } => format!("Rename timeline to {name}"),
             Op::AddTrack { track, .. } => format!("Add track {}", track.name),
             Op::RemoveTrack { track } => format!("Remove track {track}"),
             Op::InsertItem { index, .. } => format!("Insert item at {index}"),

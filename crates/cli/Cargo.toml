@@ -17,6 +17,7 @@ captaine-ops.workspace = true
 captaine-project.workspace = true
 captaine-media.workspace = true
 captaine-export.workspace = true
+captaine-interchange.workspace = true
 captaine-render.workspace = true
 captaine-audio.workspace = true
 serde.workspace = true
