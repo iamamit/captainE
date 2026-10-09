@@ -70,8 +70,12 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.snap = !app.snap;
                 }
-                toggle_text(ui, "Link", false, false)
-                    .on_hover_text("Linked audio/video selection is planned for the next phase");
+                if toggle_text(ui, "Link", app.link_on, true)
+                    .on_hover_text("Linked clips are selected and edited together")
+                    .clicked()
+                {
+                    app.link_on = !app.link_on;
+                }
                 if toggle_text(ui, "Markers", app.markers_open, true)
                     .on_hover_text("List the markers (M adds one at the playhead)")
                     .clicked()
@@ -379,7 +383,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                     if ui.input(|i| i.modifiers.shift) {
                         app.toggle_selected(c.id);
                     } else if !app.is_selected(c.id) {
-                        app.select_only(&[c.id]);
+                        app.select_with_links(c.id);
                     }
                     let edge_px = if app.tool == Tool::Trim {
                         EDGE_PX + 4.0
@@ -488,13 +492,89 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                     .find(|c| c.id == item)
                     .map(|c| (c.track, c.start));
                 if orig != Some((target_track, target_start)) {
-                    let at = app.time(target_start);
-                    app.do_plan(|p| edit::move_item(p, item, target_track, at));
+                    let delta = orig.map_or(0, |(_, s)| target_start - s);
+                    let others: Vec<(Id, Id, i64)> = app
+                        .companions_of(item)
+                        .into_iter()
+                        .filter_map(|id| {
+                            clips
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| (id, c.track, c.start))
+                        })
+                        .collect();
+                    if others.is_empty() {
+                        let at = app.time(target_start);
+                        app.do_plan(|p| edit::move_item(p, item, target_track, at));
+                    } else {
+                        // the whole selection moves by the same amount in time; only the dragged clip changes track
+                        let mut p = app.project().clone();
+                        let mut ops = Vec::new();
+                        let mut failed = None;
+                        match edit::move_item(&p, item, target_track, app.time(target_start)) {
+                            Ok(op) => match captaine_ops::apply(&p, &op) {
+                                Ok((n, _)) => {
+                                    p = n;
+                                    ops.push(op);
+                                }
+                                Err(e) => failed = Some(e.to_string()),
+                            },
+                            Err(e) => failed = Some(e.to_string()),
+                        }
+                        for (id, tr, st) in &others {
+                            if failed.is_some() {
+                                break;
+                            }
+                            let at = app.time((st + delta).max(0));
+                            match edit::move_item(&p, *id, *tr, at).and_then(|op| {
+                                let (n, _) = captaine_ops::apply(&p, &op)?;
+                                p = n;
+                                Ok(op)
+                            }) {
+                                Ok(op) => ops.push(op),
+                                Err(e) => failed = Some(e.to_string()),
+                            }
+                        }
+                        match failed {
+                            Some(e) => app.toast(e, true),
+                            None => {
+                                app.do_op(Op::Transaction {
+                                    description: format!("Move {} clips", ops.len()),
+                                    ops,
+                                });
+                            }
+                        }
+                    }
                 }
             }
             Drag::Trim { item, edge, delta } if delta != 0 => {
-                let delta = app.time(delta);
-                app.do_op(Op::Trim { item, edge, delta });
+                let d = app.time(delta);
+                // clips linked to this one are trimmed the same way
+                let mut ops = vec![Op::Trim {
+                    item,
+                    edge,
+                    delta: d,
+                }];
+                if app.link_on {
+                    ops.extend(
+                        app.link_partners(item)
+                            .into_iter()
+                            .filter(|p| app.is_selected(*p))
+                            .map(|p| Op::Trim {
+                                item: p,
+                                edge,
+                                delta: d,
+                            }),
+                    );
+                }
+                if ops.len() == 1 {
+                    app.do_op(ops.remove(0));
+                } else {
+                    app.do_op(Op::Transaction {
+                        description: "Trim linked clips".into(),
+                        ops,
+                    });
+                }
             }
             _ => {}
         }
@@ -533,7 +613,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                         let shift = ui.input(|i| i.modifiers.shift);
                         match (hit(pos), shift) {
                             (Some(c), true) => app.toggle_selected(c.id),
-                            (Some(c), false) => app.select_only(&[c.id]),
+                            (Some(c), false) => app.select_with_links(c.id),
                             (None, _) => app.select_only(&[]),
                         }
                         if app.selected_clip.is_some() {
@@ -995,6 +1075,13 @@ fn draw_clip(
         p.line_segment([r.left_bottom(), r.right_top()], line);
         p.line_segment([r.left_top(), r.right_bottom()], line);
     }
+    if clip.link.is_some() {
+        // two interlocked rings
+        let c = rect.right_top() + vec2(-12.0, 9.0);
+        let col = Color32::from_white_alpha(170);
+        inner.circle_stroke(c + vec2(-2.5, 0.0), 3.2, Stroke::new(1.2, col));
+        inner.circle_stroke(c + vec2(2.5, 0.0), 3.2, Stroke::new(1.2, col));
+    }
     if !clip.retime.is_identity() {
         let rt = clip.retime;
         let badge = if rt.freeze {
@@ -1153,6 +1240,32 @@ fn clip_menu(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.separator();
     }
+    let has_clip = app.selected().is_some();
+    if ui
+        .add_enabled(has_clip, egui::Button::new("Separate Audio"))
+        .clicked()
+    {
+        app.separate_audio();
+        ui.close();
+    }
+    if ui
+        .add_enabled(
+            app.selection_ids().len() > 1,
+            egui::Button::new("Link Clips"),
+        )
+        .clicked()
+    {
+        app.link_selected();
+        ui.close();
+    }
+    if ui
+        .add_enabled(has_clip, egui::Button::new("Unlink Clips"))
+        .clicked()
+    {
+        app.unlink_selected();
+        ui.close();
+    }
+    ui.separator();
     if ui.button("Add Marker Here   M").clicked() {
         let t = app.ctx_tick;
         app.add_marker(Some(t), None);

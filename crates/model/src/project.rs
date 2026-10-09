@@ -193,6 +193,9 @@ pub struct Clip {
     /// Picture effects, applied in order before the transform
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
+    /// Clips with the same link id are edited together (a video clip and its separated audio)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Id>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -353,6 +356,7 @@ impl Clip {
             retime: Retime::default(),
             transition: None,
             effects: Vec::new(),
+            link: None,
             audio: AudioProps::default(),
         }
     }
@@ -1166,6 +1170,7 @@ mod tests {
             retime: Default::default(),
             transition: None,
             effects: Vec::new(),
+            link: None,
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

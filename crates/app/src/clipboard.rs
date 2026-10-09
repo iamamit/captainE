@@ -142,11 +142,13 @@ impl App {
         let mut p = self.project().clone();
         let mut ops = Vec::new();
         let mut made = Vec::new();
+        let mut links: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
         for c in self.clipboard.clone() {
             let Some(track) = tl.tracks.get(c.track_index) else {
                 continue;
             };
-            let item = fresh(&c.item);
+            let mut item = fresh(&c.item);
+            relink(&mut item, &mut links);
             let id = item.id();
             let start = RationalTime::new(at + c.offset, tl.rate);
             match edit::overwrite_item(&p, track.id, start, item).and_then(|op| {
@@ -193,6 +195,7 @@ impl App {
         };
         let mut ops = Vec::new();
         let mut made = Vec::new();
+        let mut links: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
         for track in &tl.tracks {
             let picked: Vec<(usize, &Item)> = track
                 .items
@@ -204,7 +207,8 @@ impl App {
                 continue;
             };
             for (n, (_, it)) in picked.iter().enumerate() {
-                let item = fresh(it);
+                let mut item = fresh(it);
+                relink(&mut item, &mut links);
                 made.push(item.id());
                 ops.push(Op::InsertItem {
                     track: track.id,
@@ -256,6 +260,15 @@ impl App {
         );
         if self.do_op(Op::Transaction { description, ops }) {
             self.select_only(&[]);
+        }
+    }
+}
+
+/// A pasted copy of a linked clip joins a new link group, shared by the copies of its partners.
+fn relink(item: &mut Item, links: &mut std::collections::HashMap<Id, Id>) {
+    if let Item::Clip(c) = item {
+        if let Some(old) = c.link {
+            c.link = Some(*links.entry(old).or_insert_with(Id::new));
         }
     }
 }

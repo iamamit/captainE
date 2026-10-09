@@ -448,6 +448,7 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                     if a.media != b.media
                         || a.retime != b.retime
                         || a.effects != b.effects
+                        || a.link != b.link
                         || a.name != b.name
                         || a.enabled != b.enabled
                         || a.video != b.video
@@ -762,6 +763,23 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 item: *item,
                 source_start: c.source_start,
                 duration: c.duration,
+            })
+        }
+        Op::SetLink { item, link } => {
+            let loc = item_loc(p, *item)?;
+            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = Item::Clip(Clip {
+                link: *link,
+                ..c.clone()
+            });
+            Ok(Op::SetLink {
+                item: *item,
+                link: c.link,
             })
         }
         Op::SetEffects { item, effects } => {

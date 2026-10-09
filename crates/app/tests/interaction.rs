@@ -1175,3 +1175,121 @@ fn markers_pin_jump_edit_and_list_as_chapters() {
     app_mut(&mut h).undo();
     assert!(app(&h).markers().is_empty());
 }
+
+fn track_named_clips(app: &App, name: &str) -> Vec<Clip> {
+    track_named(app, name)
+        .items
+        .iter()
+        .filter_map(|i| i.as_clip().cloned())
+        .collect()
+}
+
+#[test]
+fn separated_audio_stays_linked_through_selecting_moving_cutting_and_deleting() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let first = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    app_mut(&mut h).selected_clip = Some(first);
+    app_mut(&mut h).separate_audio();
+    settle(&mut h);
+    let video = track_named_clips(app(&h), "V1")[0].clone();
+    let audio = track_named_clips(app(&h), "A1");
+    assert_eq!(audio.len(), 1, "the sound is on A1 now");
+    assert!(video.audio.muted && video.link.is_some() && video.link == audio[0].link);
+    assert_eq!(
+        (audio[0].source_start, audio[0].duration),
+        (video.source_start, video.duration)
+    );
+    assert!(audio[0].video == VideoProps::default());
+    app(&h).project().validate().unwrap();
+    // clicking the picture selects the sound too
+    app_mut(&mut h).select_only(&[]);
+    let p = clip_pos(app(&h), 0, 0.5);
+    click(&mut h, p);
+    assert_eq!(app(&h).selection_ids().len(), 2);
+    // dragging the picture later in time carries the sound with it (here: past the end of the others)
+    let start_of = |a: &App, name: &str| {
+        let t = track_named(a, name);
+        t.items
+            .iter()
+            .zip(t.item_starts())
+            .find_map(|(i, s)| i.as_clip().map(|_| s))
+            .unwrap()
+    };
+    let (v0, a0) = (start_of(app(&h), "V1"), start_of(app(&h), "A1"));
+    assert_eq!(v0, a0);
+    let before = app(&h).session.editor.history().len();
+    let from = clip_pos(app(&h), 0, 0.5);
+    // drop it on V2, 1 second later (40 px)
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let v2 = track_named(app(&h), "V2").id;
+    drag(&mut h, from, pos2(from.x + 40.0, g.row_center(v2).unwrap()));
+    let moved_video = track_named_clips(app(&h), "V2");
+    let moved_audio = track_named(app(&h), "A1");
+    assert_eq!(moved_video.len(), 1, "the picture went to V2");
+    let a_start = moved_audio
+        .items
+        .iter()
+        .zip(moved_audio.item_starts())
+        .find_map(|(i, s)| i.as_clip().map(|_| s))
+        .unwrap();
+    assert!(
+        a_start > 0 && (a_start - 24).abs() <= 2,
+        "the sound moved the same 1 s: {a_start}"
+    );
+    assert_eq!(
+        app(&h).session.editor.history().len(),
+        before + 1,
+        "one undo step for both"
+    );
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(start_of(app(&h), "A1"), 0);
+    // turning Link off selects just what you click
+    h.get_by_label("Link").click();
+    settle(&mut h);
+    assert!(!app(&h).link_on);
+    app_mut(&mut h).select_only(&[]);
+    let p = clip_pos(app(&h), 0, 0.5);
+    click(&mut h, p);
+    assert_eq!(app(&h).selection_ids().len(), 1);
+    h.get_by_label("Link").click();
+    settle(&mut h);
+    // a cut at the playhead goes through both; lifting takes both
+    app_mut(&mut h).select_with_links(first);
+    app_mut(&mut h).playhead = 40;
+    h.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    settle(&mut h);
+    assert_eq!(
+        track_named_clips(app(&h), "A1").len(),
+        2,
+        "the sound was cut too"
+    );
+    assert_eq!(track_named_clips(app(&h), "V1").len(), 4);
+    app_mut(&mut h).undo();
+    app_mut(&mut h).select_with_links(first);
+    h.key_press(Key::Backspace);
+    settle(&mut h);
+    assert!(track_named_clips(app(&h), "A1").is_empty());
+    assert_eq!(track_named_clips(app(&h), "V1").len(), 2);
+    // explicit linking and unlinking
+    app_mut(&mut h).undo();
+    let ids: Vec<Id> = track_named_clips(app(&h), "V1")
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    app_mut(&mut h).select_only(&ids);
+    app_mut(&mut h).link_selected();
+    assert!(track_named_clips(app(&h), "V1")
+        .iter()
+        .all(|c| c.link.is_some()));
+    app_mut(&mut h).unlink_selected();
+    assert!(track_named_clips(app(&h), "V1")
+        .iter()
+        .all(|c| c.link.is_none()));
+}

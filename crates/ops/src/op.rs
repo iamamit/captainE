@@ -146,6 +146,11 @@ pub enum Op {
         item: Id,
         transition: Option<Transition>,
     },
+    /// Join a clip to a link group (or take it out with None).
+    SetLink {
+        item: Id,
+        link: Option<Id>,
+    },
     /// Replace a clip's effect list.
     SetEffects {
         item: Id,
@@ -220,6 +225,10 @@ impl Op {
             Op::SetEffects { item, effects } => {
                 format!("Set effects of {item} ({} total)", effects.len())
             }
+            Op::SetLink { item, link } => match link {
+                Some(_) => format!("Link {item}"),
+                None => format!("Unlink {item}"),
+            },
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

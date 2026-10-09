@@ -201,6 +201,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Linked clips are selected and edited together
+    pub link_on: bool,
     pub markers_open: bool,
     pub marker_edit: Option<captaine_model::Marker>,
     /// The marker the last right-click on the ruler landed on
@@ -291,6 +293,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            link_on: true,
             markers_open: false,
             marker_edit: None,
             ctx_marker: None,

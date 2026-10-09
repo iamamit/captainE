@@ -827,9 +827,11 @@ pub fn split_at_playhead(app: &mut App) {
         return;
     };
     let at = app.playhead;
-    let tracks: Vec<Id> = match app.selected_span() {
-        Some((_, track, ..)) => vec![track],
-        None => tl.tracks.iter().map(|t| t.id).collect(),
+    let selected = app.selection_tracks();
+    let tracks: Vec<Id> = if selected.is_empty() {
+        tl.tracks.iter().map(|t| t.id).collect()
+    } else {
+        selected
     };
     let mut cuts = Vec::new();
     for t in tracks {
