@@ -18,9 +18,9 @@ captaine-media.workspace = true
 captaine-speech.workspace = true
 captaine-interchange.workspace = true
 captaine-vision.workspace = true
+captaine-render.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
-captaine-render.workspace = true

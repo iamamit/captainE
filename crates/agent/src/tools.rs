@@ -323,6 +323,8 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "auto_color" => self.auto_color_tool(input),
+            "match_color" => self.match_color_tool(input),
             "stabilize" => self.stabilize_tool(input),
             "attach_title_to_subject" => self.attach_title_tool(input),
             "reframe_sequence" => self.reframe_tool(input),
@@ -1049,6 +1051,31 @@ impl ToolBox {
         self.describe(clip.id)
     }
 
+    fn auto_color_tool(&mut self, input: &Value) -> R {
+        let (clip, media, _) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let color = crate::color::auto_color(&clip, &media)?;
+        let mut video = clip.video;
+        video.color = color;
+        self.commit(Op::SetVideo {
+            item: clip.id,
+            video,
+        })?;
+        Ok(json!({"ok": true, "exposure": r2(color.exposure), "contrast": r2(color.contrast), "saturation": r2(color.saturation), "temperature_k": color.temperature.round()}).to_string())
+    }
+
+    fn match_color_tool(&mut self, input: &Value) -> R {
+        let (clip, media, _) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let (reference, ref_media, _) = self.clip_with_media(req_text(input, "reference_id")?)?;
+        let color = crate::color::match_color(&clip, &media, &reference, &ref_media)?;
+        let mut video = clip.video;
+        video.color = color;
+        self.commit(Op::SetVideo {
+            item: clip.id,
+            video,
+        })?;
+        Ok(json!({"ok": true, "exposure": r2(color.exposure), "contrast": r2(color.contrast), "saturation": r2(color.saturation), "temperature_k": color.temperature.round()}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1259,6 +1286,8 @@ pub fn tool_definitions() -> Value {
         {"name": "attach_title_to_subject", "description": "Make a title (or shape layer) follow the main moving subject of a video clip, by tracking it with Apple's vision model (Mac only). Writes position keyframes on the title.", "input_schema": obj(json!({"clip_id": item, "title_id": item}), &["clip_id", "title_id"])},
         {"name": "reframe_sequence", "description": "Make a copy of the sequence in another aspect ratio (9:16 vertical, 1:1 square or 4:5 portrait): every video clip is scaled to fill the new frame and panned to keep its subject (a face if there is one) in view. Mac only; takes a few seconds per clip.", "input_schema": obj(json!({"aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5"]}}), &["aspect"])},
         {"name": "stabilize", "description": "Steady shaky handheld footage: the part of the file the clip plays is analysed and re-rendered smoothed (a new, slightly zoomed copy of that stretch is made and the clip is pointed at it). smoothing is how many frames the camera path is averaged over (default 15; 30 for a walking shot). Takes about real time.", "input_schema": obj(json!({"item_id": item, "smoothing": {"type": "number"}}), &["item_id"])},
+        {"name": "auto_color", "description": "Measure a few frames of a clip and set its exposure, contrast, saturation and colour temperature to a balanced look (fixes under- or over-exposure, a colour cast and flat colour; a gentle move, not a style). Replaces the clip's basic colour settings.", "input_schema": obj(json!({"item_id": item}), &["item_id"])},
+        {"name": "match_color", "description": "Make a clip look like another one (same brightness, colour balance and colour) by setting its basic colour settings from a comparison of frames of both. item_id is the clip to change, reference_id the one to match.", "input_schema": obj(json!({"item_id": item, "reference_id": item}), &["item_id", "reference_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

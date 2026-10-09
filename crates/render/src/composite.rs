@@ -48,7 +48,7 @@ fn grade(rgb: [f32; 3], c: &ColorProps) -> [f32; 3] {
     let gain = 2f32.powf(c.exposure as f32);
     // temperature: +-1500 K moves red and blue a quarter stop in opposite directions
     let warm =
-        (((c.temperature - ColorProps::NEUTRAL_KELVIN) / 1500.0).clamp(-2.0, 2.0) * 0.25) as f32;
+        (((c.temperature - ColorProps::NEUTRAL_KELVIN) / 1500.0).clamp(-4.0, 4.0) * 0.25) as f32;
     let (wr, wb) = (2f32.powf(warm), 2f32.powf(-warm));
     let mut out = [rgb[0] * gain * wr, rgb[1] * gain, rgb[2] * gain * wb];
     const PIVOT: f32 = 0.18;

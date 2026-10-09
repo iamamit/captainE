@@ -1950,6 +1950,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
         ("volume", "Volume", (-60.0, 12.0), 0.0, 1, " dB", true),
         ("pan", "Pan", (-1.0, 1.0), 0.0, 2, "", true),
     ];
+    let app_selection_count = app.selection_ids().len();
     let mut anim_row = |ui: &mut Ui, r: &Row, edits: &mut Vec<_>, toggles: &mut Vec<_>| {
         let (prop, label, (lo, hi), def, dec, suf, audio) = *r;
         let enabled = if audio { has_audio } else { has_video };
@@ -2007,9 +2008,34 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     for r in &rows[5..9] {
         anim_row(ui, r, &mut edits, &mut toggles);
     }
+    let mut color_action = None;
+    if has_video {
+        ui.horizontal_wrapped(|ui| {
+            if chip(ui, "Auto color", false, true)
+                .on_hover_text(
+                    "Balance exposure, contrast, colour cast and saturation from the footage",
+                )
+                .clicked()
+            {
+                color_action = Some(0);
+            }
+            let two = app_selection_count >= 2;
+            if chip(ui, "Match to other selected", false, two)
+                .on_hover_text("Shift-click a second clip: this one is changed to look like it")
+                .clicked()
+            {
+                color_action = Some(1);
+            }
+        });
+    }
     section(ui, "Audio & Speed");
     for r in &rows[9..] {
         anim_row(ui, r, &mut edits, &mut toggles);
+    }
+    match color_action {
+        Some(0) => app.auto_color(clip.id),
+        Some(_) => app.match_color_selected(),
+        None => {}
     }
     if let (Some(q), Some(m)) = (quick, media.as_ref()) {
         // how much bigger than "fit inside the frame" the picture must be to cover the frame

@@ -3,6 +3,7 @@
 //! This is the CPU reference renderer. It defines the pixel-exact behaviour that the future GPU
 //! compositor must match. The sRGB transfer curve stands in for proper OCIO management (Phase 7).
 
+mod analyze;
 mod color;
 mod composite;
 mod decode;
@@ -14,6 +15,7 @@ mod renderer;
 mod text;
 mod title;
 
+pub use analyze::{auto_correction, match_correction, ColorStats};
 pub use composite::{draw_layer, draw_layer_fx, LayerFx};
 pub use decode::{FrameCache, VideoReader};
 pub use effects::{apply_effects, apply_effects_with};

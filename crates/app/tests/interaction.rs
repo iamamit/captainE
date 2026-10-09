@@ -1532,3 +1532,41 @@ fn stabilize_swaps_in_a_steadied_copy_as_one_undo_step() {
         _ => false,
     });
 }
+
+#[test]
+fn auto_color_and_match_color_from_the_inspector() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let ids: Vec<Id> = v1(app(&h)).items.iter().map(|i| i.id()).collect();
+    let color_of = |a: &App, id: Id| a.clip_by_id(id).unwrap().0.video.color;
+    app_mut(&mut h).selected_clip = Some(ids[0]);
+    settle(&mut h);
+    h.get_by_label("Auto color").scroll_to_me();
+    settle(&mut h);
+    let history = app(&h).session.editor.history().len();
+    h.get_by_label("Auto color").click();
+    settle(&mut h);
+    assert_ne!(
+        color_of(app(&h), ids[0]),
+        ColorProps::default(),
+        "the grade was set"
+    );
+    assert_eq!(app(&h).session.editor.history().len(), history + 1);
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert_eq!(color_of(app(&h), ids[0]), ColorProps::default());
+    // matching needs a second clip
+    app_mut(&mut h).select_only(&[ids[1], ids[2]]);
+    settle(&mut h);
+    h.get_by_label("Match to other selected").scroll_to_me();
+    h.get_by_label("Match to other selected").click();
+    settle(&mut h);
+    assert_ne!(color_of(app(&h), ids[1]), ColorProps::default());
+    assert_eq!(
+        color_of(app(&h), ids[2]),
+        ColorProps::default(),
+        "the reference is untouched"
+    );
+}

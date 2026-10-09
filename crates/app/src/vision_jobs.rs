@@ -252,3 +252,59 @@ impl App {
         });
     }
 }
+
+impl App {
+    /// Set the clip's colour for a balanced look, from measuring a few of its frames.
+    pub fn auto_color(&mut self, clip_id: Id) {
+        let Some((clip, ..)) = self.clip_by_id(clip_id) else {
+            return;
+        };
+        let Some(media) = self.project().media.get(&clip.media).cloned() else {
+            return;
+        };
+        match captaine_agent::auto_color(&clip, &media) {
+            Ok(color) => {
+                let mut video = clip.video;
+                video.color = color;
+                self.do_op(Op::SetVideo {
+                    item: clip_id,
+                    video,
+                });
+            }
+            Err(e) => self.toast(e, true),
+        }
+    }
+
+    /// Make the primary selected clip look like the other selected clip.
+    pub fn match_color_selected(&mut self) {
+        let ids = self.selection_ids();
+        let (Some(&target), Some(&reference)) = (ids.first(), ids.get(1)) else {
+            return self.toast(
+                "Select the clip to change, then shift-click the clip to match",
+                false,
+            );
+        };
+        let (Some((clip, ..)), Some((refc, ..))) =
+            (self.clip_by_id(target), self.clip_by_id(reference))
+        else {
+            return self.toast("Both must be video clips", false);
+        };
+        let (Some(m), Some(rm)) = (
+            self.project().media.get(&clip.media).cloned(),
+            self.project().media.get(&refc.media).cloned(),
+        ) else {
+            return;
+        };
+        match captaine_agent::match_color(&clip, &m, &refc, &rm) {
+            Ok(color) => {
+                let mut video = clip.video;
+                video.color = color;
+                self.do_op(Op::SetVideo {
+                    item: target,
+                    video,
+                });
+            }
+            Err(e) => self.toast(e, true),
+        }
+    }
+}

@@ -36,7 +36,7 @@ c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, h
 c02	Color	Wheels, curves, HSL	4	0.5	lift/gamma/gain wheels, 4-curve editor, 6-band HSL as slider effects; no graphical wheels/curve drag, no secondaries/qualifiers
 c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, vectorscope, histogram over the viewer; fixed size
 c04	Color	LUTs	3	0.5	.cube 3D LUT with strength per clip; no 1D LUTs, no LUT browser
-c05	Color	Auto color and shot matching	2	0	
+c05	Color	Auto color and shot matching	2	0.75	auto colour from measured frames (exposure, contrast, cast, saturation) and shot matching to a reference clip; Copilot tools; no per-shot histogram match or skin-tone protection
 a01	Audio	Gain, pan, fades, mute, waveforms	4	1	
 a02	Audio	Mixer panel with track faders and live meters	4	0.5	mixer tab: per-track faders, mute, live peak meters and master meter; no pan/solo/buses/automation
 a03	Audio	Loudness measure and normalize to a target	4	0.5	measure only

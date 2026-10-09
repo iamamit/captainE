@@ -6,6 +6,7 @@
 //! never pictures or sound.
 #![recursion_limit = "1024"]
 
+mod color;
 mod follow;
 mod http;
 mod loop_;
@@ -16,6 +17,7 @@ mod speech;
 mod stabilize;
 mod tools;
 
+pub use color::{auto_color, clip_stats, match_color};
 pub use follow::{reframe, track_attach};
 pub use http::{AnthropicTransport, Credentials, Transport};
 pub use loop_::{run, AgentConfig, AgentError, AgentRequest, AgentResult, ChatTurn, Event};
