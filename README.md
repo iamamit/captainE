@@ -7,7 +7,7 @@ A video editor built from scratch that combines:
 - **A built-in AI co-editor** (codit, like Copilot in VS Code) that edits through the same commands a person uses,
 - **Git-style branches** for edits: work on a branch, compare it with another branch side by side, merge.
 
-Status: **early code** (planning started 2026-10-01, coding 2026-10-09). The engine core exists and is tested;
+Status: **early code with a working editor window** (`cargo run --release -p captaine-app`) (planning started 2026-10-01, coding 2026-10-09). The engine core exists and is tested;
 there is no GUI yet. See [Building](#building) for what runs today.
 
 ## Documents
@@ -29,6 +29,7 @@ there is no GUI yet. See [Building](#building) for what runs today.
 | 12 | [Roadmap](docs/12-roadmap.md) | Phases, deliverables, exit criteria, effort |
 | 13 | [Risks and open questions](docs/13-risks-and-open-questions.md) | What could sink it, decisions still to make |
 | 14 | [Phase 1 status](docs/14-phase-1-status.md) | What is built, decisions made while building, known gaps |
+| 15 | [The editor window](docs/15-ui-status.md) | The egui UI: what follows the design, how to run it, known limits |
 | — | [References](docs/references.md) | Every source used, grouped by topic |
 
 ## Relationship to the other projects
@@ -56,6 +57,8 @@ cargo run -p captaine-cli -- --help
 | `render` | Timeline evaluator, frame decoder and cache, linear-light CPU compositor |
 | `audio` | Decode, mixer (gain, pan, fades), EBU R128 loudness, waveform peaks |
 | `export` | Render + mix + encode (H.264, HEVC, ProRes); byte-identical across runs |
+| `project` | Project file = settings + operation log, replayed into an `Editor` |
+| `app` | **The editor window** (egui): media pool, viewer, inspector, timeline, Copilot |
 | `cli` | `captaine` binary: `init import add split remove lift move trim roll slide slip tidy set track undo redo show log proxy thumbs waveform frame loudness render` |
 
 Phase 1 status, decisions and known gaps: [docs/14](docs/14-phase-1-status.md).

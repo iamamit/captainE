@@ -22,3 +22,9 @@ captaine-render = { path = "crates/render" }
 captaine-audio = { path = "crates/audio" }
 png = "0.17"
 ebur128 = "0.1"
+captaine-project = { path = "crates/project" }
+eframe = "0.36"
+egui = "0.36"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+rfd = "0.17"
+cpal = "0.18"

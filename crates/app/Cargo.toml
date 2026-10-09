@@ -1,0 +1,31 @@
+[package]
+name = "captaine-app"
+description = "The captainE editor window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_app"
+
+[[bin]]
+name = "captaine-app"
+path = "src/main.rs"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+captaine-ops.workspace = true
+captaine-project.workspace = true
+captaine-media.workspace = true
+captaine-render.workspace = true
+captaine-audio.workspace = true
+captaine-export.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+cpal.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true

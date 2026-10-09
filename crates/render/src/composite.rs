@@ -1,4 +1,4 @@
-use captaine_model::{BlendMode, VideoProps};
+use captaine_model::{BlendMode, ColorProps, VideoProps};
 
 use crate::color::to_linear;
 use crate::{Canvas, Frame8};
@@ -43,6 +43,35 @@ fn sample(f: &Frame8, sx: f64, sy: f64) -> [f32; 4] {
     o
 }
 
+/// Linear-light grade of one un-premultiplied color.
+fn grade(rgb: [f32; 3], c: &ColorProps) -> [f32; 3] {
+    let gain = 2f32.powf(c.exposure as f32);
+    // temperature: +-1500 K moves red and blue a quarter stop in opposite directions
+    let warm =
+        (((c.temperature - ColorProps::NEUTRAL_KELVIN) / 1500.0).clamp(-2.0, 2.0) * 0.25) as f32;
+    let (wr, wb) = (2f32.powf(warm), 2f32.powf(-warm));
+    let mut out = [rgb[0] * gain * wr, rgb[1] * gain, rgb[2] * gain * wb];
+    const PIVOT: f32 = 0.18;
+    if c.contrast != 1.0 {
+        let k = c.contrast as f32;
+        for v in &mut out {
+            *v = if *v > 0.0 {
+                PIVOT * (*v / PIVOT).powf(k)
+            } else {
+                0.0
+            };
+        }
+    }
+    if c.saturation != 100.0 {
+        let s = (c.saturation / 100.0) as f32;
+        let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+        for v in &mut out {
+            *v = (y + (*v - y) * s).max(0.0);
+        }
+    }
+    out
+}
+
 #[inline]
 fn blend(mode: BlendMode, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
     let (sa, da) = (s[3], d[3]);
@@ -85,6 +114,7 @@ pub fn draw_layer(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps) {
     let y1 = ((cy + ey + 1.0).ceil().min(ch)).max(0.0) as u32;
 
     let opacity = props.opacity as f32;
+    let graded_neutral = props.color.is_neutral();
     for y in y0..y1 {
         for x in x0..x1 {
             let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
@@ -98,7 +128,12 @@ pub fn draw_layer(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps) {
             if k <= 0.0 {
                 continue;
             }
-            let s = sample(frame, px, py);
+            let mut s = sample(frame, px, py);
+            if !graded_neutral && s[3] > 0.0 {
+                let a = s[3];
+                let g = grade([s[0] / a, s[1] / a, s[2] / a], &props.color);
+                s = [g[0] * a, g[1] * a, g[2] * a, a];
+            }
             let s = [s[0] * k, s[1] * k, s[2] * k, s[3] * k];
             let i = ((y * canvas.width + x) * 4) as usize;
             let d = [
@@ -259,6 +294,56 @@ mod tests {
         near(run(BlendMode::Add), 2.0 * g);
         near(run(BlendMode::Multiply), g * g);
         near(run(BlendMode::Screen), 2.0 * g - g * g);
+    }
+
+    #[test]
+    fn neutral_grade_changes_nothing_and_each_control_does_its_job() {
+        let px = |color: ColorProps| {
+            let mut c = Canvas::black(1, 1);
+            draw_layer(
+                &mut c,
+                &Frame8::solid(1, 1, [188, 100, 60, 255]),
+                &VideoProps { color, ..props() },
+            );
+            c.pixel(0, 0)
+        };
+        let base = px(ColorProps::default());
+        let near = |a: f32, b: f32| assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        let lin = [to_linear(188), to_linear(100), to_linear(60)];
+        for k in 0..3 {
+            near(base[k], lin[k]);
+        }
+        let bright = px(ColorProps {
+            exposure: 1.0,
+            ..Default::default()
+        });
+        for k in 0..3 {
+            near(bright[k], lin[k] * 2.0);
+        }
+        let grey = px(ColorProps {
+            saturation: 0.0,
+            ..Default::default()
+        });
+        near(grey[0], grey[1]);
+        near(grey[1], grey[2]);
+        near(grey[1], 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]);
+        let warm = px(ColorProps {
+            temperature: 8000.0,
+            ..Default::default()
+        });
+        assert!(warm[0] > base[0] && warm[2] < base[2]);
+        near(warm[1], base[1]);
+        let cool = px(ColorProps {
+            temperature: 5000.0,
+            ..Default::default()
+        });
+        assert!(cool[0] < base[0] && cool[2] > base[2]);
+        // contrast leaves mid-grey alone and pushes the rest away from it
+        let punchy = px(ColorProps {
+            contrast: 1.5,
+            ..Default::default()
+        });
+        assert!(punchy[0] > base[0] && punchy[2] < base[2]);
     }
 
     #[test]

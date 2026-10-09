@@ -3,11 +3,13 @@
 //! Everything here is offline and deterministic; the real-time playback thread (cpal) will call the same
 //! [`Mixer`] for each buffer.
 
+mod analyze;
 mod decode;
 mod loudness;
 mod mixer;
 mod waveform;
 
+pub use analyze::{find_silences, silences_in};
 pub use decode::{decode_pcm, AudioError};
 pub use loudness::{measure, Loudness};
 pub use mixer::Mixer;

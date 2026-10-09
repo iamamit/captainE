@@ -203,6 +203,7 @@ fn stacks_layers_with_opacity_and_transform() {
         },
         opacity: 0.5,
         blend: BlendMode::Normal,
+        ..VideoProps::default()
     };
     f.ed.apply(
         Author::User,

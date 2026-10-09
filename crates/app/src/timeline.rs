@@ -1,0 +1,1018 @@
+//! The timeline: toolbar, ruler, track headers, clips with waveforms, playhead and every editing gesture.
+
+use captaine_audio::Peak;
+use captaine_model::*;
+use captaine_ops::{edit, Edge, Op};
+use egui::{pos2, vec2, Align2, Color32, Context, Painter, Rect, RichText, Sense, Shape, Stroke};
+
+use crate::app::*;
+use crate::theme::{self, mono, ui_font};
+use crate::ui::{self, chip, toggle_text, MediaDrag};
+
+const HEADER_W: f32 = 56.0;
+const RULER_H: f32 = 26.0;
+const EDGE_PX: f32 = 7.0;
+
+/// Zoom so the whole timeline fits the visible width.
+pub fn fit(app: &mut App) {
+    let secs = (app.duration_ticks() as f64 / app.fps()).max(1.0);
+    let width = (app.central_rect.width() + 640.0 - HEADER_W - 40.0).max(300.0);
+    app.pps = (width as f64 / (secs * 1.05)) as f32;
+    app.scroll = 0.0;
+}
+
+pub fn panel(app: &mut App, root: &mut egui::Ui) {
+    let ctx = root.ctx().clone();
+    egui::Panel::bottom("timeline")
+        .resizable(true)
+        .default_size(300.0)
+        .min_size(180.0)
+        .frame(
+            egui::Frame::new()
+                .fill(theme::PANEL_DARK)
+                .stroke(Stroke::new(1.0, theme::BORDER)),
+        )
+        .show(root, |ui| {
+            toolbar(app, ui);
+            body(app, ui);
+        });
+    drag_ghost(app, &ctx);
+}
+
+fn toolbar(app: &mut App, ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(theme::PANEL)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (t, l, k) in [
+                    (Tool::Select, "Select", "V"),
+                    (Tool::Trim, "Trim", "T"),
+                    (Tool::Blade, "Blade", "B"),
+                    (Tool::Hand, "Hand", "H"),
+                    (Tool::Zoom, "Zoom", "Z"),
+                ] {
+                    if chip(ui, l, app.tool == t, true).on_hover_text(k).clicked() {
+                        app.tool = t;
+                    }
+                }
+                ui.add_space(8.0);
+                ui.painter().vline(
+                    ui.cursor().left(),
+                    ui.max_rect().y_range(),
+                    Stroke::new(1.0, theme::BORDER),
+                );
+                ui.add_space(8.0);
+                if toggle_text(ui, "Snap", app.snap, true)
+                    .on_hover_text("S")
+                    .clicked()
+                {
+                    app.snap = !app.snap;
+                }
+                toggle_text(ui, "Link", false, false)
+                    .on_hover_text("Linked audio/video selection is planned for the next phase");
+                toggle_text(ui, "Markers", false, false)
+                    .on_hover_text("Markers are planned for the next phase");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // zoom slider (logarithmic)
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(90.0, 20.0), Sense::click_and_drag());
+                    let (lo, hi) = (1.0f32.ln(), 600.0f32.ln());
+                    let t = ((app.pps.ln() - lo) / (hi - lo)).clamp(0.0, 1.0);
+                    let (x0, x1, y) = (rect.left() + 4.0, rect.right() - 4.0, rect.center().y);
+                    ui.painter()
+                        .line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(3.0, theme::FIELD));
+                    ui.painter().line_segment(
+                        [pos2(x0, y), pos2(x0 + (x1 - x0) * t, y)],
+                        Stroke::new(3.0, theme::MUTED),
+                    );
+                    ui.painter()
+                        .circle_filled(pos2(x0 + (x1 - x0) * t, y), 4.5, Color32::WHITE);
+                    if resp.dragged() || resp.clicked() {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            let nt = ((pos.x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+                            app.pps = (lo + (hi - lo) * nt).exp();
+                        }
+                    }
+                    ui.label(RichText::new("Zoom").size(12.0).color(theme::MUTED));
+                    ui.add_space(10.0);
+                    if toggle_text(ui, "Extract", false, true)
+                        .on_hover_text("Delete and close the gap (⇧⌫)")
+                        .clicked()
+                    {
+                        ui::extract_selection(app);
+                    }
+                    if toggle_text(ui, "Lift", false, true)
+                        .on_hover_text("Delete and leave a gap (⌫)")
+                        .clicked()
+                    {
+                        ui::lift_selection(app);
+                    }
+                    ui.add_space(8.0);
+                    let name = app.timeline().map_or(String::new(), |t| t.name.clone());
+                    ui.label(RichText::new(name).strong().size(12.0));
+                });
+            });
+        });
+}
+
+struct ClipRect {
+    id: Id,
+    track: Id,
+    rect: Rect,
+    start: i64,
+    dur: i64,
+    is_gap: bool,
+}
+
+struct Row {
+    track: Id,
+    kind: TrackKind,
+    name: String,
+    enabled: bool,
+    top: f32,
+    h: f32,
+}
+
+/// Peaks for display: `from..to` are indices into `peaks` (100 per second of source).
+pub fn draw_wave(p: &Painter, rect: Rect, peaks: &[Peak], from: f32, to: f32, color: Color32) {
+    if peaks.is_empty() || rect.width() < 1.0 {
+        return;
+    }
+    let mid = rect.center().y;
+    let half = rect.height() / 2.0;
+    let cols = rect.width().ceil() as usize;
+    let per_col = (to - from) / rect.width();
+    for c in 0..cols {
+        let a = (from + c as f32 * per_col).max(0.0) as usize;
+        let b = ((from + (c as f32 + 1.0) * per_col).ceil() as usize)
+            .max(a + 1)
+            .min(peaks.len());
+        if a >= peaks.len() {
+            break;
+        }
+        let (mut lo, mut hi) = (0.0f32, 0.0f32);
+        for pk in &peaks[a..b] {
+            lo = lo.min(pk.min);
+            hi = hi.max(pk.max);
+        }
+        let x = rect.left() + c as f32 + 0.5;
+        let (y0, y1) = (
+            mid - hi.clamp(0.0, 1.0) * half,
+            mid - lo.clamp(-1.0, 0.0) * half,
+        );
+        p.line_segment(
+            [pos2(x, y0), pos2(x, y1.max(y0 + 1.0))],
+            Stroke::new(1.0, color),
+        );
+    }
+}
+
+struct View {
+    left: f32, // x of timeline time 0 on screen when scroll = 0
+    pps: f32,
+    scroll: f32,
+    fps: f64,
+}
+
+impl View {
+    fn x(&self, tick: i64) -> f32 {
+        self.left + ((tick as f64 / self.fps) as f32 - self.scroll) * self.pps
+    }
+    fn tick(&self, x: f32) -> i64 {
+        (((x - self.left) / self.pps + self.scroll) as f64 * self.fps).round() as i64
+    }
+}
+
+fn body(app: &mut App, ui: &mut egui::Ui) {
+    let area = ui.available_rect_before_wrap();
+    ui.take_available_space(); // a resizable panel keeps its height only if its content fills it
+    let ruler = Rect::from_min_size(
+        pos2(area.left() + HEADER_W, area.top()),
+        vec2(area.width() - HEADER_W, RULER_H),
+    );
+    let tracks_top = ruler.bottom();
+    let tl = match app.timeline() {
+        Some(t) => t.clone(),
+        None => return,
+    };
+    // rows: video tracks top-down (highest first), then audio tracks
+    let mut order: Vec<&std::sync::Arc<Track>> = tl
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .collect();
+    order.reverse();
+    order.extend(tl.tracks.iter().filter(|t| t.kind == TrackKind::Audio));
+    let n = order.len().max(1) as f32;
+    let row_h = ((area.bottom() - tracks_top) / n).clamp(34.0, 56.0);
+    let rows: Vec<Row> = order
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Row {
+            track: t.id,
+            kind: t.kind,
+            name: t.name.clone(),
+            enabled: t.enabled,
+            top: tracks_top + i as f32 * row_h,
+            h: row_h,
+        })
+        .collect();
+    let body_rect = Rect::from_min_max(
+        pos2(area.left() + HEADER_W, tracks_top),
+        pos2(area.right(), area.bottom()),
+    );
+    let view = View {
+        left: ruler.left(),
+        pps: app.pps,
+        scroll: app.scroll,
+        fps: app.fps(),
+    };
+
+    app.timeline_layout = Some(TimelineLayout {
+        origin_x: ruler.left(),
+        scroll: app.scroll,
+        pps: app.pps,
+        ruler,
+        rows: rows.iter().map(|r| (r.track, r.top, r.h)).collect(),
+    });
+
+    // gather clip rectangles
+    let mut clips: Vec<ClipRect> = Vec::new();
+    for row in &rows {
+        let track = tl
+            .tracks
+            .iter()
+            .find(|t| t.id == row.track)
+            .expect("row track");
+        for (item, start) in track.items.iter().zip(track.item_starts()) {
+            let dur = item.duration().value;
+            let r = Rect::from_min_max(
+                pos2(view.x(start), row.top + 3.0),
+                pos2(view.x(start + dur), row.top + row.h - 3.0),
+            );
+            clips.push(ClipRect {
+                id: item.id(),
+                track: row.track,
+                rect: r,
+                start,
+                dur,
+                is_gap: item.as_clip().is_none(),
+            });
+        }
+    }
+
+    let resp = ui.interact(
+        Rect::from_min_max(pos2(area.left() + HEADER_W, area.top()), area.max),
+        egui::Id::new("timeline_area"),
+        Sense::click_and_drag(),
+    );
+    let pointer = resp.hover_pos();
+
+    // wheel: pinch or ⌘-scroll zooms around the pointer, plain scroll pans
+    if let Some(pos) = pointer {
+        let (zoom, scroll) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta));
+        if zoom != 1.0 {
+            let anchor = (pos.x - view.left) / app.pps + app.scroll;
+            app.pps = (app.pps * zoom).clamp(1.0, 600.0);
+            app.scroll = anchor - (pos.x - view.left) / app.pps;
+        } else if scroll != egui::Vec2::ZERO {
+            let d = if scroll.x.abs() > scroll.y.abs() {
+                scroll.x
+            } else {
+                scroll.y
+            };
+            app.scroll -= d / app.pps;
+        }
+        app.scroll = app.scroll.max(-2.0);
+    }
+    let view = View {
+        left: ruler.left(),
+        pps: app.pps,
+        scroll: app.scroll,
+        fps: app.fps(),
+    };
+    let end_tick = app.duration_ticks();
+
+    // ---- interaction ---------------------------------------------------------------------------
+    let hit = |pos: egui::Pos2| clips.iter().find(|c| !c.is_gap && c.rect.contains(pos));
+    let snap_threshold = (8.0 / view.pps as f64 * view.fps).round().max(1.0) as i64;
+    let mut snapped: Option<i64> = None;
+    let mut do_snap = |app: &App, tick: i64, exclude: Option<Id>, out: &mut Option<i64>| -> i64 {
+        if !app.snap {
+            return tick;
+        }
+        let mut best: Option<(i64, i64)> = None;
+        let mut consider = |c: i64| {
+            let d = (c - tick).abs();
+            if d <= snap_threshold && best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, c));
+            }
+        };
+        consider(0);
+        consider(app.playhead);
+        for m in [app.mark_in, app.mark_out].into_iter().flatten() {
+            consider(m);
+        }
+        for c in clips.iter().filter(|c| Some(c.id) != exclude) {
+            consider(c.start);
+            consider(c.start + c.dur);
+        }
+        *out = best.map(|(_, c)| c);
+        best.map_or(tick, |(_, c)| c)
+    };
+
+    let press = ui.input(|i| i.pointer.press_origin());
+    if resp.drag_started() {
+        if let Some(origin) = press {
+            if ruler.contains(origin) {
+                app.drag = Drag::Playhead;
+                let t = view.tick(origin.x).clamp(0, end_tick.max(0));
+                app.set_playhead(t);
+            } else if app.tool == Tool::Hand {
+                app.drag = Drag::Pan {
+                    start_scroll: app.scroll,
+                };
+            } else if matches!(app.tool, Tool::Select | Tool::Trim) {
+                if let Some(c) = hit(origin) {
+                    app.selected_clip = Some(c.id);
+                    let edge_px = if app.tool == Tool::Trim {
+                        EDGE_PX + 4.0
+                    } else {
+                        EDGE_PX
+                    };
+                    let wide = c.rect.width() > edge_px * 3.0;
+                    if wide && origin.x - c.rect.left() <= edge_px {
+                        app.drag = Drag::Trim {
+                            item: c.id,
+                            edge: Edge::In,
+                            delta: 0,
+                        };
+                    } else if wide && c.rect.right() - origin.x <= edge_px {
+                        app.drag = Drag::Trim {
+                            item: c.id,
+                            edge: Edge::Out,
+                            delta: 0,
+                        };
+                    } else {
+                        app.drag = Drag::Clip {
+                            item: c.id,
+                            grab_ticks: view.tick(origin.x) - c.start,
+                            target_track: c.track,
+                            target_start: c.start,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    if resp.dragged() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            match app.drag.clone() {
+                Drag::Playhead => {
+                    let t = do_snap(app, view.tick(pos.x), None, &mut snapped)
+                        .clamp(0, end_tick.max(0));
+                    app.set_playhead(t);
+                }
+                Drag::Pan { .. } => app.scroll -= resp.drag_delta().x / app.pps,
+                Drag::Clip {
+                    item,
+                    grab_ticks,
+                    target_track,
+                    ..
+                } => {
+                    let origin = clips.iter().find(|c| c.id == item);
+                    let (dur, from_track) = origin.map_or((1, target_track), |c| (c.dur, c.track));
+                    let mut start = view.tick(pos.x) - grab_ticks;
+                    // snap the clip's start or its end, whichever is closer to something
+                    let mut s1 = None;
+                    let mut s2 = None;
+                    let a = do_snap(app, start, Some(item), &mut s1);
+                    let b = do_snap(app, start + dur, Some(item), &mut s2) - dur;
+                    if s1.is_some() && (s2.is_none() || (a - start).abs() <= (b - start).abs()) {
+                        start = a;
+                        snapped = s1;
+                    } else if s2.is_some() {
+                        start = b;
+                        snapped = s2;
+                    }
+                    let start = start.max(0);
+                    // same kind of track only
+                    let kind = rows.iter().find(|r| r.track == from_track).map(|r| r.kind);
+                    let track = rows
+                        .iter()
+                        .find(|r| pos.y >= r.top && pos.y < r.top + r.h && Some(r.kind) == kind)
+                        .map_or(target_track, |r| r.track);
+                    app.drag = Drag::Clip {
+                        item,
+                        grab_ticks,
+                        target_track: track,
+                        target_start: start,
+                    };
+                }
+                Drag::Trim { item, edge, .. } => {
+                    if let Some(c) = clips.iter().find(|c| c.id == item) {
+                        let raw = view.tick(pos.x);
+                        let t = do_snap(app, raw, Some(item), &mut snapped);
+                        let mut delta = match edge {
+                            Edge::In => t - c.start,
+                            Edge::Out => t - (c.start + c.dur),
+                        };
+                        // keep at least one frame
+                        delta = match edge {
+                            Edge::In => delta.min(c.dur - 1),
+                            Edge::Out => delta.max(-(c.dur - 1)),
+                        };
+                        app.drag = Drag::Trim { item, edge, delta };
+                    }
+                }
+                Drag::None => {}
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        match std::mem::replace(&mut app.drag, Drag::None) {
+            Drag::Clip {
+                item,
+                target_track,
+                target_start,
+                ..
+            } => {
+                let orig = clips
+                    .iter()
+                    .find(|c| c.id == item)
+                    .map(|c| (c.track, c.start));
+                if orig != Some((target_track, target_start)) {
+                    let at = app.time(target_start);
+                    app.do_plan(|p| edit::move_item(p, item, target_track, at));
+                }
+            }
+            Drag::Trim { item, edge, delta } if delta != 0 => {
+                let delta = app.time(delta);
+                app.do_op(Op::Trim { item, edge, delta });
+            }
+            _ => {}
+        }
+    }
+    if resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if ruler.contains(pos) {
+                app.set_playhead(view.tick(pos.x).clamp(0, end_tick.max(0)));
+            } else {
+                match app.tool {
+                    Tool::Blade => {
+                        if let Some(c) = clips.iter().find(|c| c.rect.contains(pos)) {
+                            let mut s = None;
+                            let t = do_snap(app, view.tick(pos.x), None, &mut s);
+                            let (track, at) = (c.track, app.time(t));
+                            app.do_plan(|p| edit::split_at(p, track, at));
+                        }
+                    }
+                    Tool::Zoom => {
+                        let zoom_out = ui.input(|i| i.modifiers.alt);
+                        let anchor = (pos.x - view.left) / app.pps + app.scroll;
+                        app.pps = (app.pps * if zoom_out { 0.7 } else { 1.43 }).clamp(1.0, 600.0);
+                        app.scroll = anchor - (pos.x - view.left) / app.pps;
+                    }
+                    _ => {
+                        app.selected_clip = hit(pos).map(|c| c.id);
+                        if app.selected_clip.is_some() {
+                            app.inspector_tab = InspectorTab::Inspector;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if resp.secondary_clicked() {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if let Some(c) = hit(pos) {
+                app.selected_clip = Some(c.id);
+            }
+        }
+    }
+    resp.context_menu(|ui| clip_menu(app, ui));
+
+    // media dragged in from the pool
+    let dropped = media_drop(
+        app,
+        ui.ctx(),
+        &rows,
+        &view,
+        body_rect,
+        &mut do_snap,
+        &mut snapped,
+    );
+
+    // ---- painting ------------------------------------------------------------------------------
+    let p = ui.painter_at(area);
+    p.rect_filled(area, 0.0, theme::PANEL_DARK);
+    // ruler
+    p.rect_filled(ruler, 0.0, theme::PANEL);
+    draw_ruler(app, &p, ruler, &view);
+    // rows
+    for row in &rows {
+        let r = Rect::from_min_max(
+            pos2(area.left(), row.top),
+            pos2(area.right(), row.top + row.h),
+        );
+        p.hline(r.x_range(), r.bottom(), Stroke::new(1.0, theme::BORDER));
+        let head = Rect::from_min_max(r.min, pos2(r.left() + HEADER_W, r.bottom()));
+        p.rect_filled(head, 0.0, theme::PANEL);
+        p.vline(
+            head.right(),
+            head.y_range(),
+            Stroke::new(1.0, theme::BORDER),
+        );
+        let col = if row.enabled {
+            Color32::WHITE
+        } else {
+            theme::FAINT
+        };
+        p.text(
+            pos2(head.left() + 10.0, head.top() + 12.0),
+            Align2::LEFT_CENTER,
+            &row.name,
+            ui_font(12.0),
+            col,
+        );
+        if !row.enabled {
+            p.text(
+                pos2(head.left() + 10.0, head.top() + 28.0),
+                Align2::LEFT_CENTER,
+                if row.kind == TrackKind::Video {
+                    "hidden"
+                } else {
+                    "muted"
+                },
+                ui_font(9.5),
+                theme::FAINT,
+            );
+        }
+        // clicking a header toggles the track
+        let hr = ui.interact(
+            head,
+            egui::Id::new(("track_head", row.track)),
+            Sense::click(),
+        );
+        if hr.clicked() {
+            let (enabled, gain) = tl
+                .tracks
+                .iter()
+                .find(|t| t.id == row.track)
+                .map(|t| (t.enabled, t.gain_db))
+                .unwrap_or((true, 0.0));
+            app.do_op(Op::SetTrack {
+                track: row.track,
+                enabled: !enabled,
+                gain_db: gain,
+            });
+        }
+        hr.on_hover_text(if row.kind == TrackKind::Video {
+            "Click to show / hide this track"
+        } else {
+            "Click to mute / unmute this track"
+        });
+    }
+    let body_painter = ui.painter_at(body_rect);
+    // marked range
+    if let (Some(a), Some(b)) = (app.mark_in, app.mark_out) {
+        let r = Rect::from_min_max(
+            pos2(view.x(a.min(b)), area.top()),
+            pos2(view.x(a.max(b)), area.bottom()),
+        );
+        body_painter.rect_filled(
+            r,
+            0.0,
+            Color32::from_rgba_unmultiplied(0x5b, 0x4f, 0xd6, 40),
+        );
+    }
+    for (m, label) in [(app.mark_in, "I"), (app.mark_out, "O")] {
+        if let Some(m) = m {
+            let x = view.x(m);
+            body_painter.vline(x, area.y_range(), Stroke::new(1.0, theme::ACCENT_HOVER));
+            body_painter.text(
+                pos2(x + 3.0, ruler.bottom() - 6.0),
+                Align2::LEFT_CENTER,
+                label,
+                mono(9.0),
+                theme::ACCENT_HOVER,
+            );
+        }
+    }
+    let moving = match &app.drag {
+        Drag::Clip { item, .. } => Some(*item),
+        _ => None,
+    };
+    for c in clips.iter().filter(|c| !c.is_gap) {
+        let row = rows.iter().find(|r| r.track == c.track).expect("row");
+        let clip = tl
+            .tracks
+            .iter()
+            .find(|t| t.id == c.track)
+            .and_then(|t| t.items.iter().find(|i| i.id() == c.id))
+            .and_then(|i| i.as_clip())
+            .cloned();
+        let Some(clip) = clip else { continue };
+        let mut rect = c.rect;
+        let mut dim = moving == Some(c.id);
+        if let Drag::Trim { item, edge, delta } = &app.drag {
+            if *item == c.id {
+                match edge {
+                    Edge::In => rect.min.x = view.x(c.start + delta),
+                    Edge::Out => rect.max.x = view.x(c.start + c.dur + delta),
+                }
+                dim = false;
+            }
+        }
+        draw_clip(
+            app,
+            &body_painter,
+            &clip,
+            rect,
+            row,
+            app.selected_clip == Some(c.id),
+            dim,
+        );
+    }
+    // ghosts
+    if let Drag::Clip {
+        item,
+        target_track,
+        target_start,
+        ..
+    } = &app.drag
+    {
+        if let (Some(c), Some(row)) = (
+            clips.iter().find(|c| c.id == *item),
+            rows.iter().find(|r| r.track == *target_track),
+        ) {
+            let r = Rect::from_min_max(
+                pos2(view.x(*target_start), row.top + 3.0),
+                pos2(view.x(*target_start + c.dur), row.top + row.h - 3.0),
+            );
+            body_painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 50));
+            body_painter.rect_stroke(
+                r,
+                4.0,
+                Stroke::new(1.5, Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    if let Some((row_track, start, dur)) = dropped {
+        if let Some(row) = rows.iter().find(|r| r.track == row_track) {
+            let r = Rect::from_min_max(
+                pos2(view.x(start), row.top + 3.0),
+                pos2(view.x(start + dur), row.top + row.h - 3.0),
+            );
+            body_painter.rect_filled(
+                r,
+                4.0,
+                Color32::from_rgba_unmultiplied(0x5b, 0x4f, 0xd6, 110),
+            );
+            body_painter.rect_stroke(
+                r,
+                4.0,
+                Stroke::new(1.5, theme::ACCENT_HOVER),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    if app.tool == Tool::Blade {
+        if let Some(pos) = pointer.filter(|p| body_rect.contains(*p)) {
+            body_painter.vline(pos.x, body_rect.y_range(), Stroke::new(1.0, Color32::WHITE));
+        }
+    }
+    if let Some(s) = snapped {
+        body_painter.vline(
+            view.x(s),
+            area.y_range(),
+            Stroke::new(1.0, theme::ACCENT_HOVER),
+        );
+    }
+    if clips.iter().all(|c| c.is_gap) && !app.project().media.is_empty() {
+        body_painter.text(
+            body_rect.center() + vec2(0.0, 6.0),
+            Align2::CENTER_CENTER,
+            "Double-click a clip in the media pool, or drag it here",
+            ui_font(12.0),
+            theme::FAINT,
+        );
+    }
+    // playhead
+    let px = view.x(app.playhead);
+    if px >= area.left() + HEADER_W - 1.0 && px <= area.right() {
+        let p = ui.painter_at(Rect::from_min_max(
+            pos2(area.left() + HEADER_W - 8.0, area.top()),
+            area.max,
+        ));
+        p.vline(
+            px,
+            pos2(0.0, ruler.top()).y..=area.bottom(),
+            Stroke::new(1.5, theme::PLAYHEAD),
+        );
+        p.add(Shape::convex_polygon(
+            vec![
+                pos2(px - 6.0, ruler.top() + 2.0),
+                pos2(px + 6.0, ruler.top() + 2.0),
+                pos2(px + 6.0, ruler.top() + 12.0),
+                pos2(px, ruler.top() + 19.0),
+                pos2(px - 6.0, ruler.top() + 12.0),
+            ],
+            theme::PLAYHEAD,
+            Stroke::NONE,
+        ));
+        // keep the playhead in view while playing
+        if app.playing && px > area.right() - 30.0 {
+            app.scroll += (area.right() - area.left() - HEADER_W - 60.0) / app.pps;
+        }
+    }
+    // cursor
+    if let Some(pos) = pointer {
+        if matches!(app.tool, Tool::Select | Tool::Trim) && matches!(app.drag, Drag::None) {
+            if let Some(c) = hit(pos) {
+                let wide = c.rect.width() > EDGE_PX * 3.0;
+                if wide && (pos.x - c.rect.left() <= EDGE_PX || c.rect.right() - pos.x <= EDGE_PX) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                } else {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
+            }
+        }
+        match (&app.drag, app.tool) {
+            (Drag::Trim { .. }, _) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+            (Drag::Clip { .. }, _) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
+            (_, Tool::Hand) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            (_, Tool::Blade) => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
+            (_, Tool::Zoom) => ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn),
+            _ => {}
+        }
+    }
+}
+
+fn draw_clip(
+    app: &App,
+    p: &Painter,
+    clip: &Clip,
+    rect: Rect,
+    row: &Row,
+    selected: bool,
+    dim: bool,
+) {
+    if rect.right() < p.clip_rect().left() || rect.left() > p.clip_rect().right() {
+        return;
+    }
+    let base = match row.kind {
+        TrackKind::Video => theme::VIDEO_CLIP,
+        TrackKind::Audio => theme::AUDIO_CLIP,
+    };
+    let mut fill = if clip.enabled && row.enabled {
+        base
+    } else {
+        Color32::from_gray(0x44)
+    };
+    if dim {
+        fill = fill.gamma_multiply(0.45);
+    }
+    p.rect_filled(rect, 4.0, fill);
+    let inner = p.with_clip_rect(rect.intersect(p.clip_rect()));
+    if let Some(peaks) = app.waves.get(&clip.media) {
+        let fps = app.fps();
+        let src = clip.source_start.to_seconds_f64();
+        let from = (src * crate::jobs::PEAKS_PER_SEC as f64) as f32;
+        let to =
+            from + (clip.duration.value as f64 / fps * crate::jobs::PEAKS_PER_SEC as f64) as f32;
+        if !clip.audio.muted {
+            match row.kind {
+                TrackKind::Audio => {
+                    let g = clip.audio.gain_db as f32;
+                    let amp = 10f32.powf(g / 20.0);
+                    let wave_rect = Rect::from_center_size(
+                        rect.center() + vec2(0.0, 5.0),
+                        vec2(rect.width(), (rect.height() - 20.0) * amp.clamp(0.1, 1.5)),
+                    );
+                    draw_wave(
+                        &inner,
+                        wave_rect,
+                        peaks,
+                        from,
+                        to,
+                        theme::AUDIO_WAVE.gamma_multiply(if dim { 0.4 } else { 0.9 }),
+                    );
+                }
+                TrackKind::Video => {
+                    let strip = Rect::from_min_max(
+                        pos2(rect.left(), rect.bottom() - rect.height() * 0.38),
+                        pos2(rect.right(), rect.bottom() - 2.0),
+                    );
+                    draw_wave(
+                        &inner,
+                        strip,
+                        peaks,
+                        from,
+                        to,
+                        Color32::from_white_alpha(70),
+                    );
+                }
+            }
+        }
+    }
+    let label_color = if clip.enabled {
+        Color32::WHITE
+    } else {
+        theme::MUTED
+    };
+    inner.text(
+        rect.left_top() + vec2(7.0, 4.0),
+        Align2::LEFT_TOP,
+        &clip.name,
+        ui_font(11.0),
+        label_color,
+    );
+    if clip.video.opacity < 1.0 && row.kind == TrackKind::Video {
+        inner.text(
+            rect.right_top() + vec2(-6.0, 4.0),
+            Align2::RIGHT_TOP,
+            format!("{:.0}%", clip.video.opacity * 100.0),
+            mono(9.5),
+            Color32::from_white_alpha(170),
+        );
+    }
+    if selected {
+        p.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(2.0, theme::ACCENT_HOVER),
+            egui::StrokeKind::Inside,
+        );
+        p.rect_stroke(
+            rect.shrink(2.0),
+            3.0,
+            Stroke::new(1.0, Color32::from_white_alpha(130)),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        p.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(1.0, Color32::from_black_alpha(90)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn draw_ruler(app: &App, p: &Painter, ruler: Rect, view: &View) {
+    p.hline(
+        ruler.x_range(),
+        ruler.bottom(),
+        Stroke::new(1.0, theme::BORDER),
+    );
+    let steps = [
+        0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0,
+    ];
+    let step = steps
+        .iter()
+        .copied()
+        .find(|s| s * view.pps as f64 >= 92.0)
+        .unwrap_or(3600.0);
+    let first = (view.scroll as f64 / step).floor() as i64;
+    let last = ((view.scroll + ruler.width() / view.pps) as f64 / step).ceil() as i64;
+    let painter = p.with_clip_rect(ruler);
+    for i in first..=last {
+        let secs = i as f64 * step;
+        if secs < 0.0 {
+            continue;
+        }
+        let x = view.left + (secs as f32 - view.scroll) * view.pps;
+        painter.vline(
+            x,
+            ruler.bottom() - 7.0..=ruler.bottom(),
+            Stroke::new(1.0, theme::FAINT),
+        );
+        let label = if step < 1.0 {
+            app.tc((secs * view.fps).round() as i64)
+        } else {
+            let s = secs.round() as i64;
+            format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        };
+        painter.text(
+            pos2(x + 4.0, ruler.top() + 6.0),
+            Align2::LEFT_CENTER,
+            label,
+            mono(9.5),
+            theme::MUTED,
+        );
+        // minor ticks
+        for k in 1..5 {
+            let mx = x + (step as f32 * view.pps) * k as f32 / 5.0;
+            painter.vline(
+                mx,
+                ruler.bottom() - 3.0..=ruler.bottom(),
+                Stroke::new(1.0, theme::BORDER),
+            );
+        }
+    }
+}
+
+fn clip_menu(app: &mut App, ui: &mut egui::Ui) {
+    let has = app.selected().is_some();
+    if ui.add_enabled(has, egui::Button::new("Lift   ⌫")).clicked() {
+        ui::lift_selection(app);
+        ui.close();
+    }
+    if ui
+        .add_enabled(has, egui::Button::new("Extract   ⇧⌫"))
+        .clicked()
+    {
+        ui::extract_selection(app);
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("Split at Playhead   ⌘B").clicked() {
+        ui::split_at_playhead(app);
+        ui.close();
+    }
+    if ui
+        .add_enabled(has, egui::Button::new("Trim Start to Playhead"))
+        .clicked()
+    {
+        ui::trim_to_playhead(app, Edge::In);
+        ui.close();
+    }
+    if ui
+        .add_enabled(has, egui::Button::new("Trim End to Playhead"))
+        .clicked()
+    {
+        ui::trim_to_playhead(app, Edge::Out);
+        ui.close();
+    }
+    ui.separator();
+    if ui
+        .add_enabled(has, egui::Button::new("Enable / Disable"))
+        .clicked()
+    {
+        ui::toggle_enabled(app);
+        ui.close();
+    }
+    if ui.button("Clean Up Gaps").clicked() {
+        ui::tidy_gaps(app);
+        ui.close();
+    }
+}
+
+/// Handles a media item being dragged over the tracks. Returns the ghost to draw `(track, start, length)`.
+#[allow(clippy::type_complexity)]
+fn media_drop(
+    app: &mut App,
+    ctx: &Context,
+    rows: &[Row],
+    view: &View,
+    body: Rect,
+    snap: &mut dyn FnMut(&App, i64, Option<Id>, &mut Option<i64>) -> i64,
+    snapped: &mut Option<i64>,
+) -> Option<(Id, i64, i64)> {
+    let payload = egui::DragAndDrop::payload::<MediaDrag>(ctx)?;
+    let MediaDrag(media) = *payload;
+    let pos = ctx.input(|i| i.pointer.hover_pos())?;
+    if !body.contains(pos) {
+        return None;
+    }
+    let row = rows
+        .iter()
+        .find(|r| pos.y >= r.top && pos.y < r.top + r.h)?;
+    let m = app.project().media.get(&media)?.clone();
+    let tick = snap(app, view.tick(pos.x).max(0), None, snapped);
+    let len = m
+        .duration?
+        .rescale(app.rate(), captaine_time::Rounding::Floor)?
+        .value
+        .max(1);
+    if ctx.input(|i| i.pointer.any_released()) {
+        app.place_media(media, Some(row.track), Some(tick));
+        egui::DragAndDrop::clear_payload(ctx);
+        return None;
+    }
+    Some((row.track, tick, len))
+}
+
+/// A little label that follows the pointer while media is being dragged.
+fn drag_ghost(app: &App, ctx: &Context) {
+    let Some(payload) = egui::DragAndDrop::payload::<MediaDrag>(ctx) else {
+        return;
+    };
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    let Some(m) = app.project().media.get(&payload.0) else {
+        return;
+    };
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("media_ghost"));
+    let painter = ctx.layer_painter(layer);
+    let galley = painter.layout_no_wrap(m.name.clone(), ui_font(11.5), Color32::WHITE);
+    let r = Rect::from_min_size(pos + vec2(14.0, 10.0), galley.size() + vec2(14.0, 8.0));
+    painter.rect_filled(r, 4.0, theme::ACCENT);
+    painter.galley(r.min + vec2(7.0, 4.0), galley, Color32::WHITE);
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+}

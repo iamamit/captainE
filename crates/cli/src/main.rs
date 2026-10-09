@@ -1,13 +1,11 @@
-mod store;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use captaine_model::*;
 use captaine_ops::{edit, Edge, Op};
+use captaine_project::Session;
 use captaine_time::{Rational, RationalTime, Timecode};
 use clap::{Parser, Subcommand};
-use store::Session;
 
 #[derive(Parser)]
 #[command(

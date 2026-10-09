@@ -62,6 +62,25 @@ impl Session {
         fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
+    /// Apply a slider-style edit that folds into the previous one when `key` matches (see `Editor::apply_merging`).
+    pub fn apply_merging(&mut self, op: Op, key: &str) -> Result<(), String> {
+        self.editor
+            .apply_merging(Author::User, op, key)
+            .map_err(|e| e.to_string())?;
+        self.redo.clear();
+        Ok(())
+    }
+
+    pub fn end_merge(&mut self) {
+        self.editor.end_merge();
+    }
+
+    pub fn apply_as(&mut self, author: Author, op: Op) -> Result<(), String> {
+        self.editor.apply(author, op).map_err(|e| e.to_string())?;
+        self.redo.clear();
+        Ok(())
+    }
+
     pub fn apply(&mut self, op: Op) -> Result<(), String> {
         self.editor
             .apply(Author::User, op)

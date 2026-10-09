@@ -274,3 +274,97 @@ pub fn clean_gaps(project: &Project, track: Id) -> Result<Option<Op>> {
         Some(pl.finish("Clean up gaps"))
     })
 }
+
+/// Items of every track of `timeline` that lie inside `[start, end)` after cutting at both ends.
+fn range_items(pl: &mut Planner, timeline: Id, start: i64, end: i64) -> Result<Vec<Id>> {
+    let tl = pl
+        .project
+        .timeline(timeline)
+        .ok_or(OpError::NotFound("timeline", timeline))?;
+    let tracks: Vec<Id> = tl.tracks.iter().map(|t| t.id).collect();
+    let mut inside = Vec::new();
+    for track in tracks {
+        pl.ensure_cut(track, start)?;
+        pl.ensure_cut(track, end)?;
+        let (_, t) = pl.track(track)?;
+        inside.extend(
+            t.items
+                .iter()
+                .zip(t.item_starts())
+                .filter(|(it, st)| *st >= start && *st + it.duration().value <= end)
+                .map(|(it, _)| it.id()),
+        );
+    }
+    Ok(inside)
+}
+
+fn check_range(
+    project: &Project,
+    timeline: Id,
+    start: RationalTime,
+    end: RationalTime,
+) -> Result<(i64, i64)> {
+    let tl = project
+        .timeline(timeline)
+        .ok_or(OpError::NotFound("timeline", timeline))?;
+    if start.rate != tl.rate || end.rate != tl.rate || start.value < 0 || end.value <= start.value {
+        return Err(OpError::OutOfRange(
+            "range must be a non-empty span at the timeline rate",
+        ));
+    }
+    Ok((start.value, end.value))
+}
+
+/// Remove `[start, end)` from every track and close the hole, so all tracks stay in sync (ripple).
+pub fn extract_range(
+    project: &Project,
+    timeline: Id,
+    start: RationalTime,
+    end: RationalTime,
+) -> Result<Op> {
+    let (s, e) = check_range(project, timeline, start, end)?;
+    let mut pl = Planner::new(project);
+    for item in range_items(&mut pl, timeline, s, e)? {
+        pl.push(Op::RemoveItem { item })?;
+    }
+    if pl.ops.is_empty() {
+        return Err(OpError::OutOfRange("nothing in that range"));
+    }
+    Ok(pl.finish("Extract range"))
+}
+
+/// Replace the contents of `[start, end)` on every track with gaps (nothing moves).
+pub fn lift_range(
+    project: &Project,
+    timeline: Id,
+    start: RationalTime,
+    end: RationalTime,
+) -> Result<Op> {
+    let (s, e) = check_range(project, timeline, start, end)?;
+    let mut pl = Planner::new(project);
+    for item in range_items(&mut pl, timeline, s, e)? {
+        let loc = locate(&pl.project, item)?;
+        if let Some(Item::Clip(c)) = pl.project.item(loc) {
+            let with = Item::Gap(Gap {
+                id: Id::new(),
+                duration: c.duration,
+            });
+            pl.push(Op::ReplaceItem { item, with })?;
+        }
+    }
+    if pl.ops.is_empty() {
+        return Err(OpError::OutOfRange("nothing in that range"));
+    }
+    let tracks: Vec<Id> = pl
+        .project
+        .timeline(timeline)
+        .expect("checked")
+        .tracks
+        .iter()
+        .map(|t| t.id)
+        .collect();
+    for track in tracks {
+        pl.clean_gaps(track)?;
+    }
+    Ok(pl.finish("Lift range"))
+}

@@ -910,3 +910,70 @@ fn edit_helpers_report_bad_input() {
     let op = edit::append(p, id(98), Clip::new(id(91), "x", id(1), t(0), t(5)));
     assert!(apply(p, &op).is_err());
 }
+
+#[test]
+fn merged_edits_are_one_undo_step_and_replay_to_the_same_state() {
+    let mut ed = editor();
+    let before = ed.snapshot();
+    for i in 1..=5 {
+        let video = VideoProps {
+            opacity: 1.0 - i as f64 * 0.1,
+            ..VideoProps::default()
+        };
+        ed.apply_merging(
+            Author::User,
+            Op::SetVideo {
+                item: id(10),
+                video,
+            },
+            "opacity:10",
+        )
+        .unwrap();
+    }
+    assert_eq!(ed.history().len(), 3); // media, timeline, one merged edit
+    let after = ed.snapshot();
+    // replaying the saved log reproduces the final state
+    let mut replay = Editor::new(Project::new(ProjectSettings::default()));
+    for e in ed.history().to_vec() {
+        replay.apply(e.author, e.op).unwrap();
+    }
+    assert_eq!(replay.project(), &after);
+    // a different key, or end_merge, starts a new step
+    ed.end_merge();
+    ed.apply_merging(
+        Author::User,
+        Op::SetVideo {
+            item: id(10),
+            video: VideoProps::default(),
+        },
+        "opacity:10",
+    )
+    .unwrap();
+    assert_eq!(ed.history().len(), 4);
+    ed.undo();
+    assert_eq!(ed.project(), &after);
+    ed.undo();
+    assert_eq!(
+        ed.project().timeline(id(2)).unwrap().tracks[0].items[0]
+            .as_clip()
+            .unwrap()
+            .video,
+        VideoProps::default()
+    );
+    assert_eq!(ed.project(), &before); // both undo steps together restore the starting point
+                                       // failed merges leave no trace
+    let bad = VideoProps {
+        opacity: 9.0,
+        ..VideoProps::default()
+    };
+    assert!(ed
+        .apply_merging(
+            Author::User,
+            Op::SetVideo {
+                item: id(10),
+                video: bad
+            },
+            "x"
+        )
+        .is_err());
+}

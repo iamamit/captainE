@@ -8,10 +8,12 @@ mod composite;
 mod decode;
 mod eval;
 mod frame;
+mod preview;
 mod renderer;
 
 pub use composite::draw_layer;
 pub use decode::{FrameCache, VideoReader};
 pub use eval::{layers_at, Layer, TimelineIndex};
 pub use frame::{contact_sheet, save_rgb_png, Canvas, Frame8};
+pub use preview::preview_project;
 pub use renderer::{RenderError, RenderOptions, Renderer};

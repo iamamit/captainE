@@ -87,12 +87,46 @@ impl Default for Transform {
     }
 }
 
+/// Basic per-clip grade, applied in linear light before blending. The defaults change nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorProps {
+    /// Stops of exposure (+1 doubles the light).
+    pub exposure: f64,
+    /// 1.0 = unchanged; pivots around mid-grey.
+    pub contrast: f64,
+    /// Percent; 100 = unchanged, 0 = black and white.
+    pub saturation: f64,
+    /// Kelvin; 6500 = neutral, higher is warmer (more red, less blue), lower is cooler.
+    pub temperature: f64,
+}
+
+impl ColorProps {
+    pub const NEUTRAL_KELVIN: f64 = 6500.0;
+
+    pub fn is_neutral(&self) -> bool {
+        *self == ColorProps::default()
+    }
+}
+
+impl Default for ColorProps {
+    fn default() -> Self {
+        ColorProps {
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 100.0,
+            temperature: ColorProps::NEUTRAL_KELVIN,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VideoProps {
     pub transform: Transform,
     /// 0.0..=1.0
     pub opacity: f64,
     pub blend: BlendMode,
+    #[serde(default)]
+    pub color: ColorProps,
 }
 
 impl Default for VideoProps {
@@ -101,6 +135,7 @@ impl Default for VideoProps {
             transform: Transform::default(),
             opacity: 1.0,
             blend: BlendMode::Normal,
+            color: ColorProps::default(),
         }
     }
 }
@@ -180,6 +215,10 @@ impl Clip {
             self.video.opacity,
             self.audio.gain_db,
             self.audio.pan,
+            self.video.color.exposure,
+            self.video.color.contrast,
+            self.video.color.saturation,
+            self.video.color.temperature,
         ]
         .iter()
         .all(|v| v.is_finite());
@@ -191,6 +230,10 @@ impl Clip {
         }
         if !(-1.0..=1.0).contains(&self.audio.pan) {
             return Err("pan must be -1..=1");
+        }
+        let c = &self.video.color;
+        if c.contrast < 0.0 || !(0.0..=400.0).contains(&c.saturation) || c.temperature <= 0.0 {
+            return Err("color values out of range");
         }
         if t.scale.0 == 0.0 || t.scale.1 == 0.0 {
             return Err("scale cannot be zero");

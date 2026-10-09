@@ -71,6 +71,16 @@ impl Renderer {
         })
     }
 
+    /// Switch to another snapshot of the project (after an edit) while keeping decoders and cached frames:
+    /// decoded pictures do not depend on the timeline.
+    pub fn set_project(&mut self, project: &Project) -> Result<(), RenderError> {
+        let index = TimelineIndex::new(project, self.timeline)
+            .ok_or(RenderError::NoTimeline(self.timeline))?;
+        self.project = project.clone();
+        self.index = index;
+        Ok(())
+    }
+
     pub fn size(&self) -> (u32, u32) {
         (self.project.settings.width, self.project.settings.height)
     }

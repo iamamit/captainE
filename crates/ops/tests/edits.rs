@@ -96,6 +96,7 @@ fn properties_round_trip_and_validate() {
         },
         opacity: 0.5,
         blend: BlendMode::Screen,
+        ..VideoProps::default()
     };
     ed.apply(
         Author::User,
@@ -424,4 +425,35 @@ fn fuzz_gestures_keep_invariants_and_undo() {
             assert_eq!(ed.project(), expected, "seed {seed}");
         }
     }
+}
+
+#[test]
+fn range_extract_and_lift_keep_tracks_in_sync() {
+    let mut ed = editor();
+    put(&mut ed, V1, clip(10, 0, 60));
+    put(&mut ed, V1, clip(11, 100, 60));
+    put(&mut ed, V2, clip(12, 200, 90));
+    let before = ed.snapshot();
+    // cut 30..90 out of everything: it spans the end of clip 10, the start of clip 11, and the tail of 12
+    run(&mut ed, |p| edit::extract_range(p, id(2), t(30), t(90)));
+    assert_eq!(ed.project().timeline(id(2)).unwrap().duration(), t(60));
+    assert_eq!(spans(&ed, V1), [(0, 30, false), (30, 30, false)]);
+    assert_eq!(spans(&ed, V2), [(0, 30, false)]);
+    // what is left of clip 11 is its tail
+    assert_eq!(clip_at(&ed, V1, 30).source_start, t(130));
+    ed.undo();
+    assert_eq!(ed.project(), &before);
+
+    run(&mut ed, |p| edit::lift_range(p, id(2), t(30), t(90)));
+    assert_eq!(
+        spans(&ed, V1),
+        [(0, 30, false), (30, 60, true), (90, 30, false)]
+    );
+    assert_eq!(spans(&ed, V2), [(0, 30, false)]); // the trailing gap is dropped
+    ed.undo();
+    assert_eq!(ed.project(), &before);
+
+    assert!(edit::extract_range(ed.project(), id(2), t(90), t(30)).is_err());
+    assert!(edit::extract_range(ed.project(), id(2), t(500), t(600)).is_err()); // nothing there
+    assert!(edit::lift_range(ed.project(), id(99), t(0), t(10)).is_err());
 }

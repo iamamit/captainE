@@ -168,6 +168,7 @@ fn build(a: &Path, b: &Path) -> Built {
         },
         opacity: 0.5,
         blend: BlendMode::Normal,
+        ..VideoProps::default()
     };
     ed.apply(
         Author::User,

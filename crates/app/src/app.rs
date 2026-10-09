@@ -1,0 +1,718 @@
+//! Application state and the per-frame update loop.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use captaine_audio::Peak;
+use captaine_model::*;
+use captaine_ops::{edit, Op, OpError};
+use captaine_project::Session;
+use captaine_time::{Rational, RationalTime, Timecode};
+use egui::{Context, TextureHandle};
+
+use crate::audio::AudioEngine;
+use crate::jobs::{Done, Jobs};
+use crate::worker::RenderWorker;
+use crate::{copilot, theme, timeline, ui, viewer};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Select,
+    Trim,
+    Blade,
+    Hand,
+    Zoom,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Page {
+    Media,
+    Cut,
+    Edit,
+    Color,
+    Effects,
+    Deliver,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PoolTab {
+    Media,
+    Effects,
+    Titles,
+    Transitions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InspectorTab {
+    Inspector,
+    Metadata,
+    Effects,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Bin {
+    All,
+    Footage,
+    Audio,
+    Graphics,
+    Stills,
+}
+
+/// What the pointer is doing in the timeline.
+#[derive(Clone, Debug)]
+pub enum Drag {
+    None,
+    Playhead,
+    Pan {
+        start_scroll: f32,
+    },
+    /// Moving a clip; nothing is applied until release.
+    Clip {
+        item: Id,
+        grab_ticks: i64,
+        target_track: Id,
+        target_start: i64,
+    },
+    /// Dragging a clip edge; `delta` is the pending trim in ticks.
+    Trim {
+        item: Id,
+        edge: captaine_ops::Edge,
+        delta: i64,
+    },
+}
+
+/// Screen geometry of the timeline.
+#[derive(Clone, Debug)]
+pub struct TimelineLayout {
+    /// x of timeline time zero when scrolled to the start, and pixels per second
+    pub origin_x: f32,
+    pub scroll: f32,
+    pub pps: f32,
+    pub ruler: egui::Rect,
+    /// `(track, top, height)` from the top of the screen down
+    pub rows: Vec<(Id, f32, f32)>,
+}
+
+impl TimelineLayout {
+    pub fn x(&self, secs: f64) -> f32 {
+        self.origin_x + (secs as f32 - self.scroll) * self.pps
+    }
+
+    pub fn row_center(&self, track: Id) -> Option<f32> {
+        self.rows
+            .iter()
+            .find(|r| r.0 == track)
+            .map(|r| r.1 + r.2 / 2.0)
+    }
+}
+
+pub struct Toast {
+    pub text: String,
+    pub error: bool,
+    pub born: Instant,
+}
+
+/// `(frames done, frames total, result once finished)` shared with the export thread.
+pub type ExportProgress = Arc<std::sync::Mutex<(i64, i64, Option<Result<(), String>>)>>;
+
+pub struct ExportDialog {
+    pub open: bool,
+    pub codec: captaine_export::Codec,
+    pub crf: u32,
+    pub path: Option<PathBuf>,
+    pub progress: Option<ExportProgress>,
+}
+
+pub struct App {
+    pub session: Session,
+    pub path: Option<PathBuf>,
+    pub dirty_since: Option<Instant>,
+
+    // view state
+    pub page: Page,
+    pub tool: Tool,
+    pub pool_tab: PoolTab,
+    pub inspector_tab: InspectorTab,
+    pub bin: Bin,
+    pub search: String,
+    pub selected_media: Option<Id>,
+    pub selected_clip: Option<Id>,
+    pub snap: bool,
+    pub pps: f32,
+    pub scroll: f32,
+    pub drag: Drag,
+    pub mark_in: Option<i64>,
+    pub mark_out: Option<i64>,
+    pub show_copilot: bool,
+    pub show_shortcuts: bool,
+    pub new_project: Option<(String, u32, u32, String)>,
+    pub export: ExportDialog,
+    pub toasts: Vec<Toast>,
+    pub central_rect: egui::Rect,
+    /// Where the timeline was drawn last frame (screen coordinates); lets tests and tooling aim at things.
+    pub timeline_layout: Option<TimelineLayout>,
+    pub preview_override: Option<Project>,
+
+    // playback
+    pub playhead: i64,
+    pub playing: bool,
+    pub shuttle: f64,
+    play_origin: Instant,
+    play_origin_secs: f64,
+    last_requested: Option<i64>,
+    audio: Option<AudioEngine>,
+    audio_live: bool,
+
+    // engine plumbing
+    worker: RenderWorker,
+    jobs: Jobs,
+    sent_revision: Option<u64>,
+    pub program: Option<TextureHandle>,
+    pub program_tick: i64,
+    pub thumbs: HashMap<Id, TextureHandle>,
+    pub waves: HashMap<Id, Arc<Vec<Peak>>>,
+    queued_media: std::collections::HashSet<Id>,
+    pub copilot: copilot::State,
+    last_error: String,
+}
+
+impl App {
+    pub fn new(ctx: &Context, session: Session, path: Option<PathBuf>) -> App {
+        theme::apply(ctx);
+        let mut app = App {
+            session,
+            path,
+            dirty_since: None,
+            page: Page::Edit,
+            tool: Tool::Select,
+            pool_tab: PoolTab::Media,
+            inspector_tab: InspectorTab::Inspector,
+            bin: Bin::All,
+            search: String::new(),
+            selected_media: None,
+            selected_clip: None,
+            snap: true,
+            pps: 40.0,
+            scroll: 0.0,
+            drag: Drag::None,
+            mark_in: None,
+            mark_out: None,
+            show_copilot: false,
+            show_shortcuts: false,
+            new_project: None,
+            export: ExportDialog {
+                open: false,
+                codec: captaine_export::Codec::H264,
+                crf: 18,
+                path: None,
+                progress: None,
+            },
+            toasts: Vec::new(),
+            central_rect: egui::Rect::from_min_size(
+                egui::pos2(330.0, 40.0),
+                egui::vec2(850.0, 500.0),
+            ),
+            preview_override: None,
+            timeline_layout: None,
+            playhead: 0,
+            playing: false,
+            shuttle: 1.0,
+            play_origin: Instant::now(),
+            play_origin_secs: 0.0,
+            last_requested: None,
+            audio: AudioEngine::new(),
+            audio_live: false,
+            worker: RenderWorker::spawn(ctx.clone()),
+            jobs: Jobs::spawn(ctx.clone()),
+            sent_revision: None,
+            program: None,
+            program_tick: 0,
+            thumbs: HashMap::new(),
+            waves: HashMap::new(),
+            queued_media: Default::default(),
+            copilot: copilot::State::default(),
+            last_error: String::new(),
+        };
+        app.queue_media_jobs();
+        app
+    }
+
+    // ---- project access -------------------------------------------------------------------
+
+    /// Show `project` in the viewer instead of the real one (Copilot previews); `None` goes back.
+    pub fn set_preview(&mut self, project: Option<Project>) {
+        self.preview_override = project;
+        self.sent_revision = None;
+    }
+
+    pub fn do_op_as(&mut self, author: captaine_ops::Author, op: Op) -> bool {
+        match self.session.apply_as(author, op) {
+            Ok(()) => {
+                self.dirty_since.get_or_insert_with(Instant::now);
+                true
+            }
+            Err(e) => {
+                self.toast(e, true);
+                false
+            }
+        }
+    }
+
+    pub fn replace_session(&mut self, session: Session, path: Option<PathBuf>) {
+        self.pause();
+        self.session = session;
+        self.path = path;
+        self.selected_clip = None;
+        self.selected_media = None;
+        self.playhead = 0;
+        self.mark_in = None;
+        self.mark_out = None;
+        self.preview_override = None;
+        self.sent_revision = None;
+        self.dirty_since = None;
+        self.copilot.suggestion = None;
+        self.queue_media_jobs();
+        self.fit_on_start();
+    }
+
+    pub fn fit_on_start(&mut self) {
+        if self.duration_ticks() > 0 {
+            timeline::fit(self);
+        }
+    }
+
+    pub fn project(&self) -> &Project {
+        self.session.editor.project()
+    }
+
+    pub fn timeline(&self) -> Option<&Timeline> {
+        self.project().timelines.values().next().map(|t| t.as_ref())
+    }
+
+    pub fn timeline_id(&self) -> Option<Id> {
+        self.timeline().map(|t| t.id)
+    }
+
+    pub fn rate(&self) -> Rational {
+        self.timeline().map_or(Rational::FPS_30, |t| t.rate)
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.rate().as_f64()
+    }
+
+    pub fn duration_ticks(&self) -> i64 {
+        self.timeline().map_or(0, |t| t.duration().value)
+    }
+
+    pub fn tc(&self, tick: i64) -> String {
+        let r = self.rate();
+        Timecode::from_frames(tick.max(0), r, r.is_ntsc())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|_| format!("{tick}f"))
+    }
+
+    pub fn time(&self, tick: i64) -> RationalTime {
+        RationalTime::new(tick, self.rate())
+    }
+
+    /// The selected clip with its track and start tick, if it still exists.
+    pub fn selected(&self) -> Option<(Clip, Id, i64)> {
+        let id = self.selected_clip?;
+        let tl = self.timeline()?;
+        tl.tracks.iter().find_map(|t| {
+            t.items
+                .iter()
+                .zip(t.item_starts())
+                .find_map(|(it, st)| match it {
+                    Item::Clip(c) if c.id == id => Some((c.clone(), t.id, st)),
+                    _ => None,
+                })
+        })
+    }
+
+    // ---- editing ----------------------------------------------------------------------------
+
+    pub fn toast(&mut self, text: impl Into<String>, error: bool) {
+        self.toasts.push(Toast {
+            text: text.into(),
+            error,
+            born: Instant::now(),
+        });
+    }
+
+    pub fn do_op(&mut self, op: Op) -> bool {
+        match self.session.apply(op) {
+            Ok(()) => {
+                self.dirty_since.get_or_insert_with(Instant::now);
+                true
+            }
+            Err(e) => {
+                self.toast(e, true);
+                false
+            }
+        }
+    }
+
+    pub fn do_plan(&mut self, plan: impl FnOnce(&Project) -> Result<Op, OpError>) -> bool {
+        match plan(self.project()) {
+            Ok(op) => self.do_op(op),
+            Err(e) => {
+                self.toast(e.to_string(), true);
+                false
+            }
+        }
+    }
+
+    /// For sliders: folds a drag into one undo step per `key`.
+    pub fn do_merging(&mut self, op: Op, key: &str) {
+        match self.session.apply_merging(op, key) {
+            Ok(()) => {
+                self.dirty_since.get_or_insert_with(Instant::now);
+            }
+            Err(e) => self.toast(e, true),
+        }
+    }
+
+    pub fn end_merge(&mut self) {
+        self.session.end_merge();
+    }
+
+    pub fn undo(&mut self) {
+        if self.session.undo().is_some() {
+            self.dirty_since.get_or_insert_with(Instant::now);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if self.session.redo().is_some() {
+            self.dirty_since.get_or_insert_with(Instant::now);
+        }
+    }
+
+    pub fn import(&mut self, files: Vec<PathBuf>) {
+        for f in files {
+            let canon = f.canonicalize().unwrap_or(f.clone());
+            if self
+                .project()
+                .media
+                .values()
+                .any(|m| Path::new(&m.path) == canon)
+            {
+                self.toast(
+                    format!(
+                        "{} is already in the project",
+                        f.file_name()
+                            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+                    ),
+                    false,
+                );
+                continue;
+            }
+            match captaine_media::media_ref(&f, Id::new()) {
+                Ok(m) => {
+                    let name = m.name.clone();
+                    if self.do_op(Op::AddMedia { media: m }) {
+                        self.toast(format!("Imported {name}"), false);
+                    }
+                }
+                Err(e) => self.toast(format!("{}: {e}", f.display()), true),
+            }
+        }
+        self.queue_media_jobs();
+    }
+
+    fn queue_media_jobs(&mut self) {
+        let todo: Vec<MediaRef> = self
+            .project()
+            .media
+            .values()
+            .filter(|m| !self.queued_media.contains(&m.id))
+            .cloned()
+            .collect();
+        for m in todo {
+            self.queued_media.insert(m.id);
+            self.jobs.queue(m);
+        }
+    }
+
+    /// Put a media item on the timeline, at the end of `track` or at `at` (overwriting).
+    pub fn place_media(&mut self, media: Id, track: Option<Id>, at: Option<i64>) {
+        let Some(m) = self.project().media.get(&media).cloned() else {
+            return;
+        };
+        let Some(tl) = self.timeline().cloned() else {
+            return;
+        };
+        let kind = if m.has_video {
+            TrackKind::Video
+        } else {
+            TrackKind::Audio
+        };
+        let track = track.or_else(|| tl.tracks.iter().find(|t| t.kind == kind).map(|t| t.id));
+        let Some(track) = track else {
+            self.toast(
+                "There is no suitable track; add one from the Timeline menu",
+                true,
+            );
+            return;
+        };
+        let tr = tl
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .expect("track exists");
+        if tr.kind == TrackKind::Video && !m.has_video {
+            self.toast(
+                format!("{} has no picture; drop it on an audio track", m.name),
+                true,
+            );
+            return;
+        }
+        if tr.kind == TrackKind::Audio && !m.has_audio {
+            self.toast(format!("{} has no audio", m.name), true);
+            return;
+        }
+        let Some(len) = m.duration else { return };
+        let frames = len
+            .rescale(tl.rate, captaine_time::Rounding::Floor)
+            .map_or(1, |t| t.value.max(1));
+        let clip = Clip::new(
+            Id::new(),
+            m.name.clone(),
+            m.id,
+            RationalTime::new(0, len.rate),
+            RationalTime::new(frames, tl.rate),
+        );
+        let id = clip.id;
+        let ok = match at {
+            None => self.do_op(edit::append(self.project(), track, clip)),
+            Some(at) => {
+                let at = self.time(at.max(0));
+                self.do_plan(|p| edit::overwrite(p, track, at, clip))
+            }
+        };
+        if ok {
+            self.selected_clip = Some(id);
+        }
+    }
+
+    // ---- playback ---------------------------------------------------------------------------
+
+    fn secs_to_tick(&self, secs: f64) -> i64 {
+        (secs * self.fps()).round() as i64
+    }
+
+    pub fn set_playhead(&mut self, tick: i64) {
+        self.playhead = tick.clamp(0, self.duration_ticks().max(0));
+        if self.playing {
+            self.restart_clock();
+        }
+    }
+
+    fn restart_clock(&mut self) {
+        self.play_origin = Instant::now();
+        self.play_origin_secs = self.playhead as f64 / self.fps();
+        self.audio_live = false;
+        if self.shuttle == 1.0 {
+            let tl = self.timeline_id();
+            if let (Some(a), Some(tl)) = (&mut self.audio, tl) {
+                a.start(self.session.editor.project(), tl, self.play_origin_secs);
+                self.audio_live = true;
+            }
+        } else if let Some(a) = &mut self.audio {
+            a.stop();
+        }
+    }
+
+    pub fn play(&mut self, shuttle: f64) {
+        if self.playing && self.shuttle == shuttle {
+            return;
+        }
+        if !self.playing && self.playhead >= self.duration_ticks() {
+            self.playhead = 0;
+        }
+        self.playing = true;
+        self.shuttle = shuttle;
+        self.restart_clock();
+    }
+
+    pub fn pause(&mut self) {
+        if self.playing {
+            self.playing = false;
+            self.audio_live = false;
+            if let Some(a) = &mut self.audio {
+                a.stop();
+            }
+        }
+    }
+
+    pub fn toggle_play(&mut self) {
+        if self.playing {
+            self.pause();
+        } else {
+            self.play(1.0);
+        }
+    }
+
+    fn advance_playback(&mut self) {
+        if !self.playing {
+            return;
+        }
+        let secs = match (&self.audio, self.audio_live) {
+            (Some(a), true) => {
+                if !a.is_primed() {
+                    return; // sound is still warming up: hold the picture
+                }
+                a.position_secs()
+            }
+            _ => self.play_origin_secs + self.play_origin.elapsed().as_secs_f64() * self.shuttle,
+        };
+        let end = self.duration_ticks();
+        let tick = self.secs_to_tick(secs);
+        if (self.shuttle > 0.0 && tick >= end) || (self.shuttle < 0.0 && tick <= 0) {
+            self.playhead = tick.clamp(0, end);
+            self.pause();
+            return;
+        }
+        self.playhead = tick.clamp(0, end);
+    }
+
+    // ---- per-frame update --------------------------------------------------------------------
+
+    fn sync_worker(&mut self, ctx: &Context) {
+        let rev = self.session.editor.revision();
+        if self.sent_revision != Some(rev) {
+            if let Some(tl) = self.timeline_id() {
+                let shown = self
+                    .preview_override
+                    .clone()
+                    .unwrap_or_else(|| self.project().clone());
+                self.worker.set_project(Arc::new(shown), tl);
+            }
+            self.sent_revision = Some(rev);
+            self.last_requested = None;
+            self.queue_media_jobs();
+            if self.playing && self.shuttle == 1.0 {
+                self.restart_clock();
+            }
+            if let Some(id) = self.selected_clip {
+                if self.selected().is_none() {
+                    self.selected_clip = None;
+                    let _ = id;
+                }
+            }
+        }
+        if self.playhead != self.program_tick || self.last_requested != Some(self.playhead) {
+            let busy = self.worker.in_flight >= 2;
+            if self.last_requested != Some(self.playhead)
+                && !(self.playing && busy)
+                && self.timeline_id().is_some()
+            {
+                self.worker.request(self.playhead);
+                self.last_requested = Some(self.playhead);
+            }
+        }
+        while let Some(f) = self.worker.poll() {
+            if f.tick < 0 {
+                continue; // a skipped-frame placeholder
+            }
+            match f.image {
+                Ok(img) => {
+                    match &mut self.program {
+                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                        None => {
+                            self.program =
+                                Some(ctx.load_texture("program", img, egui::TextureOptions::LINEAR))
+                        }
+                    }
+                    self.program_tick = f.tick;
+                    self.last_error.clear();
+                }
+                Err(e) => {
+                    if e != self.last_error && !e.is_empty() {
+                        self.toast(e.clone(), true);
+                    }
+                    self.last_error = e;
+                }
+            }
+        }
+        for done in self.jobs.poll() {
+            match done {
+                Done::Thumb(id, img) => {
+                    self.thumbs.insert(
+                        id,
+                        ctx.load_texture(format!("thumb-{id}"), img, egui::TextureOptions::LINEAR),
+                    );
+                }
+                Done::Wave(id, peaks) => {
+                    self.waves.insert(id, Arc::new(peaks));
+                }
+            }
+        }
+    }
+
+    fn autosave(&mut self, force: bool) {
+        let Some(since) = self.dirty_since else {
+            return;
+        };
+        if !force && since.elapsed() < Duration::from_millis(600) {
+            return;
+        }
+        if let Some(p) = &self.path {
+            match self.session.save(p) {
+                Ok(()) => self.dirty_since = None,
+                Err(e) => {
+                    self.dirty_since = None;
+                    self.toast(format!("could not save: {e}"), true);
+                }
+            }
+        } else {
+            self.dirty_since = None;
+        }
+    }
+
+    pub fn project_title(&self) -> String {
+        self.path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| {
+                s.to_string_lossy()
+                    .trim_end_matches(".captaine")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "Untitled".to_string())
+    }
+
+    pub fn update(&mut self, root: &mut egui::Ui) {
+        let ctx = root.ctx().clone();
+        let ctx = &ctx;
+        self.advance_playback();
+        self.sync_worker(ctx);
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            self.import(vec![f.path().to_path_buf()]);
+        }
+        ui::handle_shortcuts(self, ctx);
+        ui::top_bar(self, root);
+        timeline::panel(self, root);
+        ui::media_pool(self, root);
+        ui::inspector(self, root);
+        viewer::central(self, root);
+        copilot::show(self, ctx);
+        ui::dialogs(self, ctx);
+        ui::toasts(self, ctx);
+        self.toasts
+            .retain(|t| t.born.elapsed() < Duration::from_secs(5));
+        self.autosave(false);
+        if self.playing || !self.toasts.is_empty() || self.dirty_since.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+    }
+
+    pub fn on_exit(&mut self) {
+        self.pause();
+        self.autosave(true);
+    }
+}
