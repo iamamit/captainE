@@ -25,6 +25,7 @@ captaine-export.workspace = true
 captaine-agent.workspace = true
 captaine-interchange.workspace = true
 captaine-speech.workspace = true
+serde_json.workspace = true
 captaine-vision.workspace = true
 eframe.workspace = true
 egui.workspace = true

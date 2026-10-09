@@ -19,6 +19,12 @@ pub enum EffectKind {
     Lut,
     Mask,
     Matte,
+    Glow,
+    Grain,
+    Aberration,
+    Duotone,
+    Invert,
+    Posterize,
     // sound
     Eq,
     Compressor,
@@ -47,7 +53,7 @@ const fn p(name: &'static str, min: f64, max: f64, default: f64, decimals: usize
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 19] = [
+    pub const ALL: [EffectKind; 25] = [
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::Vignette,
@@ -61,6 +67,12 @@ impl EffectKind {
         EffectKind::Lut,
         EffectKind::Mask,
         EffectKind::Matte,
+        EffectKind::Glow,
+        EffectKind::Grain,
+        EffectKind::Aberration,
+        EffectKind::Duotone,
+        EffectKind::Invert,
+        EffectKind::Posterize,
         EffectKind::Eq,
         EffectKind::Compressor,
         EffectKind::Limiter,
@@ -97,6 +109,12 @@ impl EffectKind {
             EffectKind::Lut => "LUT",
             EffectKind::Mask => "Mask",
             EffectKind::Matte => "Subject matte",
+            EffectKind::Glow => "Glow",
+            EffectKind::Grain => "Film grain",
+            EffectKind::Aberration => "Chromatic aberration",
+            EffectKind::Duotone => "Duotone",
+            EffectKind::Invert => "Invert",
+            EffectKind::Posterize => "Posterize",
             EffectKind::Eq => "EQ",
             EffectKind::Compressor => "Compressor",
             EffectKind::Limiter => "Limiter",
@@ -122,6 +140,12 @@ impl EffectKind {
             EffectKind::Lut => "lut",
             EffectKind::Mask => "mask",
             EffectKind::Matte => "matte",
+            EffectKind::Glow => "glow",
+            EffectKind::Grain => "grain",
+            EffectKind::Aberration => "aberration",
+            EffectKind::Duotone => "duotone",
+            EffectKind::Invert => "invert",
+            EffectKind::Posterize => "posterize",
             EffectKind::Eq => "eq",
             EffectKind::Compressor => "compressor",
             EffectKind::Limiter => "limiter",
@@ -150,6 +174,12 @@ impl EffectKind {
             EffectKind::Lut => &LUT,
             EffectKind::Mask => &MASK,
             EffectKind::Matte => &MATTE,
+            EffectKind::Glow => &GLOW,
+            EffectKind::Grain => &GRAIN,
+            EffectKind::Aberration => &ABERRATION,
+            EffectKind::Duotone => &DUOTONE,
+            EffectKind::Invert => &INVERT,
+            EffectKind::Posterize => &POSTERIZE,
             EffectKind::Eq => &EQ,
             EffectKind::Compressor => &COMPRESSOR,
             EffectKind::Limiter => &LIMITER,
@@ -176,13 +206,15 @@ static CROP: [ParamDef; 4] = [
     p("Right", 0.0, 100.0, 0.0, 1),
     p("Bottom", 0.0, 100.0, 0.0, 1),
 ];
-static CHROMA: [ParamDef; 6] = [
+static CHROMA: [ParamDef; 8] = [
     p("Key red", 0.0, 255.0, 0.0, 0),
     p("Key green", 0.0, 255.0, 255.0, 0),
     p("Key blue", 0.0, 255.0, 0.0, 0),
     p("Tolerance", 0.0, 100.0, 35.0, 0),
     p("Softness", 0.0, 100.0, 15.0, 0),
     p("Spill removal", 0.0, 100.0, 50.0, 0),
+    p("Edge shrink", -5.0, 5.0, 0.0, 1),
+    p("Matte view", 0.0, 1.0, 0.0, 0),
 ];
 // block size in pixels on a 1080-pixel-tall frame
 static PIXELATE: [ParamDef; 1] = [p("Block size", 1.0, 200.0, 24.0, 0)];
@@ -265,6 +297,32 @@ static MATTE: [ParamDef; 4] = [
     p("Choke", -10.0, 10.0, 0.0, 1),
     p("Offset", 0.0, 100_000_000.0, 0.0, 0),
 ];
+// bright areas bloom: what is brighter than the threshold is blurred and added back
+static GLOW: [ParamDef; 3] = [
+    p("Threshold", 0.0, 100.0, 70.0, 0),
+    p("Radius", 1.0, 100.0, 24.0, 0),
+    p("Intensity", 0.0, 200.0, 80.0, 0),
+];
+// noise that changes every frame; size in pixels on a 1080-pixel-tall frame
+static GRAIN: [ParamDef; 3] = [
+    p("Amount", 0.0, 100.0, 20.0, 0),
+    p("Size", 1.0, 8.0, 1.5, 1),
+    p("Colour", 0.0, 100.0, 20.0, 0),
+];
+// red and blue pulled apart toward the edges of the frame, in pixels on a 1080-pixel-tall frame
+static ABERRATION: [ParamDef; 1] = [p("Amount", 0.0, 30.0, 6.0, 1)];
+// shadows take one colour and highlights another
+static DUOTONE: [ParamDef; 7] = [
+    p("Shadow red", 0.0, 255.0, 18.0, 0),
+    p("Shadow green", 0.0, 255.0, 24.0, 0),
+    p("Shadow blue", 0.0, 255.0, 64.0, 0),
+    p("Highlight red", 0.0, 255.0, 255.0, 0),
+    p("Highlight green", 0.0, 255.0, 190.0, 0),
+    p("Highlight blue", 0.0, 255.0, 120.0, 0),
+    p("Strength", 0.0, 100.0, 100.0, 0),
+];
+static INVERT: [ParamDef; 1] = [p("Amount", 0.0, 100.0, 100.0, 0)];
+static POSTERIZE: [ParamDef; 1] = [p("Levels", 2.0, 32.0, 6.0, 0)];
 // four bands: low shelf, two peaking bands, high shelf (gain in dB, frequency in Hz)
 static EQ: [ParamDef; 10] = [
     p("Low gain", -18.0, 18.0, 0.0, 1),
@@ -308,6 +366,7 @@ static DUCKING: [ParamDef; 4] = [
 static LUT: [ParamDef; 1] = [p("Strength", 0.0, 100.0, 100.0, 0)];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawEffect")]
 pub struct Effect {
     pub kind: EffectKind,
     #[serde(default = "yes")]
@@ -320,6 +379,34 @@ pub struct Effect {
 
 fn yes() -> bool {
     true
+}
+
+/// An effect as stored. Files written before a kind gained settings have fewer numbers: the new ones take
+/// their defaults, so old projects keep opening.
+#[derive(Deserialize)]
+struct RawEffect {
+    kind: EffectKind,
+    #[serde(default = "yes")]
+    enabled: bool,
+    params: Vec<f64>,
+    #[serde(default)]
+    text: String,
+}
+
+impl From<RawEffect> for Effect {
+    fn from(r: RawEffect) -> Effect {
+        let mut params = r.params;
+        let defs = r.kind.params();
+        while params.len() < defs.len() {
+            params.push(defs[params.len()].default);
+        }
+        Effect {
+            kind: r.kind,
+            enabled: r.enabled,
+            params,
+            text: r.text,
+        }
+    }
 }
 
 impl Effect {

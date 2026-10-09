@@ -9,6 +9,7 @@ mod anim;
 pub mod anim_presets;
 mod effects;
 mod id;
+pub mod presets;
 mod project;
 
 pub use anim::{ease, is_property, value_at, Anim, Interp, Keyframe, PROPERTIES};

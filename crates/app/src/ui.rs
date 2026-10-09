@@ -1721,6 +1721,59 @@ pub fn effects_stack(
     let key = format!("fx:{}", id.to_full_string());
     let (mut changed, mut done, mut structural) = (false, false, false);
     let mut remove = None;
+    let mut mv: Option<(usize, i32)> = None;
+    let mut dup = None;
+    // presets, copy and paste of the whole stack
+    ui.horizontal_wrapped(|ui| {
+        ui.menu_button("Presets", |ui| {
+            let mut all = captaine_model::presets::builtin();
+            all.extend(crate::presets_store::user_presets());
+            for pr in all {
+                let fits = if pr.audio { has_audio } else { has_video };
+                if !fits {
+                    continue;
+                }
+                if ui.button(&pr.name).clicked() {
+                    fx.extend(pr.effects.iter().cloned());
+                    fx.truncate(16);
+                    structural = true;
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui
+                .add_enabled(
+                    !fx.is_empty(),
+                    egui::Button::new("Save these effects as a preset…"),
+                )
+                .clicked()
+            {
+                app.preset_save = Some(String::new());
+                app.preset_effects = fx.clone();
+                ui.close();
+            }
+        });
+        if chip(ui, "Copy", false, !fx.is_empty())
+            .on_hover_text("Copy this effect stack")
+            .clicked()
+        {
+            app.fx_clipboard = fx.clone();
+        }
+        if chip(ui, "Paste", false, !app.fx_clipboard.is_empty())
+            .on_hover_text("Add the copied effects to this one")
+            .clicked()
+        {
+            fx.extend(
+                app.fx_clipboard
+                    .iter()
+                    .filter(|e| e.kind.is_audio() && has_audio || !e.kind.is_audio() && has_video)
+                    .cloned(),
+            );
+            fx.truncate(16);
+            structural = true;
+        }
+    });
+    let n_fx = fx.len();
     for (i, e) in fx.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.label(
@@ -1732,6 +1785,15 @@ pub fn effects_stack(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if chip(ui, "Remove", false, true).clicked() {
                     remove = Some(i);
+                }
+                if chip(ui, "Duplicate", false, n_fx < 16).clicked() {
+                    dup = Some(i);
+                }
+                if chip(ui, "Down", false, i + 1 < n_fx).clicked() {
+                    mv = Some((i, 1));
+                }
+                if chip(ui, "Up", false, i > 0).clicked() {
+                    mv = Some((i, -1));
                 }
                 if chip(ui, if e.enabled { "On" } else { "Off" }, e.enabled, true).clicked() {
                     e.enabled = !e.enabled;
@@ -1802,6 +1864,16 @@ pub fn effects_stack(
     }
     if let Some(i) = remove {
         fx.remove(i);
+        structural = true;
+    }
+    if let Some((i, d)) = mv {
+        let j = (i as i32 + d) as usize;
+        fx.swap(i, j);
+        structural = true;
+    }
+    if let Some(i) = dup {
+        let copy = fx[i].clone();
+        fx.insert(i + 1, copy);
         structural = true;
     }
     ui.horizontal_wrapped(|ui| {
@@ -2370,6 +2442,35 @@ fn metadata(app: &mut App, ui: &mut Ui) {
 
 pub fn dialogs(app: &mut App, ctx: &Context) {
     crate::markers_ui::windows(app, ctx);
+    if let Some(mut name) = app.preset_save.take() {
+        let (mut keep, mut save) = (true, false);
+        egui::Window::new("Save preset")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Name");
+                let r = ui.text_edit_singleline(&mut name);
+                r.request_focus();
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                        keep = false;
+                    }
+                });
+            });
+        if save {
+            let effects = app.preset_effects.clone();
+            match crate::presets_store::save(&name, &effects) {
+                Ok(()) => app.toast(format!("Saved preset {name}"), false),
+                Err(e) => app.toast(e, true),
+            }
+        } else if keep {
+            app.preset_save = Some(name);
+        }
+    }
     if let Some((id, mut name)) = app.rename_sequence.take() {
         let (mut keep, mut done) = (true, false);
         egui::Window::new("Rename sequence")

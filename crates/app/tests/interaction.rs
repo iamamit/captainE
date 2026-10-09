@@ -1716,3 +1716,84 @@ fn colour_wheels_and_curves_can_be_dragged() {
         fx(app(&h))[1].params[2]
     );
 }
+
+#[test]
+fn effect_stack_presets_reorder_duplicate_copy_and_save() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let presets =
+        std::env::temp_dir().join(format!("captaine-presets-test-{}", std::process::id()));
+    std::env::set_var("CAPTAINE_PRESETS", &presets);
+    let mut h = editor();
+    let ids: Vec<Id> = v1(app(&h)).items.iter().map(|i| i.id()).collect();
+    let fx = |a: &App, id: Id| {
+        a.clip_by_id(id)
+            .unwrap()
+            .0
+            .effects
+            .iter()
+            .map(|e| e.kind)
+            .collect::<Vec<_>>()
+    };
+    app_mut(&mut h).selected_clip = Some(ids[0]);
+    settle(&mut h);
+    // a look preset from the menu
+    h.get_by_label("Presets").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Presets").click();
+    settle(&mut h);
+    h.get_by_label("Noir").click();
+    settle(&mut h);
+    assert_eq!(
+        fx(app(&h), ids[0]),
+        [
+            EffectKind::Hsl,
+            EffectKind::Curves,
+            EffectKind::Vignette,
+            EffectKind::Grain
+        ]
+    );
+    // sound presets are not offered for a look-only choice... but this clip has sound, so they are
+    h.get_by_label("Presets").click();
+    settle(&mut h);
+    h.get_by_label("Podcast");
+    h.get_by_label("Presets").click(); // closes the menu again
+    settle(&mut h);
+    // reorder: move the first effect down; duplicate the vignette
+    h.get_all_by_label("Down").next().unwrap().click();
+    settle(&mut h);
+    assert_eq!(
+        fx(app(&h), ids[0])[..2],
+        [EffectKind::Curves, EffectKind::Hsl]
+    );
+    let before = fx(app(&h), ids[0]).len();
+    h.get_all_by_label("Duplicate")
+        .nth(2)
+        .unwrap()
+        .scroll_to_me();
+    settle(&mut h);
+    h.get_all_by_label("Duplicate").nth(2).unwrap().click();
+    settle(&mut h);
+    assert_eq!(fx(app(&h), ids[0]).len(), before + 1);
+    // copy the stack and paste it on another clip
+    h.get_by_label("Copy").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Copy").click();
+    settle(&mut h);
+    assert_eq!(app(&h).fx_clipboard.len(), before + 1);
+    app_mut(&mut h).selected_clip = Some(ids[1]);
+    settle(&mut h);
+    h.get_by_label("Paste").scroll_to_me();
+    h.get_by_label("Paste").click();
+    settle(&mut h);
+    assert_eq!(fx(app(&h), ids[1]), fx(app(&h), ids[0]));
+    // save as a preset and find it again
+    app_mut(&mut h).preset_effects = app(&h).clip_by_id(ids[0]).unwrap().0.effects;
+    captaine_app::presets_store::save("My look", &app(&h).preset_effects.clone()).unwrap();
+    let mine = captaine_app::presets_store::user_presets();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].name, "My look");
+    assert!(captaine_app::presets_store::save(" ", &[]).is_err());
+    let _ = std::fs::remove_dir_all(presets);
+}

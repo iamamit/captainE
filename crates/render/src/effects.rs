@@ -16,6 +16,16 @@ pub fn apply_effects_with(
     effects: &[Effect],
     mattes: &[Option<std::sync::Arc<Frame8>>],
 ) -> Option<Frame8> {
+    apply_effects_at(frame, effects, mattes, 0)
+}
+
+/// Like [`apply_effects_with`]; `phase` (the frame number) makes film grain change from frame to frame.
+pub fn apply_effects_at(
+    frame: &Frame8,
+    effects: &[Effect],
+    mattes: &[Option<std::sync::Arc<Frame8>>],
+    phase: u64,
+) -> Option<Frame8> {
     let mut active = effects
         .iter()
         .enumerate()
@@ -32,13 +42,38 @@ pub fn apply_effects_with(
             EffectKind::Vignette => vignette(&mut out, p[0] / 100.0, p[1] / 100.0),
             EffectKind::Mirror => mirror(&mut out, p[0] >= 0.5),
             EffectKind::Crop => crop(&mut out, [p[0], p[1], p[2], p[3]].map(|v| v / 100.0)),
-            EffectKind::ChromaKey => chroma_key(
+            EffectKind::ChromaKey => {
+                chroma_key(
+                    &mut out,
+                    [p[0], p[1], p[2]],
+                    p[3] / 100.0,
+                    p[4] / 100.0,
+                    p[5] / 100.0,
+                );
+                if p[6] != 0.0 {
+                    shrink_alpha(&mut out, p[6] * k);
+                }
+                if p[7] >= 0.5 {
+                    show_alpha(&mut out);
+                }
+            }
+            EffectKind::Glow => glow(&mut out, p[0] / 100.0, p[1] * k, p[2] / 100.0),
+            EffectKind::Grain => grain(
+                &mut out,
+                p[0] / 100.0,
+                (p[1] * k).max(1.0),
+                p[2] / 100.0,
+                phase,
+            ),
+            EffectKind::Aberration => aberration(&mut out, p[0] * k),
+            EffectKind::Duotone => duotone(
                 &mut out,
                 [p[0], p[1], p[2]],
-                p[3] / 100.0,
-                p[4] / 100.0,
-                p[5] / 100.0,
+                [p[3], p[4], p[5]],
+                p[6] / 100.0,
             ),
+            EffectKind::Invert => invert(&mut out, p[0] / 100.0),
+            EffectKind::Posterize => posterize(&mut out, p[0].round() as u32),
             EffectKind::Pixelate => pixelate(&mut out, (p[0] * k).round().max(1.0) as usize),
             EffectKind::ColorWheels => wheels(&mut out, p),
             EffectKind::Curves => curves(&mut out, p),
@@ -280,6 +315,164 @@ fn pixelate(f: &mut Frame8, block: usize) {
                     f.rgba[i..i + 4].copy_from_slice(&avg);
                 }
             }
+        }
+    }
+}
+
+/// Grow (`px` > 0: the edge moves inward) or shrink the opaque area by `px` pixels.
+fn shrink_alpha(f: &mut Frame8, px: f64) {
+    let r = px.abs().round() as usize;
+    if r == 0 {
+        return;
+    }
+    let (w, h) = (f.width as usize, f.height as usize);
+    let a: Vec<f32> = f
+        .rgba
+        .chunks_exact(4)
+        .map(|p| p[3] as f32 / 255.0)
+        .collect();
+    let m = morph(&a, w, h, r, px > 0.0);
+    for (i, v) in m.iter().enumerate() {
+        f.rgba[i * 4 + 3] = (v * 255.0).round() as u8;
+    }
+}
+
+/// Show the alpha channel as a grey picture (white = kept): for checking a key.
+fn show_alpha(f: &mut Frame8) {
+    for p in f.rgba.chunks_exact_mut(4) {
+        let a = p[3];
+        p[0] = a;
+        p[1] = a;
+        p[2] = a;
+        p[3] = 255;
+    }
+}
+
+fn luma8(p: &[u8]) -> f32 {
+    (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
+}
+
+/// Bloom: the bright parts, blurred, added back on top.
+fn glow(f: &mut Frame8, threshold: f64, radius_px: f64, intensity: f64) {
+    let (w, h) = (f.width as usize, f.height as usize);
+    let t = threshold as f32;
+    let mut bright = vec![0.0f32; w * h * 4];
+    for (i, p) in f.rgba.chunks_exact(4).enumerate() {
+        let l = luma8(p);
+        // how far above the threshold, softly, so the edge of the bloom is not a hard line
+        let k = ((l - t) / (1.0 - t).max(0.05)).clamp(0.0, 1.0);
+        let a = p[3] as f32 / 255.0;
+        for c in 0..3 {
+            bright[i * 4 + c] = p[c] as f32 * k * a;
+        }
+        bright[i * 4 + 3] = 255.0 * k * a;
+    }
+    let soft = blur_premul(bright, w, h, (radius_px / 2.0).max(0.5));
+    let gain = intensity as f32;
+    for (i, p) in f.rgba.chunks_exact_mut(4).enumerate() {
+        for c in 0..3 {
+            // screen-style add so a bright area never clips harshly
+            let (a, b) = (
+                p[c] as f32 / 255.0,
+                (soft[i * 4 + c] / 255.0 * gain).min(1.0),
+            );
+            p[c] = ((a + b - a * b) * 255.0).round() as u8;
+        }
+    }
+}
+
+fn hash(mut x: u64) -> u64 {
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^ (x >> 33)
+}
+
+/// Film grain: noise in blocks of `size` pixels that is different every frame (`phase`).
+fn grain(f: &mut Frame8, amount: f64, size: f64, colour: f64, phase: u64) {
+    let (w, h) = (f.width as usize, f.height as usize);
+    let cell = size.max(1.0);
+    for y in 0..h {
+        for x in 0..w {
+            let (cx, cy) = ((x as f64 / cell) as u64, (y as f64 / cell) as u64);
+            let n = hash(
+                cx.wrapping_mul(73856093)
+                    ^ cy.wrapping_mul(19349663)
+                    ^ phase.wrapping_mul(83492791),
+            );
+            let base = ((n & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
+            let i = (y * w + x) * 4;
+            // a little of it per channel when colour grain is asked for
+            let lum = f.rgba[i..i + 3].iter().map(|v| *v as f64).sum::<f64>() / 3.0 / 255.0;
+            // grain is strongest in the mid-tones
+            let weight = 1.0 - (lum * 2.0 - 1.0).abs() * 0.6;
+            for c in 0..3 {
+                let tint =
+                    ((hash(n ^ (c as u64 + 1) * 0x9e37) & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
+                let v = base * (1.0 - colour) + tint * colour;
+                let d = v * amount * 0.35 * weight * 255.0;
+                f.rgba[i + c] = (f.rgba[i + c] as f64 + d).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// Red pulled toward the edges, blue pushed in: the colour fringes of a cheap lens.
+fn aberration(f: &mut Frame8, amount_px: f64) {
+    if amount_px < 0.1 {
+        return;
+    }
+    let (w, h) = (f.width as usize, f.height as usize);
+    let src = f.rgba.clone();
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    let maxr = cx.hypot(cy);
+    let sample = |x: f64, y: f64, c: usize| -> u8 {
+        let (x, y) = (x.clamp(0.0, w as f64 - 1.0), y.clamp(0.0, h as f64 - 1.0));
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+        let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+        let at = |xx: usize, yy: usize| src[(yy * w + xx) * 4 + c] as f64;
+        let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+        let bot = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+        (top * (1.0 - fy) + bot * fy).round() as u8
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+            let k = amount_px * (dx.hypot(dy) / maxr) / dx.hypot(dy).max(1.0);
+            let i = (y * w + x) * 4;
+            f.rgba[i] = sample(x as f64 - dx * k, y as f64 - dy * k, 0);
+            f.rgba[i + 2] = sample(x as f64 + dx * k, y as f64 + dy * k, 2);
+        }
+    }
+}
+
+fn duotone(f: &mut Frame8, dark: [f64; 3], light: [f64; 3], strength: f64) {
+    for p in f.rgba.chunks_exact_mut(4) {
+        let l = luma8(p) as f64;
+        for c in 0..3 {
+            let mapped = dark[c] + (light[c] - dark[c]) * l;
+            p[c] = (p[c] as f64 * (1.0 - strength) + mapped * strength)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+fn invert(f: &mut Frame8, amount: f64) {
+    for p in f.rgba.chunks_exact_mut(4) {
+        for v in p.iter_mut().take(3) {
+            *v = (*v as f64 * (1.0 - amount) + (255 - *v) as f64 * amount).round() as u8;
+        }
+    }
+}
+
+fn posterize(f: &mut Frame8, levels: u32) {
+    let n = levels.max(2) as f64 - 1.0;
+    for p in f.rgba.chunks_exact_mut(4) {
+        for v in p.iter_mut().take(3) {
+            *v = ((*v as f64 / 255.0 * n).round() / n * 255.0).round() as u8;
         }
     }
 }
@@ -809,7 +1002,10 @@ mod tests {
         f.rgba[16..20].copy_from_slice(&[200, 40, 40, 255]); // one red pixel on a green screen
         let out = apply_effects(
             &f,
-            &fx(EffectKind::ChromaKey, &[0.0, 255.0, 0.0, 35.0, 15.0, 50.0]),
+            &fx(
+                EffectKind::ChromaKey,
+                &[0.0, 255.0, 0.0, 35.0, 15.0, 50.0, 0.0, 0.0],
+            ),
         )
         .unwrap();
         assert_eq!(px(&out, 0, 0)[3], 0, "green is keyed out");
@@ -819,12 +1015,18 @@ mod tests {
         let g2 = Frame8::solid(2, 2, [30, 220, 40, 255]);
         let wide = apply_effects(
             &g2,
-            &fx(EffectKind::ChromaKey, &[0.0, 255.0, 0.0, 35.0, 15.0, 0.0]),
+            &fx(
+                EffectKind::ChromaKey,
+                &[0.0, 255.0, 0.0, 35.0, 15.0, 0.0, 0.0, 0.0],
+            ),
         )
         .unwrap();
         let none = apply_effects(
             &g2,
-            &fx(EffectKind::ChromaKey, &[0.0, 255.0, 0.0, 0.0, 0.0, 0.0]),
+            &fx(
+                EffectKind::ChromaKey,
+                &[0.0, 255.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
         )
         .unwrap();
         assert_eq!(px(&wide, 0, 0)[3], 0);
@@ -836,7 +1038,10 @@ mod tests {
         let f = Frame8::solid(2, 2, [180, 230, 120, 255]); // a green-tinted skin edge
         let on = apply_effects(
             &f,
-            &fx(EffectKind::ChromaKey, &[0.0, 255.0, 0.0, 5.0, 60.0, 100.0]),
+            &fx(
+                EffectKind::ChromaKey,
+                &[0.0, 255.0, 0.0, 5.0, 60.0, 100.0, 0.0, 0.0],
+            ),
         )
         .unwrap();
         let p = px(&on, 0, 0);
@@ -1042,6 +1247,183 @@ mod tests {
         let soft = apply_effects(&f, &[e]).unwrap();
         let edge = px(&soft, 10, 50)[3];
         assert!(edge > 20 && edge < 235, "{edge}");
+    }
+
+    fn alpha(f: &Frame8, x: u32, y: u32) -> u8 {
+        f.rgba[((y * f.width + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn glow_spreads_light_from_bright_areas_only() {
+        // a bright block in a dark frame, tall enough that pixel sizes mean something
+        let mut f = Frame8::solid(120, 1080, [10, 10, 10, 255]);
+        for y in 520..560 {
+            for x in 50..70 {
+                let i = (y * 120 + x) * 4;
+                f.rgba[i..i + 3].fill(250);
+            }
+        }
+        let out = apply_effects(&f, &fx(EffectKind::Glow, &[60.0, 30.0, 150.0])).unwrap();
+        assert!(
+            px(&out, 90, 540)[0] > 25,
+            "light has spread to the side: {:?}",
+            px(&out, 90, 540)
+        );
+        assert!(px(&out, 90, 540)[0] < 250);
+        assert!(px(&out, 5, 100)[0] <= 12, "far away stays dark");
+        let dark = Frame8::solid(8, 1080, [20, 20, 20, 255]);
+        let same = apply_effects(&dark, &fx(EffectKind::Glow, &[60.0, 30.0, 150.0])).unwrap();
+        assert_eq!(
+            px(&same, 4, 500),
+            [20, 20, 20, 255],
+            "nothing bright, nothing glows"
+        );
+    }
+
+    #[test]
+    fn grain_changes_every_frame_but_repeats_for_the_same_frame() {
+        let f = Frame8::solid(64, 64, [128, 128, 128, 255]);
+        let e = fx(EffectKind::Grain, &[50.0, 1.5, 20.0]);
+        let (a, b) = (
+            apply_effects_at(&f, &e, &[], 1).unwrap(),
+            apply_effects_at(&f, &e, &[], 2).unwrap(),
+        );
+        assert_ne!(a, b, "a new frame, new grain");
+        assert_eq!(
+            a,
+            apply_effects_at(&f, &e, &[], 1).unwrap(),
+            "the same frame twice is identical"
+        );
+        let spread = |x: &Frame8| {
+            x.rgba
+                .chunks(4)
+                .map(|p| (p[0] as i32 - 128).abs())
+                .max()
+                .unwrap()
+        };
+        assert!(spread(&a) > 8 && spread(&a) < 90, "{}", spread(&a));
+        let none = apply_effects(&f, &fx(EffectKind::Grain, &[0.0, 1.5, 20.0])).unwrap();
+        assert_eq!(none, f);
+    }
+
+    #[test]
+    fn aberration_fringes_the_edges_and_leaves_the_middle() {
+        let mut f = Frame8::solid(200, 1080, [0, 0, 0, 255]);
+        // a vertical white bar near the right edge
+        for y in 0..1080 {
+            for x in 170..176 {
+                f.rgba[(y * 200 + x) * 4..(y * 200 + x) * 4 + 3].fill(255);
+            }
+        }
+        let out = apply_effects(&f, &fx(EffectKind::Aberration, &[30.0])).unwrap();
+        let edge = |x| px(&out, x, 540);
+        assert!(
+            edge(167)[2] > 100 && edge(167)[0] < 100,
+            "blue leans inward at the right edge: {:?}",
+            edge(167)
+        );
+        assert!(
+            edge(178)[0] > 100 && edge(178)[2] < 100,
+            "red leans outward: {:?}",
+            edge(178)
+        );
+        let mid = Frame8::solid(200, 1080, [90, 90, 90, 255]);
+        assert_eq!(
+            apply_effects(&mid, &fx(EffectKind::Aberration, &[20.0])).unwrap(),
+            mid,
+            "a flat picture is untouched"
+        );
+    }
+
+    #[test]
+    fn duotone_invert_and_posterize() {
+        let mut f = Frame8::solid(2, 1, [0, 0, 0, 255]);
+        f.rgba[4..7].fill(255);
+        let d = apply_effects(
+            &f,
+            &fx(
+                EffectKind::Duotone,
+                &[0.0, 0.0, 100.0, 255.0, 200.0, 0.0, 100.0],
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            (px(&d, 0, 0), px(&d, 1, 0)),
+            ([0, 0, 100, 255], [255, 200, 0, 255])
+        );
+        let i = apply_effects(&f, &fx(EffectKind::Invert, &[100.0])).unwrap();
+        assert_eq!((px(&i, 0, 0)[0], px(&i, 1, 0)[0]), (255, 0));
+        let half = apply_effects(&f, &fx(EffectKind::Invert, &[50.0])).unwrap();
+        assert!(px(&half, 0, 0)[0].abs_diff(128) <= 1);
+        let ramp = {
+            let mut r = Frame8::solid(256, 1, [0, 0, 0, 255]);
+            for x in 0..256 {
+                r.rgba[x * 4..x * 4 + 3].fill(x as u8);
+            }
+            r
+        };
+        let p = apply_effects(&ramp, &fx(EffectKind::Posterize, &[4.0])).unwrap();
+        let mut levels: Vec<u8> = p.rgba.chunks(4).map(|v| v[0]).collect();
+        levels.dedup();
+        assert_eq!(levels, [0, 85, 170, 255]);
+    }
+
+    #[test]
+    fn chroma_key_shrinks_its_edge_and_can_show_the_matte() {
+        // a green screen with a red subject block
+        let mut f = Frame8::solid(60, 1080, [0, 255, 0, 255]);
+        for y in 0..1080 {
+            for x in 20..40 {
+                f.rgba[(y * 60 + x) * 4..(y * 60 + x) * 4 + 3].copy_from_slice(&[200, 40, 40]);
+            }
+        }
+        let key = |shrink: f64, view: f64| {
+            apply_effects(
+                &f,
+                &fx(
+                    EffectKind::ChromaKey,
+                    &[0.0, 255.0, 0.0, 35.0, 0.0, 0.0, shrink, view],
+                ),
+            )
+            .unwrap()
+        };
+        let plain = key(0.0, 0.0);
+        assert_eq!(
+            (
+                alpha(&plain, 30, 540),
+                alpha(&plain, 5, 540),
+                alpha(&plain, 21, 540)
+            ),
+            (255, 0, 255)
+        );
+        let choked = key(4.0, 0.0);
+        assert_eq!(
+            alpha(&choked, 21, 540),
+            0,
+            "the edge pixels went with the shrink"
+        );
+        assert_eq!(alpha(&choked, 30, 540), 255);
+        let grown = key(-4.0, 0.0);
+        assert!(
+            alpha(&grown, 17, 540) > 0,
+            "a negative shrink fattens the subject"
+        );
+        // matte view: opaque grey, white where the subject is
+        let view = key(0.0, 1.0);
+        assert_eq!(
+            (px(&view, 30, 540), px(&view, 5, 540)),
+            ([255, 255, 255, 255], [0, 0, 0, 255])
+        );
+    }
+
+    #[test]
+    fn effects_saved_before_they_gained_settings_still_open() {
+        // a chroma key written when it had six numbers
+        let old = r#"{"kind":"ChromaKey","enabled":true,"params":[0.0,255.0,0.0,35.0,15.0,50.0]}"#;
+        let e: Effect = serde_json::from_str(old).unwrap();
+        assert_eq!(e.params.len(), EffectKind::ChromaKey.params().len());
+        assert_eq!(&e.params[6..], &[0.0, 0.0]);
+        assert_eq!(e.check(), Ok(()));
     }
 
     #[test]

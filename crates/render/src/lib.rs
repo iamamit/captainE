@@ -18,7 +18,7 @@ mod title;
 pub use analyze::{auto_correction, match_correction, ColorStats};
 pub use composite::{draw_layer, draw_layer_fx, LayerFx};
 pub use decode::{FrameCache, VideoReader};
-pub use effects::{apply_effects, apply_effects_with};
+pub use effects::{apply_effects, apply_effects_at, apply_effects_with};
 pub use eval::{layers_at, ClipLayer, Layer, TimelineIndex, TitleLayer, TransitionState};
 pub use frame::{contact_sheet, save_rgb_png, Canvas, Frame8};
 pub use preview::preview_project;

@@ -12,6 +12,7 @@ pub mod links;
 pub mod markers_ui;
 pub mod multicam;
 pub mod nesting;
+pub mod presets_store;
 pub mod scopes;
 pub mod sequences;
 pub mod source;

@@ -17,5 +17,6 @@ png.workspace = true
 ab_glyph = "0.2.32"
 
 [dev-dependencies]
+serde_json.workspace = true
 captaine-media.workspace = true
 captaine-ops.workspace = true

@@ -201,6 +201,10 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// A copied effect stack, and the name being typed for a new preset
+    pub fx_clipboard: Vec<captaine_model::Effect>,
+    pub preset_save: Option<String>,
+    pub preset_effects: Vec<captaine_model::Effect>,
     /// Which curve of a Curves effect the editor shows: master, red, green, blue
     pub curve_tab: usize,
     /// Multicam switching in progress
@@ -301,6 +305,9 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            fx_clipboard: Vec::new(),
+            preset_save: None,
+            preset_effects: Vec::new(),
             curve_tab: 0,
             multicam: None,
             vision_jobs: Vec::new(),

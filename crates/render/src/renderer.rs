@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use captaine_model::{Effect, EffectKind, Id, Project, Title, TransitionKind, VideoProps};
 
 use crate::{
-    apply_effects, apply_effects_with, draw_layer, draw_layer_fx, layers_at, render_title, Canvas,
+    apply_effects, apply_effects_at, draw_layer, draw_layer_fx, layers_at, render_title, Canvas,
     Frame8, FrameCache, Layer, LayerFx, TimelineIndex, TransitionState, VideoReader,
 };
 
@@ -312,7 +312,7 @@ impl Renderer {
                                 .flatten()
                         })
                         .collect();
-                    if let Some(g) = apply_effects_with(&f, &effects, &mattes) {
+                    if let Some(g) = apply_effects_at(&f, &effects, &mattes, frame as u64) {
                         f = Arc::new(g);
                     }
                     draw_layer_fx(&mut canvas, &f, &props, &fx);
