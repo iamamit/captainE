@@ -346,3 +346,109 @@ fn hevc_and_prores_files_come_out_right() {
         assert!(probe(&out).unwrap().has_audio);
     }
 }
+
+#[test]
+fn a_title_is_burned_into_the_export() {
+    if !have_ffmpeg() {
+        return;
+    }
+    // no media at all: just a lower third for one second
+    let mut ed = Editor::new(Project::new(ProjectSettings {
+        frame_rate: Rational::FPS_24,
+        width: 640,
+        height: 360,
+        sample_rate: 48_000,
+    }));
+    let (tl, v1) = (Id::new(), Id::new());
+    ed.apply(
+        Author::User,
+        Op::AddTimeline {
+            timeline: Timeline::new(tl, "Main", Rational::FPS_24),
+        },
+    )
+    .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: tl,
+            index: 0,
+            track: Track::new(v1, "V1", TrackKind::Video),
+        },
+    )
+    .unwrap();
+    let mut title = Title::new(
+        Id::new(),
+        TitleTemplate::LowerThird,
+        RationalTime::new(24, Rational::FPS_24),
+    );
+    title.text = "Coastline, Day 3".into();
+    title.subtitle = "Lower third".into();
+    ed.apply(
+        Author::User,
+        Op::InsertItem {
+            track: v1,
+            index: 0,
+            item: Item::Title(title),
+        },
+    )
+    .unwrap();
+
+    let out = scratch("title.mp4");
+    export(
+        ed.project(),
+        tl,
+        &out,
+        &ExportOptions {
+            preset: "ultrafast".into(),
+            ..Default::default()
+        },
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let info = probe(&out).unwrap();
+    assert_eq!((info.width, info.height, info.length), (640, 360, 24));
+    // grab one frame as grey bytes: white text on black, so there are bright pixels, and only in the lower left
+    let raw = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&out)
+        .args([
+            "-vf",
+            "select=eq(n\\,12)",
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(raw.len(), 640 * 360);
+    let bright = |x0: usize, x1: usize, y0: usize, y1: usize| {
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| raw[y * 640 + x] > 200)
+            .count()
+    };
+    assert!(
+        bright(0, 400, 220, 340) > 100,
+        "white text in the lower left"
+    );
+    assert_eq!(bright(0, 640, 0, 180), 0, "nothing in the top half");
+    // and it is repeatable
+    let again = scratch("title2.mp4");
+    export(
+        ed.project(),
+        tl,
+        &again,
+        &ExportOptions {
+            preset: "ultrafast".into(),
+            ..Default::default()
+        },
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), std::fs::read(&again).unwrap());
+}

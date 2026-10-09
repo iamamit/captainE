@@ -1,4 +1,4 @@
-use captaine_model::{AudioProps, Id, Item, MediaRef, Timeline, Track, VideoProps};
+use captaine_model::{AudioProps, Id, Item, MediaRef, Timeline, Title, Track, VideoProps};
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +104,11 @@ pub enum Op {
         media: Id,
         proxy: Option<String>,
     },
+    /// Replace a title's content and look (the id and the length stay).
+    SetTitle {
+        item: Id,
+        title: Title,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -143,6 +148,7 @@ impl Op {
             Op::SetTrack { track, .. } => format!("Set track {track}"),
             Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
             Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
+            Op::SetTitle { item, .. } => format!("Edit title {item}"),
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

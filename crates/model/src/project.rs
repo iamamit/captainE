@@ -202,45 +202,150 @@ impl Clip {
     }
 }
 
+/// Range checks shared by everything that has a picture: finite numbers, opacity 0..=1, sane colour.
+pub fn check_video(v: &VideoProps) -> Result<(), &'static str> {
+    let t = &v.transform;
+    let c = &v.color;
+    let all = [
+        t.position.0,
+        t.position.1,
+        t.scale.0,
+        t.scale.1,
+        t.rotation_deg,
+        v.opacity,
+        c.exposure,
+        c.contrast,
+        c.saturation,
+        c.temperature,
+    ];
+    if !all.iter().all(|x| x.is_finite()) {
+        return Err("non-finite property");
+    }
+    if !(0.0..=1.0).contains(&v.opacity) {
+        return Err("opacity must be 0..=1");
+    }
+    if c.contrast < 0.0 || !(0.0..=400.0).contains(&c.saturation) || c.temperature <= 0.0 {
+        return Err("color values out of range");
+    }
+    if t.scale.0 == 0.0 || t.scale.1 == 0.0 {
+        return Err("scale cannot be zero");
+    }
+    Ok(())
+}
+
 impl Clip {
     /// Property ranges: finite numbers, opacity 0..=1, pan -1..=1, fades inside the clip.
     pub fn check_props(&self, rate: Rational) -> Result<(), &'static str> {
-        let t = &self.video.transform;
-        let finite = [
-            t.position.0,
-            t.position.1,
-            t.scale.0,
-            t.scale.1,
-            t.rotation_deg,
-            self.video.opacity,
-            self.audio.gain_db,
-            self.audio.pan,
-            self.video.color.exposure,
-            self.video.color.contrast,
-            self.video.color.saturation,
-            self.video.color.temperature,
-        ]
-        .iter()
-        .all(|v| v.is_finite());
-        if !finite {
+        check_video(&self.video)?;
+        if !self.audio.gain_db.is_finite() || !self.audio.pan.is_finite() {
             return Err("non-finite property");
-        }
-        if !(0.0..=1.0).contains(&self.video.opacity) {
-            return Err("opacity must be 0..=1");
         }
         if !(-1.0..=1.0).contains(&self.audio.pan) {
             return Err("pan must be -1..=1");
         }
-        let c = &self.video.color;
-        if c.contrast < 0.0 || !(0.0..=400.0).contains(&c.saturation) || c.temperature <= 0.0 {
-            return Err("color values out of range");
-        }
-        if t.scale.0 == 0.0 || t.scale.1 == 0.0 {
-            return Err("scale cannot be zero");
-        }
         let (a, b) = (self.audio.fade_in, self.audio.fade_out);
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the clip");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TitleTemplate {
+    /// Name plate in the lower left: a dark box with an accent bar, a bold line and a smaller line.
+    LowerThird,
+    /// Big centered text.
+    Centered,
+    /// Subtitle-style line at the bottom centre on a dark pill.
+    Caption,
+}
+
+impl TitleTemplate {
+    pub fn label(self) -> &'static str {
+        match self {
+            TitleTemplate::LowerThird => "Lower Third",
+            TitleTemplate::Centered => "Centered Title",
+            TitleTemplate::Caption => "Caption",
+        }
+    }
+
+    /// Text size in pixels on a 1080-pixel-tall canvas.
+    pub fn default_size(self) -> f64 {
+        match self {
+            TitleTemplate::LowerThird => 46.0,
+            TitleTemplate::Centered => 110.0,
+            TitleTemplate::Caption => 40.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TitleStyle {
+    pub template: TitleTemplate,
+    /// Pixels on a 1080-pixel-tall canvas; scales with the canvas.
+    pub size: f64,
+    pub color: [u8; 3],
+    /// Accent bar of the lower third
+    pub accent: [u8; 3],
+}
+
+impl TitleStyle {
+    pub fn new(template: TitleTemplate) -> TitleStyle {
+        TitleStyle {
+            template,
+            size: template.default_size(),
+            color: [255, 255, 255],
+            accent: [0x5b, 0x4f, 0xd6],
+        }
+    }
+}
+
+/// A generated text clip. It has a picture (so it takes the usual transform and opacity) and no sound.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Title {
+    pub id: Id,
+    pub name: String,
+    pub duration: RationalTime,
+    pub enabled: bool,
+    pub text: String,
+    pub subtitle: String,
+    pub style: TitleStyle,
+    pub video: VideoProps,
+    /// Fades in ticks of the timeline rate (opacity ramps at both ends)
+    pub fade_in: i64,
+    pub fade_out: i64,
+}
+
+impl Title {
+    pub fn new(id: Id, template: TitleTemplate, duration: RationalTime) -> Title {
+        let (text, subtitle) = match template {
+            TitleTemplate::LowerThird => ("Your Title", "Subtitle"),
+            TitleTemplate::Centered => ("Title", ""),
+            TitleTemplate::Caption => ("Caption text", ""),
+        };
+        Title {
+            id,
+            name: format!("Title: {text}"),
+            duration,
+            enabled: true,
+            text: text.into(),
+            subtitle: subtitle.into(),
+            style: TitleStyle::new(template),
+            video: VideoProps::default(),
+            fade_in: 0,
+            fade_out: 0,
+        }
+    }
+
+    pub fn check_props(&self, rate: Rational) -> Result<(), &'static str> {
+        check_video(&self.video)?;
+        if !self.style.size.is_finite() || self.style.size <= 0.0 {
+            return Err("title size must be positive");
+        }
+        let (a, b) = (self.fade_in, self.fade_out);
+        if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
+            return Err("fades must be non-negative and fit inside the title");
         }
         Ok(())
     }
@@ -258,6 +363,7 @@ pub struct Gap {
 pub enum Item {
     Clip(Clip),
     Gap(Gap),
+    Title(Title),
 }
 
 impl Item {
@@ -265,6 +371,7 @@ impl Item {
         match self {
             Item::Clip(c) => c.id,
             Item::Gap(g) => g.id,
+            Item::Title(t) => t.id,
         }
     }
 
@@ -272,14 +379,27 @@ impl Item {
         match self {
             Item::Clip(c) => c.duration,
             Item::Gap(g) => g.duration,
+            Item::Title(t) => t.duration,
         }
     }
 
     pub fn as_clip(&self) -> Option<&Clip> {
         match self {
             Item::Clip(c) => Some(c),
-            Item::Gap(_) => None,
+            _ => None,
         }
+    }
+
+    pub fn as_title(&self) -> Option<&Title> {
+        match self {
+            Item::Title(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Anything but empty space.
+    pub fn is_content(&self) -> bool {
+        !matches!(self, Item::Gap(_))
     }
 }
 
@@ -474,6 +594,11 @@ impl Project {
                             d.value,
                             d.rate
                         ));
+                    }
+                    if let Item::Title(t) = item {
+                        if let Err(e) = t.check_props(tl.rate) {
+                            errs.push(format!("title {}: {e}", t.id));
+                        }
                     }
                     if let Item::Clip(c) = item {
                         if let Err(e) = c.check_props(tl.rate) {

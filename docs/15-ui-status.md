@@ -2,6 +2,8 @@
 
 ![captainE](images/editor.png)
 
+![Titles](images/titles.png)
+
 Run it:
 
 ```
@@ -22,12 +24,12 @@ screenshot above is produced. Qt/QML (docs/10) stays the fallback if egui's text
 | Area | State |
 |---|---|
 | Top bar: menus, page tabs, project name and fps, Copilot toggle, Render | Done. Only **Edit** and **Deliver** (opens export) are real pages; Media, Cut, Color, Effects say they are planned |
-| Media pool: bins, search, thumbnails, drag to timeline, double-click to append, drop files from Finder | Done. Effects, Titles, Transitions tabs are placeholders (not in the engine yet) |
+| Media pool: bins, search, thumbnails, drag to timeline, double-click to append, drop files from Finder | Done. Titles tab works; Effects and Transitions tabs are placeholders (not in the engine yet) |
 | Program viewer: picture, timecode chip, dashed outline of the selected clip's transform, transport, Mark In/Out | Done |
 | Inspector: Transform, Color, Audio, Blend, Metadata | Done and live. Drag a slider and it is one undo step. **Speed** is shown disabled (no speed changes in the engine yet) |
 | Timeline: tracks, clips with waveforms, ruler, playhead, snapping, zoom/scroll, Select/Trim/Blade/Hand/Zoom, Lift, Extract | Done. **Link** and **Markers** are shown disabled |
 | Copilot panel | Panel and flow done; it runs **local skills** (remove silences, warm/cool/brighten/darken/black-and-white, fades) through the same ops as a person. The LLM agent of docs/08 is not connected |
-| Title clips (the purple "Lower Third" in the mockup) | Not built: the engine has no titles yet (Phase 2/6) |
+| Title clips (the purple "Lower Third" in the mockup) | **Done.** Lower Third, Centered and Caption templates; Titles tab, inspector (text, size, colours, fades, transform), move/trim/cut like clips, burned into exports |
 | Keyframe diamonds in the inspector | Not built (no keyframes in the engine yet) |
 
 ## Editing, in the window

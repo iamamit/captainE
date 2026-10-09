@@ -744,10 +744,12 @@ dependencies = [
 name = "captaine-render"
 version = "0.0.1"
 dependencies = [
+ "ab_glyph",
  "captaine-media",
  "captaine-model",
  "captaine-ops",
  "captaine-time",
+ "epaint_default_fonts",
  "png 0.17.16",
 ]
 

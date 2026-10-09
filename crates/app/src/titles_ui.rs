@@ -1,0 +1,323 @@
+//! The Titles tab of the media pool and the inspector for a selected title.
+
+use captaine_model::*;
+use captaine_ops::Op;
+use egui::{pos2, vec2, Align2, Color32, Rect, RichText, Sense, Stroke, Ui};
+
+use crate::app::App;
+use crate::theme::{self, mono, ui_font};
+use crate::ui::{chip, slider_row, TitleDrag};
+
+const TEMPLATES: [TitleTemplate; 3] = [
+    TitleTemplate::LowerThird,
+    TitleTemplate::Centered,
+    TitleTemplate::Caption,
+];
+
+pub fn pool_tab(app: &mut App, ui: &mut Ui) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Double-click to add at the playhead, or drag onto a video track.")
+                    .size(11.0)
+                    .color(theme::MUTED),
+            );
+            ui.add_space(8.0);
+            let gap = 8.0;
+            let w = ((ui.available_width() - gap) / 2.0).floor();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for row in TEMPLATES.chunks(2) {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            for t in row {
+                                card(app, ui, *t, w);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+        });
+}
+
+fn card(app: &mut App, ui: &mut Ui, template: TitleTemplate, w: f32) {
+    let h = (w * 9.0 / 16.0).round();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h + 22.0), Sense::click_and_drag());
+    let pic = Rect::from_min_size(rect.min, vec2(w, h));
+    let p = ui.painter();
+    // a stand-in scene so the title reads as a title
+    p.rect_filled(pic, 3.0, Color32::from_rgb(0x2c, 0x3f, 0x57));
+    p.rect_filled(
+        Rect::from_min_max(pos2(pic.left(), pic.top() + h * 0.62), pic.max),
+        3.0,
+        Color32::from_rgb(0x59, 0x6b, 0x55),
+    );
+    let s = h / 90.0;
+    match template {
+        TitleTemplate::LowerThird => {
+            let plate = Rect::from_min_max(
+                pos2(pic.left() + w * 0.07, pic.top() + h * 0.58),
+                pos2(pic.left() + w * 0.66, pic.top() + h * 0.86),
+            );
+            p.rect_filled(plate, 3.0, Color32::from_rgba_unmultiplied(24, 24, 28, 225));
+            p.rect_filled(
+                Rect::from_min_size(plate.min, vec2(3.0 * s, plate.height())),
+                0.0,
+                theme::ACCENT,
+            );
+            p.text(
+                plate.left_top() + vec2(9.0 * s, 4.0 * s),
+                Align2::LEFT_TOP,
+                "Your Title",
+                ui_font(11.0 * s.max(0.8)),
+                Color32::WHITE,
+            );
+            p.text(
+                plate.left_top() + vec2(9.0 * s, 17.0 * s),
+                Align2::LEFT_TOP,
+                "Subtitle",
+                ui_font(8.0 * s.max(0.8)),
+                Color32::from_gray(190),
+            );
+        }
+        TitleTemplate::Centered => {
+            p.text(
+                pic.center(),
+                Align2::CENTER_CENTER,
+                "Title",
+                ui_font(24.0 * s.max(0.8)),
+                Color32::WHITE,
+            );
+        }
+        TitleTemplate::Caption => {
+            let pill = Rect::from_center_size(
+                pos2(pic.center().x, pic.top() + h * 0.82),
+                vec2(w * 0.7, 15.0 * s.max(0.8)),
+            );
+            p.rect_filled(pill, pill.height() / 2.0, Color32::from_black_alpha(160));
+            p.text(
+                pill.center(),
+                Align2::CENTER_CENTER,
+                "Caption text",
+                ui_font(9.5 * s.max(0.8)),
+                Color32::WHITE,
+            );
+        }
+    }
+    if resp.hovered() {
+        p.rect_stroke(
+            pic,
+            3.0,
+            Stroke::new(1.0, theme::FAINT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    p.text(
+        pos2(rect.left(), pic.bottom() + 4.0),
+        Align2::LEFT_TOP,
+        template.label(),
+        ui_font(11.0),
+        theme::TEXT,
+    );
+    p.text(
+        pos2(rect.left(), pic.bottom() + 18.0),
+        Align2::LEFT_TOP,
+        "00:00:03",
+        mono(10.0),
+        theme::MUTED,
+    );
+    if resp.double_clicked() {
+        app.add_title(template, None, None);
+    }
+    if resp.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), TitleDrag(template));
+    }
+    resp.context_menu(|ui| {
+        if ui.button("Add at Playhead").clicked() {
+            app.add_title(template, None, None);
+            ui.close();
+        }
+    });
+}
+
+fn field(ui: &mut Ui, label: &str, text: &mut String) -> (bool, bool) {
+    ui.label(RichText::new(label).size(11.5).color(theme::MUTED));
+    let r = ui.add(
+        egui::TextEdit::singleline(text)
+            .desired_width(f32::INFINITY)
+            .margin(egui::Margin::symmetric(8, 5)),
+    );
+    (r.changed(), r.lost_focus())
+}
+
+/// Inspector for the selected title. Edits are one undo step per drag or per text-field focus.
+pub fn controls(app: &mut App, ui: &mut Ui) {
+    let Some((title, track, _)) = app.selected_title() else {
+        return;
+    };
+    let track_name = app
+        .timeline()
+        .and_then(|t| t.tracks.iter().find(|x| x.id == track))
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+    ui.label(RichText::new(&title.name).strong().size(13.0));
+    ui.label(
+        RichText::new(format!(
+            "{track_name} · {} · title",
+            app.tc(title.duration.value)
+        ))
+        .font(mono(10.5))
+        .color(theme::MUTED),
+    );
+    let mut t = title.clone();
+    let changed = std::cell::Cell::new(false);
+    let done = std::cell::Cell::new(false);
+    ui.add_space(8.0);
+    let (c, d) = field(ui, "Text", &mut t.text);
+    changed.set(changed.get() | c);
+    done.set(done.get() | d);
+    ui.add_space(4.0);
+    let (c, d) = field(ui, "Second line", &mut t.subtitle);
+    changed.set(changed.get() | c);
+    done.set(done.get() | d);
+
+    ui.add_space(10.0);
+    ui.label(RichText::new("Template").strong().size(12.5));
+    ui.horizontal_wrapped(|ui| {
+        for tpl in TEMPLATES {
+            if chip(ui, tpl.label(), t.style.template == tpl, true).clicked() {
+                t.style.template = tpl;
+                t.style.size = tpl.default_size();
+                changed.set(true);
+                done.set(true);
+            }
+        }
+    });
+    let row = |ui: &mut Ui,
+               label: &str,
+               v: &mut f64,
+               range: std::ops::RangeInclusive<f64>,
+               def: f64,
+               dec: usize,
+               suffix: &str| {
+        let r = slider_row(ui, label, v, range, def, dec, suffix, true);
+        changed.set(changed.get() | r.changed);
+        done.set(done.get() | r.done);
+    };
+    let def_size = t.style.template.default_size();
+    row(
+        ui,
+        "Size",
+        &mut t.style.size,
+        12.0..=300.0,
+        def_size,
+        0,
+        " px",
+    );
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [80.0, 22.0],
+            egui::Label::new(RichText::new("Text colour").size(12.0)),
+        );
+        let r1 = ui.color_edit_button_srgb(&mut t.style.color);
+        ui.add_space(10.0);
+        ui.label(RichText::new("Accent").size(12.0));
+        let r2 = ui.color_edit_button_srgb(&mut t.style.accent);
+        if r1.changed() || r2.changed() {
+            changed.set(true);
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.label(RichText::new("Fades").strong().size(12.5));
+    let fps = app.fps();
+    let max_fade = title.duration.value as f64 / fps;
+    let (mut fin, mut fout) = (t.fade_in as f64 / fps, t.fade_out as f64 / fps);
+    let (before_in, before_out) = (fin, fout);
+    row(ui, "Fade in", &mut fin, 0.0..=max_fade, 0.0, 2, " s");
+    row(ui, "Fade out", &mut fout, 0.0..=max_fade, 0.0, 2, " s");
+    if fin != before_in || fout != before_out {
+        t.fade_in = (fin * fps).round() as i64;
+        t.fade_out = (fout * fps).round() as i64;
+        let over = t.fade_in + t.fade_out - title.duration.value;
+        if over > 0 {
+            if fin != before_in {
+                t.fade_out = (t.fade_out - over).max(0);
+            } else {
+                t.fade_in = (t.fade_in - over).max(0);
+            }
+        }
+    }
+
+    ui.add_space(10.0);
+    ui.label(RichText::new("Transform").strong().size(12.5));
+    let (cw, ch) = (
+        app.project().settings.width as f64,
+        app.project().settings.height as f64,
+    );
+    row(
+        ui,
+        "Position X",
+        &mut t.video.transform.position.0,
+        -cw..=cw,
+        0.0,
+        1,
+        "",
+    );
+    row(
+        ui,
+        "Position Y",
+        &mut t.video.transform.position.1,
+        -ch..=ch,
+        0.0,
+        1,
+        "",
+    );
+    let mut scale = t.video.transform.scale.0 * 100.0;
+    let before = scale;
+    row(ui, "Scale", &mut scale, 5.0..=400.0, 100.0, 1, "%");
+    if scale != before {
+        t.video.transform.scale = (scale / 100.0, scale / 100.0);
+    }
+    row(
+        ui,
+        "Rotation",
+        &mut t.video.transform.rotation_deg,
+        -180.0..=180.0,
+        0.0,
+        1,
+        "°",
+    );
+    let mut opacity = t.video.opacity * 100.0;
+    let before = opacity;
+    row(ui, "Opacity", &mut opacity, 0.0..=100.0, 100.0, 0, "%");
+    if opacity != before {
+        t.video.opacity = opacity / 100.0;
+    }
+
+    if t != title {
+        changed.set(true);
+    }
+    if changed.get() {
+        // the name follows the text while it still has the automatic form
+        if title.name == format!("Title: {}", title.text) {
+            t.name = format!("Title: {}", t.text);
+        }
+        if let Some(op) = rename_op(&title, &t) {
+            app.do_merging(op, &format!("t:{}", title.id.to_full_string()));
+        }
+    }
+    if done.get() || ui.input(|i| i.pointer.any_released()) {
+        app.end_merge();
+    }
+}
+
+/// `SetTitle` keeps the id and length; the name is part of the title content so it rides along.
+fn rename_op(old: &Title, new: &Title) -> Option<Op> {
+    (old != new).then(|| Op::SetTitle {
+        item: old.id,
+        title: new.clone(),
+    })
+}

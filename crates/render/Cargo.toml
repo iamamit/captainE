@@ -10,9 +10,11 @@ publish.workspace = true
 name = "captaine_render"
 
 [dependencies]
+epaint_default_fonts = "0.36"
 captaine-time.workspace = true
 captaine-model.workspace = true
 png.workspace = true
+ab_glyph = "0.2.32"
 
 [dev-dependencies]
 captaine-media.workspace = true

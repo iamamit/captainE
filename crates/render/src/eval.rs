@@ -1,4 +1,4 @@
-use captaine_model::{Clip, Id, Item, MediaRef, Project, TrackKind};
+use captaine_model::{Clip, Id, Item, MediaRef, Project, Title, TrackKind};
 use captaine_time::{RationalTime, Rounding};
 
 /// `(start, end, item index)` of each clip on one track, sorted by start.
@@ -24,7 +24,10 @@ impl TimelineIndex {
                     .iter()
                     .zip(t.item_starts())
                     .enumerate()
-                    .filter(|(_, (it, _))| matches!(it, Item::Clip(c) if c.enabled))
+                    .filter(|(_, (it, _))| {
+                        matches!(it, Item::Clip(c) if c.enabled)
+                            || matches!(it, Item::Title(t) if t.enabled)
+                    })
                     .map(|(i, (it, st))| (st, st + it.duration().value, i))
                     .collect();
                 (ti, spans)
@@ -35,7 +38,7 @@ impl TimelineIndex {
 }
 
 /// One clip contributing to a frame.
-pub struct Layer<'a> {
+pub struct ClipLayer<'a> {
     pub clip: &'a Clip,
     pub media: &'a MediaRef,
     /// Frame number in the media at its own frame rate
@@ -43,7 +46,36 @@ pub struct Layer<'a> {
     pub track: usize,
 }
 
-/// Clips visible at `tick`, bottom layer first. Audio-only media contributes no picture.
+/// A title contributing to a frame.
+pub struct TitleLayer<'a> {
+    pub title: &'a Title,
+    /// Ticks since the title began
+    pub local_tick: i64,
+    pub track: usize,
+}
+
+pub enum Layer<'a> {
+    Clip(ClipLayer<'a>),
+    Title(TitleLayer<'a>),
+}
+
+impl Layer<'_> {
+    pub fn track(&self) -> usize {
+        match self {
+            Layer::Clip(c) => c.track,
+            Layer::Title(t) => t.track,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Layer::Clip(c) => &c.clip.name,
+            Layer::Title(t) => &t.title.name,
+        }
+    }
+}
+
+/// Things visible at `tick`, bottom layer first. Audio-only media contributes no picture.
 pub fn layers_at<'a>(
     project: &'a Project,
     timeline: Id,
@@ -62,21 +94,28 @@ pub fn layers_at<'a>(
         if tick < start {
             continue;
         }
-        let Item::Clip(clip) = &tl.tracks[*ti].items[item] else {
-            continue;
-        };
-        let Some(media) = project.media.get(&clip.media).filter(|m| m.has_video) else {
-            continue;
-        };
-        let offset = RationalTime::new(tick - start, tl.rate)
-            .rescale(clip.source_start.rate, Rounding::Floor)
-            .map_or(0, |t| t.value);
-        out.push(Layer {
-            clip,
-            media,
-            source_frame: clip.source_start.value + offset,
-            track: *ti,
-        });
+        match &tl.tracks[*ti].items[item] {
+            Item::Clip(clip) => {
+                let Some(media) = project.media.get(&clip.media).filter(|m| m.has_video) else {
+                    continue;
+                };
+                let offset = RationalTime::new(tick - start, tl.rate)
+                    .rescale(clip.source_start.rate, Rounding::Floor)
+                    .map_or(0, |t| t.value);
+                out.push(Layer::Clip(ClipLayer {
+                    clip,
+                    media,
+                    source_frame: clip.source_start.value + offset,
+                    track: *ti,
+                }));
+            }
+            Item::Title(title) => out.push(Layer::Title(TitleLayer {
+                title,
+                local_tick: tick - start,
+                track: *ti,
+            })),
+            Item::Gap(_) => {}
+        }
     }
     out
 }
@@ -147,7 +186,7 @@ mod tests {
         let names = |tick| {
             layers_at(&p, tl, &idx, tick)
                 .iter()
-                .map(|l| l.clip.name.clone())
+                .map(|l| l.name().to_string())
                 .collect::<Vec<_>>()
         };
         assert_eq!(names(0), ["b"]); // V1 has a gap here
@@ -163,10 +202,10 @@ mod tests {
         let (p, tl) = project();
         let idx = TimelineIndex::new(&p, tl).unwrap();
         let f = |tick| {
-            layers_at(&p, tl, &idx, tick)
-                .iter()
-                .find(|l| l.clip.name == "a")
-                .map(|l| l.source_frame)
+            layers_at(&p, tl, &idx, tick).iter().find_map(|l| match l {
+                Layer::Clip(c) if c.clip.name == "a" => Some(c.source_frame),
+                _ => None,
+            })
         };
         assert_eq!(f(10), Some(100));
         assert_eq!(f(15), Some(104)); // 5 frames @30 = 4 frames @24

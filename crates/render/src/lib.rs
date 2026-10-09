@@ -10,10 +10,13 @@ mod eval;
 mod frame;
 mod preview;
 mod renderer;
+mod text;
+mod title;
 
 pub use composite::draw_layer;
 pub use decode::{FrameCache, VideoReader};
-pub use eval::{layers_at, Layer, TimelineIndex};
+pub use eval::{layers_at, ClipLayer, Layer, TimelineIndex, TitleLayer};
 pub use frame::{contact_sheet, save_rgb_png, Canvas, Frame8};
 pub use preview::preview_project;
 pub use renderer::{RenderError, RenderOptions, Renderer};
+pub use title::render_title;

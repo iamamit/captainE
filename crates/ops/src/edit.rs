@@ -69,14 +69,14 @@ impl Planner {
         Ok(())
     }
 
-    fn overwrite(&mut self, track: Id, at: i64, clip: Clip) -> Result<()> {
+    fn overwrite(&mut self, track: Id, at: i64, item: Item) -> Result<()> {
         let (rate, t) = self.track(track)?;
         if at < 0 {
             return Err(OpError::OutOfRange(
                 "cannot place before the start of the timeline",
             ));
         }
-        let end = at + clip.duration.value;
+        let end = at + item.duration().value;
         let len = t.duration_ticks();
         if at > len {
             let index = t.items.len();
@@ -105,11 +105,7 @@ impl Planner {
         }
         let (_, t) = self.track(track)?;
         let index = t.item_starts().iter().filter(|st| **st < at).count();
-        self.push(Op::InsertItem {
-            track,
-            index,
-            item: Item::Clip(clip),
-        })
+        self.push(Op::InsertItem { track, index, item })
     }
 
     /// Merge neighbouring gaps and drop a trailing gap.
@@ -170,12 +166,17 @@ pub fn lift(project: &Project, item: Id) -> Result<Op> {
 
 /// Place `clip` at `at` on `track`, replacing whatever is there. Pads with a gap past the end.
 pub fn overwrite(project: &Project, track: Id, at: RationalTime, clip: Clip) -> Result<Op> {
+    overwrite_item(project, track, at, Item::Clip(clip))
+}
+
+/// Like [`overwrite`] for any item (a title, for instance).
+pub fn overwrite_item(project: &Project, track: Id, at: RationalTime, item: Item) -> Result<Op> {
     let mut pl = Planner::new(project);
     let (rate, _) = pl.track(track)?;
     if at.rate != rate {
         return Err(OpError::BadDuration(track));
     }
-    pl.overwrite(track, at.value, clip)?;
+    pl.overwrite(track, at.value, item)?;
     Ok(pl.finish("Overwrite"))
 }
 
@@ -195,9 +196,10 @@ pub fn append(project: &Project, track: Id, clip: Clip) -> Op {
 /// Drag a clip to `at` on `to_track` (overwrite semantics, like dragging in Premiere/Resolve).
 pub fn move_item(project: &Project, item: Id, to_track: Id, at: RationalTime) -> Result<Op> {
     let loc = locate(project, item)?;
-    let Item::Clip(clip) = project.item(loc).expect("located").clone() else {
+    let moving = project.item(loc).expect("located").clone();
+    if !moving.is_content() {
         return Err(OpError::NotFound("clip", item));
-    };
+    }
     let from_track = project.timeline(loc.timeline).expect("located").tracks[loc.track].id;
     let mut pl = Planner::new(project);
     let (rate, _) = pl.track(to_track)?;
@@ -206,10 +208,10 @@ pub fn move_item(project: &Project, item: Id, to_track: Id, at: RationalTime) ->
     }
     let gap = Item::Gap(Gap {
         id: Id::new(),
-        duration: clip.duration,
+        duration: moving.duration(),
     });
     pl.push(Op::ReplaceItem { item, with: gap })?;
-    pl.overwrite(to_track, at.value, clip)?;
+    pl.overwrite(to_track, at.value, moving)?;
     pl.clean_gaps(from_track)?;
     if to_track != from_track {
         pl.clean_gaps(to_track)?;
@@ -344,10 +346,10 @@ pub fn lift_range(
     let mut pl = Planner::new(project);
     for item in range_items(&mut pl, timeline, s, e)? {
         let loc = locate(&pl.project, item)?;
-        if let Some(Item::Clip(c)) = pl.project.item(loc) {
+        if let Some(c) = pl.project.item(loc).filter(|i| i.is_content()) {
             let with = Item::Gap(Gap {
                 id: Id::new(),
-                duration: c.duration,
+                duration: c.duration(),
             });
             pl.push(Op::ReplaceItem { item, with })?;
         }

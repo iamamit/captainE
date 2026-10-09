@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project};
+use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project, Title};
 use captaine_time::{Rational, RationalTime, Rounding};
 
 use crate::{Edge, Op};
@@ -77,6 +77,9 @@ fn check_item(p: &Project, rate: Rational, item: &Item) -> Result<()> {
     let d = item.duration();
     if d.rate != rate || d.value <= 0 {
         return Err(OpError::BadDuration(item.id()));
+    }
+    if let Item::Title(t) = item {
+        t.check_props(rate).map_err(OpError::BadProps)?;
     }
     if let Item::Clip(c) = item {
         c.check_props(rate).map_err(OpError::BadProps)?;
@@ -289,6 +292,22 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                     };
                     (Item::Clip(l), Item::Clip(r))
                 }
+                Item::Title(t) => {
+                    let l = Title {
+                        duration: *at,
+                        fade_in: t.fade_in.min(at.value),
+                        fade_out: 0,
+                        ..t.clone()
+                    };
+                    let r = Title {
+                        id: *new_id,
+                        duration: rest,
+                        fade_in: 0,
+                        fade_out: t.fade_out.min(rest.value),
+                        ..t.clone()
+                    };
+                    (Item::Title(l), Item::Title(r))
+                }
                 Item::Gap(g) => (
                     Item::Gap(Gap {
                         id: g.id,
@@ -368,12 +387,32 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         ..a.clone()
                     })
                 }
+                (Item::Title(a), Item::Title(b)) => {
+                    if a.name != b.name
+                        || a.enabled != b.enabled
+                        || a.text != b.text
+                        || a.subtitle != b.subtitle
+                        || a.style != b.style
+                        || a.video != b.video
+                    {
+                        return Err(OpError::NotJoinable("titles differ"));
+                    }
+                    Item::Title(Title {
+                        duration: arith(a.duration.checked_add(b.duration))?,
+                        fade_out: b.fade_out,
+                        ..a.clone()
+                    })
+                }
                 (Item::Gap(a), Item::Gap(b)) => Item::Gap(Gap {
                     id: a.id,
                     duration: arith(a.duration.checked_add(b.duration))?,
                 }),
                 _ => return Err(OpError::NotJoinable("a clip and a gap")),
             };
+            if let Item::Title(t) = &joined {
+                t.check_props(timeline_rate(p, ll.timeline))
+                    .map_err(OpError::BadProps)?;
+            }
             if let Item::Clip(c) = &joined {
                 c.check_props(timeline_rate(p, ll.timeline))
                     .map_err(OpError::BadProps)?;
@@ -452,6 +491,27 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         }
                     };
                     (new, inverse)
+                }
+                (Item::Title(t), _) => {
+                    let duration = match edge {
+                        Edge::In => arith(t.duration.checked_sub(*delta))?,
+                        Edge::Out => arith(t.duration.checked_add(*delta))?,
+                    };
+                    let (fi, fo) = fit_fades(t.fade_in, t.fade_out, duration.value);
+                    let new = Item::Title(Title {
+                        duration,
+                        fade_in: fi,
+                        fade_out: fo,
+                        ..t.clone()
+                    });
+                    // exact undo: put the whole old title back
+                    (
+                        new,
+                        Op::ReplaceRaw {
+                            item: *item,
+                            with: old.clone(),
+                        },
+                    )
                 }
                 (Item::Gap(g), _) => {
                     let d = match edge {
@@ -549,21 +609,31 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
         Op::SetVideo { item, video } => {
             let loc = item_loc(p, *item)?;
             let rate = timeline_rate(p, loc.timeline);
-            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
-                return Err(OpError::NotFound("clip", *item));
+            let (new, prev) = match p.item(loc).expect("located").clone() {
+                Item::Clip(c) => (
+                    Item::Clip(Clip {
+                        video: *video,
+                        ..c.clone()
+                    }),
+                    c.video,
+                ),
+                Item::Title(t) => (
+                    Item::Title(Title {
+                        video: *video,
+                        ..t.clone()
+                    }),
+                    t.video,
+                ),
+                Item::Gap(_) => return Err(OpError::NotFound("clip", *item)),
             };
-            let new = Clip {
-                video: *video,
-                ..c.clone()
-            };
-            check_item(p, rate, &Item::Clip(new.clone()))?;
+            check_item(p, rate, &new)?;
             p.timeline_mut(loc.timeline)
                 .expect("located")
                 .track_mut(loc.track)
-                .items[loc.index] = Item::Clip(new);
+                .items[loc.index] = new;
             Ok(Op::SetVideo {
                 item: *item,
-                video: c.video,
+                video: prev,
             })
         }
         Op::SetAudio { item, audio } => {
@@ -651,6 +721,13 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         enabled: prev,
                     })
                 }
+                Item::Title(t) => {
+                    let prev = std::mem::replace(&mut t.enabled, *enabled);
+                    Ok(Op::SetEnabled {
+                        item: *item,
+                        enabled: prev,
+                    })
+                }
                 Item::Gap(_) => Err(OpError::NotFound("clip", *item)),
             }
         }
@@ -669,8 +746,35 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                         name: prev,
                     })
                 }
+                Item::Title(t) => {
+                    let prev = std::mem::replace(&mut t.name, name.clone());
+                    Ok(Op::SetName {
+                        item: *item,
+                        name: prev,
+                    })
+                }
                 Item::Gap(_) => Err(OpError::NotFound("clip", *item)),
             }
+        }
+        Op::SetTitle { item, title } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let Item::Title(old) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("title", *item));
+            };
+            if title.id != *item || title.duration != old.duration {
+                return Err(OpError::OutOfRange("SetTitle keeps the id and the length"));
+            }
+            let new = Item::Title(title.clone());
+            check_item(p, rate, &new)?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::SetTitle {
+                item: *item,
+                title: old,
+            })
         }
         Op::Transaction { description, ops } => {
             // all-or-nothing: `p` is only the caller's private copy, so a failure just drops it

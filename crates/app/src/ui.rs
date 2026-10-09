@@ -625,8 +625,8 @@ pub fn split_at_playhead(app: &mut App) {
         return;
     };
     let at = app.playhead;
-    let tracks: Vec<Id> = match app.selected() {
-        Some((_, track, _)) => vec![track],
+    let tracks: Vec<Id> = match app.selected_span() {
+        Some((_, track, ..)) => vec![track],
         None => tl.tracks.iter().map(|t| t.id).collect(),
     };
     let mut cuts = Vec::new();
@@ -685,10 +685,10 @@ pub fn extract_selection(app: &mut App) {
 }
 
 pub fn trim_to_playhead(app: &mut App, edge: captaine_ops::Edge) {
-    let Some((c, _, start)) = app.selected() else {
+    let Some((item, _, start, len)) = app.selected_span() else {
         return;
     };
-    let end = start + c.duration.value;
+    let end = start + len;
     let delta = match edge {
         captaine_ops::Edge::In => app.playhead - start,
         captaine_ops::Edge::Out => app.playhead - end,
@@ -698,11 +698,7 @@ pub fn trim_to_playhead(app: &mut App, edge: captaine_ops::Edge) {
         return;
     }
     let delta = app.time(delta);
-    app.do_op(Op::Trim {
-        item: c.id,
-        edge,
-        delta,
-    });
+    app.do_op(Op::Trim { item, edge, delta });
 }
 
 pub fn add_track(app: &mut App, kind: TrackKind) {
@@ -747,10 +743,15 @@ pub fn tidy_gaps(app: &mut App) {
 }
 
 pub fn toggle_enabled(app: &mut App) {
-    if let Some((c, ..)) = app.selected() {
+    let Some(id) = app.selected_clip else { return };
+    let current = app
+        .selected()
+        .map(|(c, ..)| c.enabled)
+        .or_else(|| app.selected_title().map(|(t, ..)| t.enabled));
+    if let Some(on) = current {
         app.do_op(Op::SetEnabled {
-            item: c.id,
-            enabled: !c.enabled,
+            item: id,
+            enabled: !on,
         });
     }
 }
@@ -877,6 +878,10 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
 #[derive(Clone, Copy)]
 pub struct MediaDrag(pub Id);
 
+/// Payload while a title template is being dragged toward the timeline.
+#[derive(Clone, Copy)]
+pub struct TitleDrag(pub TitleTemplate);
+
 pub fn media_pool(app: &mut App, root: &mut Ui) {
     egui::Panel::left("media_pool")
         .default_size(330.0)
@@ -907,6 +912,10 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                 ui.cursor().top(),
                 Stroke::new(1.0, theme::BORDER),
             );
+            if app.pool_tab == PoolTab::Titles {
+                crate::titles_ui::pool_tab(app, ui);
+                return;
+            }
             if app.pool_tab != PoolTab::Media {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
@@ -1199,6 +1208,10 @@ fn section(ui: &mut Ui, title: &str) {
 }
 
 fn clip_controls(app: &mut App, ui: &mut Ui) {
+    if app.selected_title().is_some() {
+        crate::titles_ui::controls(app, ui);
+        return;
+    }
     let Some((clip, track, start)) = app.selected() else {
         ui.add_space(30.0);
         ui.vertical_centered(|ui| {

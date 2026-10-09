@@ -50,6 +50,25 @@ enum Cmd {
         #[arg(long)]
         dur: Option<f64>,
     },
+    /// Add a title (default: on the top video track at the start)
+    Title {
+        project: PathBuf,
+        text: String,
+        /// Second line
+        #[arg(long)]
+        sub: Option<String>,
+        #[arg(long, value_enum, default_value = "lower-third")]
+        template: TemplateArg,
+        /// Timeline position in seconds
+        #[arg(long, default_value_t = 0.0)]
+        at: f64,
+        /// Length in seconds
+        #[arg(long, default_value_t = 3.0)]
+        dur: f64,
+        /// Track name (default: the top video track)
+        #[arg(long)]
+        track: Option<String>,
+    },
     /// Cut the item under a timeline time (seconds)
     Split {
         project: PathBuf,
@@ -134,6 +153,15 @@ enum Cmd {
         track: String,
         #[arg(long)]
         name: Option<String>,
+        /// Title text (titles only)
+        #[arg(long)]
+        text: Option<String>,
+        /// Title second line (titles only)
+        #[arg(long)]
+        sub: Option<String>,
+        /// Title size in pixels at 1080p (titles only)
+        #[arg(long)]
+        size: Option<f64>,
         #[arg(long)]
         opacity: Option<f64>,
         /// Offset from center in canvas pixels
@@ -237,6 +265,13 @@ enum Cmd {
         #[arg(long)]
         proxy: bool,
     },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum TemplateArg {
+    LowerThird,
+    Centered,
+    Caption,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -406,6 +441,10 @@ fn show(s: &Session) -> Result<(), String> {
                         e.join(", "),
                     )
                 }
+                Item::Title(x) => (
+                    format!("{}{}", x.name, if x.enabled { "" } else { " [off]" }),
+                    format!("{} · \"{}\"", x.style.template.label(), x.text),
+                ),
                 Item::Gap(_) => ("(gap)".to_string(), String::new()),
             };
             println!(
@@ -551,6 +590,49 @@ fn run(cmd: Cmd) -> Result<(), String> {
             };
             Ok(msg)
         }),
+        Cmd::Title {
+            project,
+            text,
+            sub,
+            template,
+            at,
+            dur,
+            track,
+        } => edit_with(&project, &|s| {
+            let tl = timeline(s)?;
+            let rate = tl.rate;
+            let track_id = match &track {
+                Some(n) => find_track(tl, n)?.id,
+                None => tl
+                    .tracks
+                    .iter()
+                    .rev()
+                    .find(|t| t.kind == TrackKind::Video)
+                    .map(|t| t.id)
+                    .ok_or("no video track")?,
+            };
+            let template = match template {
+                TemplateArg::LowerThird => TitleTemplate::LowerThird,
+                TemplateArg::Centered => TitleTemplate::Centered,
+                TemplateArg::Caption => TitleTemplate::Caption,
+            };
+            let mut t = Title::new(
+                Id::new(),
+                template,
+                RationalTime::new(ticks(dur, rate).max(1), rate),
+            );
+            t.text = text.clone();
+            t.subtitle = sub.clone().unwrap_or_default();
+            t.name = format!("Title: {text}");
+            let start = RationalTime::new(ticks(at, rate), rate);
+            let op = edit::overwrite_item(s.editor.project(), track_id, start, Item::Title(t));
+            plan(s, op)?;
+            Ok(format!(
+                "added {} title \"{text}\" at {}",
+                template.label(),
+                tc(ticks(at, rate), rate)
+            ))
+        }),
         Cmd::Split { project, at, track } => edit_with(&project, &|s| {
             let tl = timeline(s)?;
             let (rate, id) = (tl.rate, find_track(tl, &track)?.id);
@@ -688,6 +770,9 @@ fn run(cmd: Cmd) -> Result<(), String> {
             index,
             track,
             name,
+            text,
+            sub,
+            size,
             opacity,
             x,
             y,
@@ -703,6 +788,68 @@ fn run(cmd: Cmd) -> Result<(), String> {
         } => edit_with(&project, &|s| {
             let rate = timeline(s)?.rate;
             let (id, item, _) = nth_item(s, &track, index)?;
+            if let Item::Title(tt) = &item {
+                let mut v = tt.video;
+                if let Some(o) = opacity {
+                    v.opacity = o;
+                }
+                if let Some(x) = x {
+                    v.transform.position.0 = x;
+                }
+                if let Some(y) = y {
+                    v.transform.position.1 = y;
+                }
+                if let Some(k) = scale {
+                    v.transform.scale = (k, k);
+                }
+                if let Some(r) = rotate {
+                    v.transform.rotation_deg = r;
+                }
+                let mut nt = tt.clone();
+                nt.video = v;
+                if let Some(t) = &text {
+                    nt.text = t.clone();
+                }
+                if let Some(t) = &sub {
+                    nt.subtitle = t.clone();
+                }
+                if let Some(sz) = size {
+                    nt.style.size = sz;
+                }
+                if let Some(f) = fade_in {
+                    nt.fade_in = ticks(f, rate);
+                }
+                if let Some(f) = fade_out {
+                    nt.fade_out = ticks(f, rate);
+                }
+                let mut ops = Vec::new();
+                if nt != *tt {
+                    ops.push(Op::SetTitle {
+                        item: id,
+                        title: nt,
+                    });
+                }
+                if let Some(n) = &name {
+                    ops.push(Op::SetName {
+                        item: id,
+                        name: n.clone(),
+                    });
+                }
+                if let Some(e) = enabled {
+                    ops.push(Op::SetEnabled {
+                        item: id,
+                        enabled: e,
+                    });
+                }
+                if ops.is_empty() {
+                    return Err("nothing to change; pass at least one option (see --help)".into());
+                }
+                s.apply(Op::Transaction {
+                    description: format!("Set properties of {}", tt.name),
+                    ops,
+                })?;
+                return Ok(format!("updated {track} item {index}"));
+            }
             let Item::Clip(c) = item else {
                 return Err("that item is a gap".into());
             };

@@ -367,3 +367,182 @@ fn dragging_media_from_the_pool_onto_a_track_places_it() {
     assert_eq!(t.items[clip_idx].duration().value, 96);
     app(&h).project().validate().unwrap();
 }
+
+fn track_named(app: &App, name: &str) -> Track {
+    app.timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap()
+        .as_ref()
+        .clone()
+}
+
+/// Screen position inside item `index` of the track `name`, at fraction `frac` of its length.
+fn item_pos(app: &App, name: &str, index: usize, frac: f32) -> Pos2 {
+    let t = track_named(app, name);
+    let start = t.item_starts()[index];
+    let dur = t.items[index].duration().value;
+    let g = app.timeline_layout.clone().unwrap();
+    let fps = app.fps();
+    let (x0, x1) = (g.x(start as f64 / fps), g.x((start + dur) as f64 / fps));
+    pos2(x0 + (x1 - x0) * frac, g.row_center(t.id).unwrap())
+}
+
+fn titles_on(app: &App, name: &str) -> Vec<(i64, i64)> {
+    let t = track_named(app, name);
+    t.items
+        .iter()
+        .zip(t.item_starts())
+        .filter(|(i, _)| i.as_title().is_some())
+        .map(|(i, s)| (s, i.duration().value))
+        .collect()
+}
+
+#[test]
+fn dragging_a_title_template_onto_a_track_adds_a_title() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let v2 = track_named(app(&h), "V2").id;
+    let target = pos2(g.x(6.0), g.row_center(v2).unwrap());
+    egui::DragAndDrop::set_payload(&h.ctx, captaine_app::ui::TitleDrag(TitleTemplate::Centered));
+    h.hover_at(target);
+    settle(&mut h);
+    h.drag_at(target);
+    h.step();
+    h.drop_at(target);
+    settle(&mut h);
+    assert_eq!(
+        titles_on(app(&h), "V2"),
+        [(144, 72)],
+        "3 s long, starting at 6 s"
+    );
+    let a = app(&h);
+    assert!(a.selected_title().is_some(), "the new title is selected");
+    a.project().validate().unwrap();
+    // titles are refused on audio tracks
+    let a1 = track_named(app(&h), "A1").id;
+    let before = layout(app(&h));
+    app_mut(&mut h).add_title(TitleTemplate::Caption, Some(0), Some(a1));
+    assert_eq!(track_named(app(&h), "A1").items.len(), 0);
+    assert_eq!(layout(app(&h)), before);
+}
+
+#[test]
+fn titles_move_trim_cut_and_undo_like_clips() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).add_title(TitleTemplate::LowerThird, Some(48), None); // top video track = V2
+    settle(&mut h);
+    assert_eq!(titles_on(app(&h), "V2"), [(48, 72)]);
+    let after_add = track_named(app(&h), "V2");
+    // find the title's index: after the padding gap
+    let idx = after_add
+        .items
+        .iter()
+        .position(|i| i.as_title().is_some())
+        .unwrap();
+
+    // trim its end 1 s earlier
+    let end = item_pos(app(&h), "V2", idx, 1.0) + egui::vec2(-2.0, 0.0);
+    drag(&mut h, end, end + egui::vec2(-40.0, 0.0));
+    // 42 px is 25 frames, but the end snaps to the cut on V1 at frame 96: 48 frames long
+    let len = titles_on(app(&h), "V2")[0].1;
+    assert!(len == 72 - 25 || len == 72 - 24, "{len}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert_eq!(titles_on(app(&h), "V2"), [(48, 72)]);
+
+    // drag it 2 s to the right
+    let mid = item_pos(app(&h), "V2", idx, 0.5);
+    drag(&mut h, mid, mid + egui::vec2(80.0, 0.0));
+    assert_eq!(titles_on(app(&h), "V2")[0].0, 96, "moved by 48 frames");
+
+    // blade cuts it in two titles with the same text
+    h.key_press(Key::B);
+    settle(&mut h);
+    let idx = track_named(app(&h), "V2")
+        .items
+        .iter()
+        .position(|i| i.as_title().is_some())
+        .unwrap();
+    let p = item_pos(app(&h), "V2", idx, 0.5);
+    click(&mut h, p);
+    let cut = titles_on(app(&h), "V2");
+    assert_eq!(cut.len(), 2, "{cut:?}");
+    assert_eq!(cut[0].1 + cut[1].1, 72);
+    let t = track_named(app(&h), "V2");
+    let texts: Vec<_> = t
+        .items
+        .iter()
+        .filter_map(|i| i.as_title())
+        .map(|x| x.text.clone())
+        .collect();
+    assert_eq!(texts[0], texts[1]);
+    app(&h).project().validate().unwrap();
+
+    // lift: select the first half and press delete
+    h.key_press(Key::V);
+    let idx = track_named(app(&h), "V2")
+        .items
+        .iter()
+        .position(|i| i.as_title().is_some())
+        .unwrap();
+    let p = item_pos(app(&h), "V2", idx, 0.5);
+    click(&mut h, p);
+    h.key_press(Key::Delete);
+    settle(&mut h);
+    assert_eq!(titles_on(app(&h), "V2").len(), 1);
+}
+
+#[test]
+fn editing_a_title_in_the_inspector_is_one_undo_step() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).add_title(TitleTemplate::LowerThird, Some(0), None);
+    settle(&mut h);
+    let id = app(&h).selected_clip.unwrap();
+    let history = app(&h).session.editor.history().len();
+    // what the inspector does as a slider is dragged: many SetTitle ops under one key
+    {
+        let a = app_mut(&mut h);
+        for i in 1..=8 {
+            let (mut t, ..) = a.selected_title().unwrap();
+            t.style.size = 46.0 + i as f64 * 5.0;
+            t.text = format!("Headline {i}");
+            a.do_merging(
+                captaine_ops::Op::SetTitle { item: id, title: t },
+                &format!("t:{}", id.to_full_string()),
+            );
+        }
+        a.end_merge();
+    }
+    settle(&mut h);
+    assert_eq!(
+        app(&h).session.editor.history().len(),
+        history + 1,
+        "one entry for the whole drag"
+    );
+    assert_eq!(app(&h).selected_title().unwrap().0.text, "Headline 8");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    let t = app(&h).selected_title().unwrap().0;
+    assert_eq!((t.text.as_str(), t.style.size), ("Your Title", 46.0));
+    // the saved log replays to the same project
+    let log = app(&h).session.editor.history().to_vec();
+    let mut replay = captaine_ops::Editor::new(captaine_model::Project::new(
+        app(&h).project().settings.clone(),
+    ));
+    for e in log {
+        replay.apply(e.author, e.op).unwrap();
+    }
+    assert_eq!(replay.project(), app(&h).project());
+}

@@ -6,6 +6,7 @@ pub mod copilot;
 pub mod jobs;
 pub mod theme;
 pub mod timeline;
+pub mod titles_ui;
 pub mod ui;
 pub mod viewer;
 pub mod worker;

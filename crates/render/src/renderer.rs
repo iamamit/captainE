@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use captaine_model::{Id, Project};
+use std::hash::{Hash, Hasher};
 
-use crate::{draw_layer, layers_at, Canvas, Frame8, FrameCache, TimelineIndex, VideoReader};
+use captaine_model::{Id, Project, Title, VideoProps};
+
+use crate::{
+    draw_layer, layers_at, render_title, Canvas, Frame8, FrameCache, Layer, TimelineIndex,
+    VideoReader,
+};
 
 #[derive(Debug)]
 pub enum RenderError {
@@ -49,6 +54,7 @@ pub struct Renderer {
     opts: RenderOptions,
     cache: FrameCache,
     readers: HashMap<Id, (VideoReader, u64)>,
+    titles: HashMap<u64, Arc<Frame8>>,
     clock: u64,
 }
 
@@ -67,6 +73,7 @@ impl Renderer {
             cache: FrameCache::new(opts.cache_bytes),
             opts,
             readers: HashMap::new(),
+            titles: HashMap::new(),
             clock: 0,
         })
     }
@@ -119,21 +126,87 @@ impl Renderer {
         Ok(f)
     }
 
+    /// The picture of a title on the current canvas, drawn once and kept.
+    fn title_picture(&mut self, t: &Title) -> Arc<Frame8> {
+        let (w, h) = self.size();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{}|{}|{:?}|{w}x{h}", t.text, t.subtitle, t.style).hash(&mut hasher);
+        let key = hasher.finish();
+        if self.titles.len() > 32 {
+            self.titles.clear();
+        }
+        self.titles
+            .entry(key)
+            .or_insert_with(|| Arc::new(render_title(t, w, h)))
+            .clone()
+    }
+
     /// The composited picture at timeline tick `tick`.
     pub fn render(&mut self, tick: i64) -> Result<Canvas, RenderError> {
         let (w, h) = self.size();
         let mut canvas = Canvas::black(w, h);
         // collect first: layers borrow the project, fetching needs `&mut self`
-        let wanted: Vec<_> = layers_at(&self.project, self.timeline, &self.index, tick)
+        enum Want {
+            Clip {
+                clip: Id,
+                media: Id,
+                frame: i64,
+                props: VideoProps,
+            },
+            Title {
+                title: Title,
+                props: VideoProps,
+            },
+        }
+        let wanted: Vec<Want> = layers_at(&self.project, self.timeline, &self.index, tick)
             .into_iter()
-            .map(|l| (l.clip.id, l.media.id, l.source_frame, l.clip.video))
+            .map(|l| match l {
+                Layer::Clip(c) => Want::Clip {
+                    clip: c.clip.id,
+                    media: c.media.id,
+                    frame: c.source_frame,
+                    props: c.clip.video,
+                },
+                Layer::Title(t) => {
+                    let dur = t.title.duration.value;
+                    let mut k = 1.0f64;
+                    if t.title.fade_in > 0 && t.local_tick < t.title.fade_in {
+                        k = k.min(t.local_tick as f64 / t.title.fade_in as f64);
+                    }
+                    if t.title.fade_out > 0 && dur - t.local_tick <= t.title.fade_out {
+                        k = k.min((dur - t.local_tick) as f64 / t.title.fade_out as f64);
+                    }
+                    let mut props = t.title.video;
+                    props.opacity *= k;
+                    Want::Title {
+                        title: t.title.clone(),
+                        props,
+                    }
+                }
+            })
             .collect();
         // drop decoders of clips that are no longer on screen (sequential export keeps this small)
-        self.readers
-            .retain(|id, _| wanted.iter().any(|w| w.0 == *id));
-        for (clip, media, frame, props) in wanted {
-            let f = self.fetch(clip, media, frame)?;
-            draw_layer(&mut canvas, &f, &props);
+        self.readers.retain(|id, _| {
+            wanted
+                .iter()
+                .any(|w| matches!(w, Want::Clip { clip, .. } if clip == id))
+        });
+        for want in wanted {
+            match want {
+                Want::Clip {
+                    clip,
+                    media,
+                    frame,
+                    props,
+                } => {
+                    let f = self.fetch(clip, media, frame)?;
+                    draw_layer(&mut canvas, &f, &props);
+                }
+                Want::Title { title, props } => {
+                    let f = self.title_picture(&title);
+                    draw_layer(&mut canvas, &f, &props);
+                }
+            }
         }
         Ok(canvas)
     }

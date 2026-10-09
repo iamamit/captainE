@@ -333,6 +333,66 @@ impl App {
         })
     }
 
+    /// The selected title with its track and start tick, if the selection is a title.
+    pub fn selected_title(&self) -> Option<(Title, Id, i64)> {
+        let id = self.selected_clip?;
+        let tl = self.timeline()?;
+        tl.tracks.iter().find_map(|t| {
+            t.items
+                .iter()
+                .zip(t.item_starts())
+                .find_map(|(it, st)| match it {
+                    Item::Title(x) if x.id == id => Some((x.clone(), t.id, st)),
+                    _ => None,
+                })
+        })
+    }
+
+    /// `(item, track, start, length)` of the selection, whether it is a clip or a title.
+    pub fn selected_span(&self) -> Option<(Id, Id, i64, i64)> {
+        if let Some((c, track, start)) = self.selected() {
+            return Some((c.id, track, start, c.duration.value));
+        }
+        self.selected_title()
+            .map(|(t, track, start)| (t.id, track, start, t.duration.value))
+    }
+
+    /// Put a new title on the timeline: on `track` (default the top video track) at `at` (default the playhead).
+    pub fn add_title(&mut self, template: TitleTemplate, at: Option<i64>, track: Option<Id>) {
+        let Some(tl) = self.timeline().cloned() else {
+            return;
+        };
+        let track = track.or_else(|| {
+            tl.tracks
+                .iter()
+                .rev()
+                .find(|t| t.kind == TrackKind::Video)
+                .map(|t| t.id)
+        });
+        let Some(track) = track else {
+            self.toast("There is no video track to put a title on", true);
+            return;
+        };
+        if tl
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .is_some_and(|t| t.kind != TrackKind::Video)
+        {
+            self.toast("Titles go on video tracks", true);
+            return;
+        }
+        let secs = 3.0;
+        let dur = RationalTime::new(((secs * self.fps()).round() as i64).max(1), tl.rate);
+        let title = Title::new(Id::new(), template, dur);
+        let id = title.id;
+        let at = self.time(at.unwrap_or(self.playhead).max(0));
+        if self.do_plan(|p| edit::overwrite_item(p, track, at, Item::Title(title))) {
+            self.selected_clip = Some(id);
+            self.inspector_tab = InspectorTab::Inspector;
+        }
+    }
+
     // ---- editing ----------------------------------------------------------------------------
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
@@ -598,11 +658,8 @@ impl App {
             if self.playing && self.shuttle == 1.0 {
                 self.restart_clock();
             }
-            if let Some(id) = self.selected_clip {
-                if self.selected().is_none() {
-                    self.selected_clip = None;
-                    let _ = id;
-                }
+            if self.selected_clip.is_some() && self.selected_span().is_none() {
+                self.selected_clip = None;
             }
         }
         if self.playhead != self.program_tick || self.last_requested != Some(self.playhead) {

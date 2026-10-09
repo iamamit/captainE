@@ -7,7 +7,7 @@ use egui::{pos2, vec2, Align2, Color32, Context, Painter, Rect, RichText, Sense,
 
 use crate::app::*;
 use crate::theme::{self, mono, ui_font};
-use crate::ui::{self, chip, toggle_text, MediaDrag};
+use crate::ui::{self, chip, toggle_text, MediaDrag, TitleDrag};
 
 const HEADER_W: f32 = 56.0;
 const RULER_H: f32 = 26.0;
@@ -258,7 +258,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 rect: r,
                 start,
                 dur,
-                is_gap: item.as_clip().is_none(),
+                is_gap: !item.is_content(),
             });
         }
     }
@@ -607,14 +607,13 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     };
     for c in clips.iter().filter(|c| !c.is_gap) {
         let row = rows.iter().find(|r| r.track == c.track).expect("row");
-        let clip = tl
+        let item = tl
             .tracks
             .iter()
             .find(|t| t.id == c.track)
             .and_then(|t| t.items.iter().find(|i| i.id() == c.id))
-            .and_then(|i| i.as_clip())
             .cloned();
-        let Some(clip) = clip else { continue };
+        let Some(item) = item else { continue };
         let mut rect = c.rect;
         let mut dim = moving == Some(c.id);
         if let Drag::Trim { item, edge, delta } = &app.drag {
@@ -626,15 +625,12 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                 dim = false;
             }
         }
-        draw_clip(
-            app,
-            &body_painter,
-            &clip,
-            rect,
-            row,
-            app.selected_clip == Some(c.id),
-            dim,
-        );
+        let selected = app.selected_clip == Some(c.id);
+        match &item {
+            Item::Clip(clip) => draw_clip(app, &body_painter, clip, rect, row, selected, dim),
+            Item::Title(t) => draw_title(&body_painter, t, rect, selected, dim),
+            Item::Gap(_) => {}
+        }
     }
     // ghosts
     if let Drag::Clip {
@@ -749,6 +745,94 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             (_, Tool::Zoom) => ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn),
             _ => {}
         }
+    }
+}
+
+fn draw_title(p: &Painter, t: &Title, rect: Rect, selected: bool, dim: bool) {
+    if rect.right() < p.clip_rect().left() || rect.left() > p.clip_rect().right() {
+        return;
+    }
+    let mut fill = if t.enabled {
+        theme::OVERLAY_CLIP
+    } else {
+        Color32::from_gray(0x44)
+    };
+    if dim {
+        fill = fill.gamma_multiply(0.45);
+    }
+    p.rect_filled(rect, 4.0, fill);
+    let inner = p.with_clip_rect(rect.intersect(p.clip_rect()));
+    // fade ramps
+    let fps_w = rect.width() / t.duration.value.max(1) as f32;
+    for (len, from_left) in [(t.fade_in, true), (t.fade_out, false)] {
+        if len > 0 {
+            let w = len as f32 * fps_w;
+            let (x0, x1) = if from_left {
+                (rect.left(), rect.left() + w)
+            } else {
+                (rect.right() - w, rect.right())
+            };
+            let pts = if from_left {
+                vec![
+                    pos2(x0, rect.bottom()),
+                    pos2(x1, rect.top()),
+                    pos2(x1, rect.bottom()),
+                ]
+            } else {
+                vec![
+                    pos2(x0, rect.top()),
+                    pos2(x1, rect.bottom()),
+                    pos2(x0, rect.bottom()),
+                ]
+            };
+            inner.add(Shape::convex_polygon(
+                pts,
+                Color32::from_black_alpha(60),
+                Stroke::NONE,
+            ));
+        }
+    }
+    let label_color = if t.enabled {
+        Color32::WHITE
+    } else {
+        theme::MUTED
+    };
+    inner.text(
+        rect.left_top() + vec2(7.0, 4.0),
+        Align2::LEFT_TOP,
+        &t.name,
+        ui_font(11.0),
+        label_color,
+    );
+    if rect.height() > 40.0 && !t.subtitle.is_empty() {
+        inner.text(
+            rect.left_top() + vec2(7.0, 20.0),
+            Align2::LEFT_TOP,
+            &t.subtitle,
+            ui_font(10.0),
+            Color32::from_white_alpha(150),
+        );
+    }
+    if selected {
+        p.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(2.0, theme::ACCENT_HOVER),
+            egui::StrokeKind::Inside,
+        );
+        p.rect_stroke(
+            rect.shrink(2.0),
+            3.0,
+            Stroke::new(1.0, Color32::from_white_alpha(130)),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        p.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(1.0, Color32::from_black_alpha(90)),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -973,6 +1057,23 @@ fn media_drop(
     snap: &mut dyn FnMut(&App, i64, Option<Id>, &mut Option<i64>) -> i64,
     snapped: &mut Option<i64>,
 ) -> Option<(Id, i64, i64)> {
+    if let Some(tp) = egui::DragAndDrop::payload::<TitleDrag>(ctx) {
+        let pos = ctx.input(|i| i.pointer.hover_pos())?;
+        if !body.contains(pos) {
+            return None;
+        }
+        let row = rows
+            .iter()
+            .find(|r| pos.y >= r.top && pos.y < r.top + r.h && r.kind == TrackKind::Video)?;
+        let tick = snap(app, view.tick(pos.x).max(0), None, snapped);
+        let len = (3.0 * app.fps()).round() as i64;
+        if ctx.input(|i| i.pointer.any_released()) {
+            app.add_title(tp.0, Some(tick), Some(row.track));
+            egui::DragAndDrop::clear_payload(ctx);
+            return None;
+        }
+        return Some((row.track, tick, len));
+    }
     let payload = egui::DragAndDrop::payload::<MediaDrag>(ctx)?;
     let MediaDrag(media) = *payload;
     let pos = ctx.input(|i| i.pointer.hover_pos())?;
@@ -999,18 +1100,21 @@ fn media_drop(
 
 /// A little label that follows the pointer while media is being dragged.
 fn drag_ghost(app: &App, ctx: &Context) {
-    let Some(payload) = egui::DragAndDrop::payload::<MediaDrag>(ctx) else {
-        return;
-    };
     let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
     };
-    let Some(m) = app.project().media.get(&payload.0) else {
+    let label = if let Some(t) = egui::DragAndDrop::payload::<TitleDrag>(ctx) {
+        t.0.label().to_string()
+    } else if let Some(m) =
+        egui::DragAndDrop::payload::<MediaDrag>(ctx).and_then(|p| app.project().media.get(&p.0))
+    {
+        m.name.clone()
+    } else {
         return;
     };
     let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("media_ghost"));
     let painter = ctx.layer_painter(layer);
-    let galley = painter.layout_no_wrap(m.name.clone(), ui_font(11.5), Color32::WHITE);
+    let galley = painter.layout_no_wrap(label, ui_font(11.5), Color32::WHITE);
     let r = Rect::from_min_size(pos + vec2(14.0, 10.0), galley.size() + vec2(14.0, 8.0));
     painter.rect_filled(r, 4.0, theme::ACCENT);
     painter.galley(r.min + vec2(7.0, 4.0), galley, Color32::WHITE);

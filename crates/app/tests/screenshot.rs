@@ -111,6 +111,14 @@ fn demo_app(ctx: &egui::Context, dir: &Path, files: &[PathBuf]) -> App {
     app.place_media(score.id, Some(track("A1")), Some(0));
     app.place_media(score.id, Some(track("A2")), Some(0));
     let _ = (tl, dir, t);
+    // the mockup's lower third on V2
+    let mut title = Title::new(Id::new(), TitleTemplate::LowerThird, t(72));
+    title.text = "Coastline, Day 3".into();
+    title.subtitle = "Lower third · 3 s".into();
+    title.name = "Lower Third: Coastline".into();
+    let at = app.time(24 * 14);
+    let v2 = track("V2");
+    app.do_plan(|p| edit::overwrite_item(p, v2, at, Item::Title(title)));
     app.selected_clip = None;
     app
 }
@@ -158,6 +166,33 @@ fn the_editor_lays_out_like_the_design() {
         let img = harness.render().expect("render");
         std::fs::create_dir_all(&out).unwrap();
         img.save(Path::new(&out).join("editor.png")).unwrap();
+        // second view: the lower third selected, Titles tab open, Copilot closed
+        {
+            let app = harness.state_mut().as_mut().unwrap();
+            let (id, start) = {
+                let tl = app.timeline().unwrap();
+                let v2 = tl.tracks.iter().find(|t| t.name == "V2").unwrap();
+                let i = v2
+                    .items
+                    .iter()
+                    .position(|i| i.as_title().is_some())
+                    .unwrap();
+                (v2.items[i].id(), v2.item_starts()[i])
+            };
+            app.selected_clip = Some(id);
+            app.set_playhead(start + 30);
+            app.show_copilot = false;
+            app.pool_tab = PoolTab::Titles;
+        }
+        for _ in 0..20 {
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        harness
+            .render()
+            .expect("render")
+            .save(Path::new(&out).join("titles.png"))
+            .unwrap();
     }
     let app = harness.state().as_ref().unwrap();
     assert_eq!(app.project().media.len(), 6);
