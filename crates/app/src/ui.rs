@@ -1637,6 +1637,21 @@ fn mixer_tab(app: &mut App, ui: &mut Ui) {
         );
     }
     ui.horizontal_wrapped(|ui| {
+        let rec = app.voiceover.is_some();
+        let label = match &app.voiceover {
+            Some(r) => format!("■ Stop  {:.1}s", r.seconds()),
+            None => "● Record voice-over".to_string(),
+        };
+        if chip(ui, &label, rec, true)
+            .on_hover_text("Records the microphone while the timeline plays, from the playhead")
+            .clicked()
+        {
+            app.voiceover_toggle();
+        }
+        if let Some(r) = &app.voiceover {
+            meter(ui, r.level());
+            ui.ctx().request_repaint();
+        }
         if chip(ui, "Normalize mix", false, true).clicked() {
             app.normalize_mix();
         }

@@ -44,7 +44,7 @@ a04	Audio	EQ, compressor, limiter, de-esser	4	0.75	4-band EQ with response graph
 a05	Audio	Noise reduction and voice cleanup	4	0.75	spectral noise reduction with sensitivity and learn-from-range noise profile (UI + Copilot); no voice isolation model
 a06	Audio	Auto ducking	3	0.75	Auto duck effect with attack/release and a chosen source track
 a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
-a08	Audio	Voice-over recording	2	0	
+a08	Audio	Voice-over recording	2	0.5	record mic (cpal) while the timeline plays, level meter, take saved as WAV and placed at the playhead on a free audio track (placement tested; live capture needs a mic); no input device choice, no countdown/punch-in
 i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0.75	local Whisper (mlx): transcribe a clip, word timings, caption titles on a Captions track, SRT export/import, burn-in through export; no styled caption presets or speaker labels
 i02	AI	Edit by transcript, filler-word removal	4	0.75	Transcript tab: click words to select, cut words, remove filler words (also Copilot); cuts ripple closed
 i03	AI	Scene detection and auto-cut	3	0.75	scene detection splits a clip at hard cuts (menu + Copilot split_at_scenes)
@@ -60,5 +60,5 @@ d06	Delivery	Color management and HDR	3	0.25
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
 u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.5	
 u02	Platform	Stability and crash recovery	4	0.5	
-u03	Platform	Installable app (.app bundle), Windows, Linux	3	0	
+u03	Platform	Installable app (.app bundle), Windows, Linux	3	0.5	macOS .app bundle (tools/bundle.sh; tools/test_bundle.sh checks plist, signature and a start with a bare PATH); no Windows/Linux, not notarized
 u04	Platform	Collaboration: branches, compare, merge	2	1	ahead of Adobe here

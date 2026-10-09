@@ -191,6 +191,7 @@ pub struct App {
     play_origin_secs: f64,
     pub last_requested: Option<i64>,
     audio: Option<AudioEngine>,
+    pub voiceover: Option<crate::voiceover::Recorder>,
     audio_live: bool,
 
     // engine plumbing
@@ -301,6 +302,7 @@ impl App {
             play_origin_secs: 0.0,
             last_requested: None,
             audio: AudioEngine::new(),
+            voiceover: None,
             audio_live: false,
             worker: RenderWorker::spawn(ctx.clone()),
             jobs: Jobs::spawn(ctx.clone()),

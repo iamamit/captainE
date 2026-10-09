@@ -1842,3 +1842,68 @@ fn mixer_solo_lock_pan_and_loudness_buttons() {
     settle(&mut h);
     assert_eq!(app(&h).loudness_target, -23.0);
 }
+
+#[test]
+fn a_bundled_app_finds_its_helpers_even_with_a_bare_path() {
+    let exe = std::path::Path::new("/Applications/captainE.app/Contents/MacOS/captaine-app");
+    let p = captaine_app::helper_search_path("/usr/bin:/bin", exe);
+    let dirs: Vec<&str> = p.split(':').collect();
+    assert_eq!(dirs[0], "/Applications/captainE.app/Contents/Resources/bin");
+    assert!(dirs.contains(&"/usr/bin") && dirs.contains(&"/opt/homebrew/bin"));
+    assert_eq!(
+        dirs.iter().filter(|d| **d == "/opt/homebrew/bin").count(),
+        1
+    );
+    let again = captaine_app::helper_search_path(&p, exe);
+    assert_eq!(
+        again.matches("/opt/homebrew/bin").count(),
+        1,
+        "does not pile up"
+    );
+}
+
+#[test]
+fn a_voice_over_take_lands_on_an_audio_track_at_the_playhead() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let dir = std::env::temp_dir().join(format!("captaine-vo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    app_mut(&mut h).path = Some(dir.join("p.captaine"));
+    // one second of a 220 Hz tone at 44.1 kHz stands in for the microphone
+    let take: Vec<f32> = (0..44_100)
+        .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / 44_100.0).sin() * 0.5)
+        .collect();
+    app_mut(&mut h).place_take(&take, 44_100, 100);
+    settle(&mut h);
+    let tl = app(&h).timeline().unwrap().clone();
+    let (track, clip, start) = tl
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .find_map(|t| {
+            t.items
+                .iter()
+                .zip(t.item_starts())
+                .find_map(|(it, st)| match it {
+                    Item::Clip(c) if c.name.starts_with("voiceover-") => {
+                        Some((t.name.clone(), c.clone(), st))
+                    }
+                    _ => None,
+                })
+        })
+        .expect("the take is on an audio track");
+    assert_eq!(start, 100, "at the playhead, on {track}");
+    assert!(
+        (clip.duration.value - 24).abs() <= 1,
+        "{}",
+        clip.duration.value
+    );
+    assert!(dir.join("Voice-overs").read_dir().unwrap().count() == 1);
+    // a take of a few milliseconds is refused
+    let before = app(&h).project().media.len();
+    app_mut(&mut h).place_take(&take[..100], 44_100, 0);
+    assert_eq!(app(&h).project().media.len(), before);
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -24,6 +24,7 @@ pub mod transcript_ui;
 pub mod ui;
 pub mod viewer;
 pub mod vision_jobs;
+pub mod voiceover;
 pub mod worker;
 
 use std::path::{Path, PathBuf};
@@ -157,7 +158,36 @@ impl eframe::App for Shell {
     }
 }
 
+/// PATH for the helper programs (ffmpeg, python). An app opened from Finder gets a bare PATH, so
+/// put a bundled `Resources/bin` first and the usual install places last.
+pub fn helper_search_path(current: &str, exe: &std::path::Path) -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(res) = exe
+        .parent()
+        .and_then(|m| m.parent())
+        .map(|c| c.join("Resources"))
+    {
+        dirs.push(res.join("bin").to_string_lossy().into());
+    }
+    dirs.extend(
+        current
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(String::from),
+    );
+    for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        if !dirs.iter().any(|d| d == extra) {
+            dirs.push(extra.into());
+        }
+    }
+    dirs.join(":")
+}
+
 pub fn run(arg: Option<PathBuf>) -> eframe::Result {
+    if let Ok(exe) = std::env::current_exe() {
+        let path = helper_search_path(&std::env::var("PATH").unwrap_or_default(), &exe);
+        std::env::set_var("PATH", path);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 940.0])
