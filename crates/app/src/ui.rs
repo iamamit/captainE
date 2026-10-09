@@ -1350,9 +1350,9 @@ fn grid(app: &mut App, ui: &mut Ui) {
             q.is_empty() || crate::media_org::matches_search(m, app.project().meta.get(&m.id), &q)
         })
         .filter(|m| {
-            app.user_bin
-                .as_ref()
-                .is_none_or(|b| app.project().meta.get(&m.id).is_some_and(|x| &x.bin == b))
+            app.user_bin.as_ref().map_or(true, |b| {
+                app.project().meta.get(&m.id).is_some_and(|x| &x.bin == b)
+            })
         })
         .filter(|m| match app.bin {
             Bin::All => true,
@@ -1521,7 +1521,7 @@ fn media_cell(app: &mut App, ui: &mut Ui, m: &MediaRef, w: f32) {
                 app.move_to_bin(m.id, &name);
                 ui.close();
             }
-            if app.media_meta(m.id).bin != "" && ui.button("Take out of its bin").clicked() {
+            if !app.media_meta(m.id).bin.is_empty() && ui.button("Take out of its bin").clicked() {
                 app.move_to_bin(m.id, "");
                 ui.close();
             }
