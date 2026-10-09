@@ -50,6 +50,7 @@ pub enum InspectorTab {
     History,
     Metadata,
     Mixer,
+    Transcript,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -200,6 +201,12 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    pub transcripts: std::collections::HashMap<
+        crate::transcript_ui::TranscriptKey,
+        Vec<captaine_speech::Segment>,
+    >,
+    pub transcribing: Option<crate::transcript_ui::Transcribing>,
+    pub word_sel: Option<(usize, usize)>,
     /// Which sequence is being edited (the first one when unset)
     pub active_timeline: Option<Id>,
     pub rename_sequence: Option<(Id, String)>,
@@ -279,6 +286,9 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            transcripts: Default::default(),
+            transcribing: None,
+            word_sel: None,
             active_timeline: None,
             rename_sequence: None,
             source: crate::source::SourceMonitor::new(ctx.clone()),

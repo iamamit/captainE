@@ -8,6 +8,7 @@
 pub mod edl;
 pub mod fcpxml;
 pub mod otio;
+pub mod srt;
 
 use captaine_time::Rational;
 

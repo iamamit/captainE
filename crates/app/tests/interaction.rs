@@ -1067,3 +1067,65 @@ fn shapes_and_adjustment_layers_from_the_pool() {
     settle(&mut h);
     assert!(app(&h).selected_title().unwrap().0.effects.is_empty());
 }
+
+#[test]
+fn transcript_tab_offers_transcription_and_subtitle_tools() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let id = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    h.get_by_label("Transcript").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h).inspector_tab,
+        captaine_app::app::InspectorTab::Transcript
+    );
+    h.get_by_label("Export SRT…");
+    h.get_by_label("Import SRT…");
+    if captaine_speech::unavailable().is_none() {
+        h.get_by_label("Transcribe");
+        // a finished transcript shows its words and the editing buttons
+        let key = captaine_app::transcript_ui::key_of(&match &v1(app(&h)).items[0] {
+            Item::Clip(c) => c.clone(),
+            _ => unreachable!(),
+        });
+        let words = ["Hello", "um", "world."]
+            .iter()
+            .enumerate()
+            .map(|(i, w)| captaine_speech::Word {
+                text: w.to_string(),
+                start: i as f64,
+                end: i as f64 + 0.5,
+            })
+            .collect();
+        app_mut(&mut h).transcripts.insert(
+            key,
+            vec![captaine_speech::Segment {
+                text: "Hello um world.".into(),
+                start: 0.0,
+                end: 2.5,
+                words,
+            }],
+        );
+        settle(&mut h);
+        h.get_by_label("um").click();
+        settle(&mut h);
+        assert_eq!(app(&h).word_sel, Some((1, 1)));
+        let before = app(&h).duration_ticks();
+        h.get_by_label("Cut selected words").click();
+        settle(&mut h);
+        assert!(
+            app(&h).duration_ticks() < before,
+            "the word's time was cut out"
+        );
+        app_mut(&mut h).undo();
+        settle(&mut h);
+        assert_eq!(app(&h).duration_ticks(), before);
+    }
+}

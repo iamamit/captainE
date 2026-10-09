@@ -45,8 +45,8 @@ a05	Audio	Noise reduction and voice cleanup	4	0.5	spectral-subtraction noise red
 a06	Audio	Auto ducking	3	0.5	Auto duck effect on a clip: dips under any other sound with attack/release; no per-track sidechain choice
 a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
 a08	Audio	Voice-over recording	2	0	
-i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0	
-i02	AI	Edit by transcript, filler-word removal	4	0.25	silence removal only
+i01	AI	Speech to text: captions, subtitle track, burn-in, SRT	5	0.75	local Whisper (mlx): transcribe a clip, word timings, caption titles on a Captions track, SRT export/import, burn-in through export; no styled caption presets or speaker labels
+i02	AI	Edit by transcript, filler-word removal	4	0.75	Transcript tab: click words to select, cut words, remove filler words (also Copilot); cuts ripple closed
 i03	AI	Scene detection and auto-cut	3	0.75	scene detection splits a clip at hard cuts (menu + Copilot split_at_scenes)
 i04	AI	Natural-language editing assistant	4	0.75	Claude agent and local skills
 i05	AI	Auto-reframe to vertical and other aspect ratios	3	0	

@@ -322,6 +322,9 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "transcribe" => self.transcribe_tool(input),
+            "remove_filler_words" => self.remove_fillers_tool(input),
+            "add_captions" => self.add_captions_tool(input),
             "split_at_scenes" => self.split_at_scenes_tool(input),
             "add_title" => self.add_title(input),
             "edit_title" => self.edit_title(input),
@@ -802,6 +805,60 @@ impl ToolBox {
         self.describe(id)
     }
 
+    fn transcribe_tool(&mut self, input: &Value) -> R {
+        let (clip, media, start) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let segs = crate::speech::clip_transcript(&clip, &media, text(input, "language"))?;
+        let t0 = start as f64 / self.fps();
+        let v: Vec<Value> = segs
+            .iter()
+            .map(|s| json!({"start_sec": r2(t0 + s.start), "end_sec": r2(t0 + s.end), "text": s.text}))
+            .collect();
+        Ok(json!({"segments": v}).to_string())
+    }
+
+    fn remove_fillers_tool(&mut self, input: &Value) -> R {
+        let (clip, media, start) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let segs = crate::speech::clip_transcript(&clip, &media, text(input, "language"))?;
+        let strict = flag(input, "strict").unwrap_or(false);
+        let ranges = captaine_speech::filler_ranges(&segs, strict, 0.04);
+        let (ops, removed) = crate::speech::cut_ranges(&clip, self.fps(), &ranges);
+        if ops.is_empty() {
+            return Ok(json!({"ok": true, "cuts": 0, "note": "no filler words found"}).to_string());
+        }
+        self.commit(Op::Transaction {
+            description: "Copilot: remove filler words".into(),
+            ops,
+        })?;
+        let t0 = start as f64 / self.fps();
+        let at: Vec<Value> = ranges
+            .iter()
+            .map(|(a, b)| json!([r2(t0 + a), r2(t0 + b)]))
+            .collect();
+        Ok(json!({"ok": true, "cuts": ranges.len(), "removed_sec": r2(removed), "removed_ranges_in_original_timeline_sec": at}).to_string())
+    }
+
+    fn add_captions_tool(&mut self, input: &Value) -> R {
+        let (clip, media, start) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let segs = crate::speech::clip_transcript(&clip, &media, text(input, "language"))?;
+        let max_chars = num(input, "max_chars").unwrap_or(42.0).clamp(10.0, 120.0) as usize;
+        let lines = captaine_speech::caption_lines(&segs, max_chars, 6.0);
+        if lines.is_empty() {
+            return Ok(json!({"ok": true, "captions": 0, "note": "no speech found"}).to_string());
+        }
+        let tl = self.timeline()?.id;
+        let ops = captaine_interchange::srt::caption_ops(
+            self.project(),
+            tl,
+            &lines,
+            start as f64 / self.fps(),
+        )?;
+        self.commit(Op::Transaction {
+            description: "Copilot: add captions".into(),
+            ops,
+        })?;
+        Ok(json!({"ok": true, "captions": lines.len(), "track": captaine_interchange::srt::CAPTION_TRACK}).to_string())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -970,6 +1027,9 @@ pub fn tool_definitions() -> Value {
         {"name": "set_effects", "description": "Replace the picture effects of a clip, shape or adjustment layer (an empty list removes them). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), mask (shape 0 rectangle/1 ellipse, center_x, center_y, width, height in % of the frame, rotation deg, feather %, invert 0/1), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %), pixelate (block_size px at 1080p), color_wheels (lift_/gamma_/gain_ master, red, green, blue, each -1..1), curves (master_0%, master_25%.. up to master_100%, same for red/green/blue, output level 0..1 at that input), hsl (red_hue, red_sat, red_lum ... for red, yellow, green, cyan, blue, magenta), lut (strength %, plus path to a .cube file); sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
         {"name": "split_at_scenes", "description": "Cut a clip wherever the picture changes abruptly (a hard cut in the footage). threshold 0.05-0.95 (default 0.3; lower finds more), min_seconds is the shortest piece to leave (default 0.5).", "input_schema": obj(json!({"item_id": item, "threshold": {"type": "number"}, "min_seconds": {"type": "number"}}), &["item_id"])},
         {"name": "add_layer", "description": "Add a shape, a solid colour or an adjustment layer on a video track (default: the top one). An adjustment layer draws nothing but runs its effects (set them with set_effects on its item_id) over everything on the tracks below it. kind: rectangle, ellipse, solid, adjustment. color is hex like #ff8800; width_percent/height_percent size a rectangle or ellipse as a share of the frame.", "input_schema": obj(json!({"kind": {"type": "string", "enum": ["rectangle", "ellipse", "solid", "adjustment"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track, "color": {"type": "string"}, "width_percent": {"type": "number"}, "height_percent": {"type": "number"}}), &["kind", "at_sec"])},
+        {"name": "transcribe", "description": "Speech to text for a clip, locally. Returns segments with start/end in timeline seconds. Read-only; takes a few seconds per minute of audio.", "input_schema": obj(json!({"item_id": item, "language": {"type": "string", "description": "ISO code like en; omit to detect"}}), &["item_id"])},
+        {"name": "remove_filler_words", "description": "Transcribe a clip and cut out hesitations (um, uh, er, hmm); the rest closes up. strict=true also cuts words like 'like', 'basically', 'literally', 'actually', 'so'.", "input_schema": obj(json!({"item_id": item, "strict": {"type": "boolean"}, "language": {"type": "string"}}), &["item_id"])},
+        {"name": "add_captions", "description": "Transcribe a clip and put the words on screen as caption titles on a 'Captions' track (made if needed), timed to the speech. max_chars limits a caption line (default 42).", "input_schema": obj(json!({"item_id": item, "max_chars": {"type": "number"}, "language": {"type": "string"}}), &["item_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

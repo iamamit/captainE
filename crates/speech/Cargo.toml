@@ -1,0 +1,14 @@
+[package]
+name = "captaine-speech"
+description = "Speech to text with a local Whisper (mlx_whisper), word timings, filler words, SRT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_speech"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

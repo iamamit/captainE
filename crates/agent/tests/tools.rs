@@ -108,7 +108,7 @@ fn read_tools_describe_the_project() {
         .call("nonsense", &json!({}))
         .unwrap_err()
         .contains("unknown tool"));
-    assert_eq!(tool_definitions().as_array().unwrap().len(), 19);
+    assert_eq!(tool_definitions().as_array().unwrap().len(), 22);
     for d in tool_definitions().as_array().unwrap() {
         assert!(
             d["name"].is_string()

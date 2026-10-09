@@ -1431,6 +1431,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                     (InspectorTab::History, "History"),
                     (InspectorTab::Metadata, "Metadata"),
                     (InspectorTab::Mixer, "Mixer"),
+                    (InspectorTab::Transcript, "Transcript"),
                 ] {
                     if tab(ui, l, app.inspector_tab == t).clicked() {
                         app.inspector_tab = t;
@@ -1452,6 +1453,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                             InspectorTab::History => crate::branches_ui::history_tab(app, ui),
                             InspectorTab::Metadata => metadata(app, ui),
                             InspectorTab::Mixer => mixer_tab(app, ui),
+                            InspectorTab::Transcript => crate::transcript_ui::tab(app, ui),
                         });
                 });
         });

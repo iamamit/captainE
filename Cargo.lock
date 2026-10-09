@@ -665,9 +665,11 @@ name = "captaine-agent"
 version = "0.0.1"
 dependencies = [
  "captaine-audio",
+ "captaine-interchange",
  "captaine-media",
  "captaine-model",
  "captaine-ops",
+ "captaine-speech",
  "captaine-time",
  "serde",
  "serde_json",
@@ -687,6 +689,7 @@ dependencies = [
  "captaine-ops",
  "captaine-project",
  "captaine-render",
+ "captaine-speech",
  "captaine-time",
  "cpal",
  "eframe",
@@ -744,6 +747,7 @@ dependencies = [
  "captaine-media",
  "captaine-model",
  "captaine-ops",
+ "captaine-speech",
  "captaine-time",
  "serde",
  "serde_json",
@@ -802,6 +806,14 @@ dependencies = [
  "captaine-time",
  "epaint_default_fonts",
  "png 0.17.16",
+]
+
+[[package]]
+name = "captaine-speech"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

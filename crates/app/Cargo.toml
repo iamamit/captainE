@@ -24,6 +24,7 @@ captaine-audio.workspace = true
 captaine-export.workspace = true
 captaine-agent.workspace = true
 captaine-interchange.workspace = true
+captaine-speech.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
