@@ -188,11 +188,38 @@ enum Cmd {
     Log {
         project: PathBuf,
     },
+    /// Make lightweight proxy files for faster editing (kept in <project>.cache/)
+    Proxy {
+        project: PathBuf,
+        /// Proxy height in pixels
+        #[arg(long, default_value_t = 540)]
+        height: u32,
+    },
+    /// A strip of thumbnails from a media file
+    Thumbs {
+        project: PathBuf,
+        media: String,
+        out: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        count: u32,
+        /// Width of each thumbnail in pixels
+        #[arg(long, default_value_t = 160)]
+        width: u32,
+    },
+    /// A waveform picture of a media file's audio
+    Waveform {
+        project: PathBuf,
+        media: String,
+        out: PathBuf,
+    },
     /// Render one frame (seconds) to a PNG
     Frame {
         project: PathBuf,
         at: f64,
         out: PathBuf,
+        /// Read proxies where they exist
+        #[arg(long)]
+        proxy: bool,
     },
     /// Measure the loudness of the mixdown (LUFS, peaks)
     Loudness {
@@ -206,7 +233,19 @@ enum Cmd {
         crf: u32,
         #[arg(long, default_value = "medium")]
         preset: String,
+        #[arg(long, value_enum, default_value = "h264")]
+        codec: CodecArg,
+        /// Draft quality: read proxies where they exist
+        #[arg(long)]
+        proxy: bool,
     },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum CodecArg {
+    H264,
+    Hevc,
+    Prores,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -312,6 +351,16 @@ fn nth_item(s: &Session, track: &str, index: usize) -> Result<(Id, Item, i64), S
                 t.items.len()
             )
         })
+}
+
+/// `<project file>.cache/` next to the project: proxies and other regenerable files.
+fn cache_dir(project: &std::path::Path) -> PathBuf {
+    let mut name = project
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".cache");
+    project.with_file_name(name)
 }
 
 fn tc(t: i64, rate: Rational) -> String {
@@ -749,6 +798,94 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 if en { "on" } else { "off" }
             ))
         }),
+        Cmd::Proxy { project, height } => edit_with(&project, &|s| {
+            let dir = cache_dir(&project);
+            let todo: Vec<MediaRef> = s
+                .editor
+                .project()
+                .media
+                .values()
+                .filter(|m| m.has_video && m.proxy.is_none())
+                .cloned()
+                .collect();
+            let mut ops = Vec::new();
+            for m in &todo {
+                let dst = captaine_media::cache_path(&dir, m.id, "proxy.mp4");
+                eprintln!("proxy for {} ...", m.name);
+                captaine_media::make_proxy(std::path::Path::new(&m.path), &dst, height)
+                    .map_err(|e| e.to_string())?;
+                ops.push(Op::SetProxy {
+                    media: m.id,
+                    proxy: Some(dst.to_string_lossy().into_owned()),
+                });
+            }
+            if ops.is_empty() {
+                return Ok("every video already has a proxy".into());
+            }
+            let n = ops.len();
+            s.apply(Op::Transaction {
+                description: "Create proxies".into(),
+                ops,
+            })?;
+            Ok(format!("made {n} proxy file(s) in {}", dir.display()))
+        }),
+        Cmd::Thumbs {
+            project,
+            media,
+            out,
+            count,
+            width,
+        } => {
+            let s = Session::load(&project)?;
+            let m = find_media(s.editor.project(), &media)?;
+            if !m.has_video {
+                return Err(format!("{} has no picture", m.name));
+            }
+            let len = m.duration.ok_or("media length unknown")?;
+            let mut frames = Vec::new();
+            for i in 0..count.max(1) {
+                let idx = (len.value - 1).max(0) * (2 * i as i64 + 1) / (2 * count.max(1) as i64);
+                let mut r =
+                    captaine_render::VideoReader::open(&m.path, m.width, m.height, len.rate, idx)?;
+                frames.push(r.frame(idx)?.thumbnail(width));
+            }
+            let (w, h, rgb) = captaine_render::contact_sheet(&frames);
+            captaine_render::save_rgb_png(&out, w, h, &rgb)?;
+            println!("wrote {} ({count} thumbnails)", out.display());
+            Ok(())
+        }
+        Cmd::Waveform {
+            project,
+            media,
+            out,
+        } => {
+            let s = Session::load(&project)?;
+            let m = find_media(s.editor.project(), &media)?;
+            if !m.has_audio {
+                return Err(format!("{} has no audio", m.name));
+            }
+            let len = m.duration.ok_or("media length unknown")?;
+            let secs = len.to_seconds_f64();
+            let (w, h) = (900u32, 120u32);
+            let pk = captaine_audio::media_peaks(
+                &m.path,
+                secs,
+                (w as f64 / secs).ceil().max(1.0) as u32,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut rgb = vec![24u8; (w * h * 3) as usize];
+            for x in 0..w {
+                let p = pk[((x as usize) * pk.len() / w as usize).min(pk.len() - 1)];
+                let y = |v: f32| ((1.0 - v.clamp(-1.0, 1.0)) * 0.5 * (h - 1) as f32).round() as u32;
+                for yy in y(p.max)..=y(p.min) {
+                    let i = ((yy * w + x) * 3) as usize;
+                    rgb[i..i + 3].copy_from_slice(&[120, 200, 255]);
+                }
+            }
+            captaine_render::save_rgb_png(&out, w, h, &rgb)?;
+            println!("wrote {} ({secs:.1} s)", out.display());
+            Ok(())
+        }
         Cmd::Undo { project } => edit_with(&project, &|s| {
             s.undo()
                 .map(|d| format!("undid: {d}"))
@@ -766,13 +903,21 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Frame { project, at, out } => {
+        Cmd::Frame {
+            project,
+            at,
+            out,
+            proxy,
+        } => {
             let s = Session::load(&project)?;
             let tl = timeline(&s)?;
             let tick = ticks(at, tl.rate).clamp(0, (tl.duration().value - 1).max(0));
-            let mut r =
-                captaine_render::Renderer::new(s.editor.project(), tl.id, Default::default())
-                    .map_err(|e| e.to_string())?;
+            let opts = captaine_render::RenderOptions {
+                use_proxy: proxy,
+                ..Default::default()
+            };
+            let mut r = captaine_render::Renderer::new(s.editor.project(), tl.id, opts)
+                .map_err(|e| e.to_string())?;
             r.render(tick).map_err(|e| e.to_string())?.save_png(&out)?;
             println!("wrote {} (frame at {})", out.display(), tc(tick, tl.rate));
             Ok(())
@@ -795,12 +940,23 @@ fn run(cmd: Cmd) -> Result<(), String> {
             out,
             crf,
             preset,
+            codec,
+            proxy,
         } => {
             let s = Session::load(&project)?;
             let tl = timeline(&s)?;
             let opts = captaine_export::ExportOptions {
+                codec: match codec {
+                    CodecArg::H264 => captaine_export::Codec::H264,
+                    CodecArg::Hevc => captaine_export::Codec::Hevc,
+                    CodecArg::Prores => captaine_export::Codec::ProRes,
+                },
                 crf,
                 preset,
+                render: captaine_render::RenderOptions {
+                    use_proxy: proxy,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             let started = std::time::Instant::now();

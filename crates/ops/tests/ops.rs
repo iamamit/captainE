@@ -21,6 +21,7 @@ fn gap(n: u128, dur: i64) -> Item {
 }
 
 const MEDIA: u128 = 1;
+const MEDIA24: u128 = 8;
 const TL: u128 = 2;
 const V1: u128 = 3;
 
@@ -39,6 +40,18 @@ fn editor() -> Editor {
         proxy: None,
     };
     ed.apply(Author::User, Op::AddMedia { media }).unwrap();
+    let m24 = MediaRef {
+        id: id(MEDIA24),
+        name: "m24.mov".into(),
+        path: "/m24.mov".into(),
+        duration: Some(RationalTime::new(800, Rational::FPS_24)),
+        has_audio: true,
+        width: 1920,
+        height: 1080,
+        has_video: true,
+        proxy: None,
+    };
+    ed.apply(Author::User, Op::AddMedia { media: m24 }).unwrap();
     ed.apply(
         Author::User,
         Op::AddTimeline {
@@ -260,18 +273,100 @@ fn trim_in_with_different_media_rate() {
         panic!()
     };
     assert_eq!(c.source_start, src(4));
-    // 1 timeline frame is 0.8 source frames: not representable, so refused instead of rounded
-    let err = ed
-        .apply(
-            Author::User,
-            Op::Trim {
-                item: id(10),
-                edge: Edge::In,
-                delta: t(1),
-            },
-        )
-        .unwrap_err();
-    assert!(matches!(err, OpError::Inexact(_)));
+    // 1 timeline frame is 0.8 source frames: the source start rounds down (it already showed frame 4 here)
+    ed.apply(
+        Author::User,
+        Op::Trim {
+            item: id(10),
+            edge: Edge::In,
+            delta: t(1),
+        },
+    )
+    .unwrap();
+    let Item::Clip(c) = find(&ed, 10) else {
+        panic!()
+    };
+    assert_eq!((c.source_start, c.duration), (src(4), t(54)));
+    // and undo is exact even though rounding happened
+    let before = ed.snapshot();
+    ed.apply(
+        Author::User,
+        Op::Trim {
+            item: id(10),
+            edge: Edge::In,
+            delta: t(3),
+        },
+    )
+    .unwrap();
+    assert!(ed.undo());
+    assert_eq!(ed.project(), &before);
+}
+
+#[test]
+fn split_between_source_frames_still_undoes_exactly() {
+    let mut ed = Editor::new(Project::new(ProjectSettings::default()));
+    let src = |v| RationalTime::new(v, Rational::FPS_25);
+    let media = MediaRef {
+        id: id(1),
+        name: "m".into(),
+        path: "/m".into(),
+        duration: Some(src(500)),
+        has_audio: true,
+        width: 16,
+        height: 9,
+        has_video: true,
+        proxy: None,
+    };
+    ed.apply(Author::User, Op::AddMedia { media }).unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTimeline {
+            timeline: Timeline::new(id(TL), "main", R),
+        },
+    )
+    .unwrap();
+    ed.apply(
+        Author::User,
+        Op::AddTrack {
+            timeline: id(TL),
+            index: 0,
+            track: Track::new(id(V1), "V1", TrackKind::Video),
+        },
+    )
+    .unwrap();
+    let c = Item::Clip(Clip::new(id(10), "c", id(1), src(0), t(60)));
+    insert(&mut ed, 0, c);
+    let before = ed.snapshot();
+    // tick 7 is 5.83 source frames in: the right half starts at source frame 5
+    ed.apply(
+        Author::User,
+        Op::Split {
+            item: id(10),
+            at: t(7),
+            new_id: id(11),
+        },
+    )
+    .unwrap();
+    let Item::Clip(r) = find(&ed, 11) else {
+        panic!()
+    };
+    assert_eq!((r.source_start, r.duration), (src(5), t(53)));
+    ed.apply(
+        Author::User,
+        Op::Join {
+            left: id(10),
+            right: id(11),
+        },
+    )
+    .unwrap();
+    assert_eq!(ed.project(), &before);
+    ed.undo(); // undo the join: the original right half is back exactly
+    let Item::Clip(r) = find(&ed, 11) else {
+        panic!()
+    };
+    assert_eq!(r.source_start, src(5));
+    ed.undo();
+    assert_eq!(ed.project(), &before);
 }
 
 #[test]
@@ -380,7 +475,7 @@ fn rejects_bad_input() {
         OpError::OutOfRange(_)
     ));
     // failed ops leave no trace
-    assert_eq!(ed.history().len(), 4);
+    assert_eq!(ed.history().len(), 5);
 }
 
 #[test]
@@ -497,11 +592,17 @@ fn random_op(rng: &mut Rng, ed: &Editor, next_id: &mut u128) -> Op {
                     duration: t(rng.range(1, 40)),
                 })
             } else {
+                // half the clips come from a 24 fps source so rate conversion is fuzzed too
+                let (media, rate) = if rng.below(2) == 0 {
+                    (MEDIA, R)
+                } else {
+                    (MEDIA24, Rational::FPS_24)
+                };
                 Item::Clip(Clip::new(
                     new,
                     "r",
-                    id(MEDIA),
-                    t(rng.range(0, 800)),
+                    id(media),
+                    RationalTime::new(rng.range(0, 600), rate),
                     t(rng.range(1, 150)),
                 ))
             };

@@ -155,6 +155,38 @@ pub fn media_ref(path: &Path, id: Id) -> Result<MediaRef, MediaError> {
     })
 }
 
+/// Where a media file's generated helpers (proxy, thumbnails) live: `<dir>/<id>.<what>`.
+pub fn cache_path(cache_dir: &Path, id: Id, what: &str) -> std::path::PathBuf {
+    cache_dir.join(format!("{}.{what}", id.to_full_string()))
+}
+
+/// Transcode `src` to an edit-friendly proxy: every frame intra-coded (cheap, exact seeking), at most
+/// `max_height` tall, no audio (the mixer reads the original). Returns when the file is complete.
+pub fn make_proxy(src: &Path, dst: &Path, max_height: u32) -> Result<(), MediaError> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(MediaError::Io)?;
+    }
+    let tmp = dst.with_extension("partial.mp4");
+    let vf = format!("scale=-2:'min({max_height},ih)'");
+    let out = Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-nostdin", "-i"])
+        .arg(src)
+        .args([
+            "-an", "-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "1",
+            "-pix_fmt", "yuv420p",
+        ])
+        .arg(&tmp)
+        .output()
+        .map_err(MediaError::Io)?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(MediaError::Tool(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    std::fs::rename(&tmp, dst).map_err(MediaError::Io)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

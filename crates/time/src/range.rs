@@ -116,3 +116,33 @@ mod tests {
         assert!(!a.contains(t(24)));
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+    use crate::Rational;
+
+    fn t(v: i64) -> RationalTime {
+        RationalTime::new(v, Rational::FPS_24)
+    }
+
+    #[test]
+    fn empty_ranges_contain_and_overlap_nothing() {
+        let e = TimeRange::new(t(5), t(0)).unwrap();
+        assert!(e.is_empty());
+        assert!(!e.contains(t(5)));
+        assert!(!e.overlaps(&TimeRange::new(t(0), t(10)).unwrap()));
+        assert!(e
+            .intersection(&TimeRange::new(t(0), t(10)).unwrap())
+            .is_none());
+    }
+
+    #[test]
+    fn incompatible_rates_fall_back_cleanly() {
+        // 1 frame @ 30 is not a whole frame @ 24, so the duration is expressed at the end's rate
+        let r = TimeRange::from_start_end(t(1), RationalTime::new(31, Rational::FPS_30)).unwrap();
+        assert_eq!(r.duration.rate, Rational::FPS_30);
+        assert_eq!(r.start, t(1));
+        assert!(r.contains(t(2)));
+    }
+}

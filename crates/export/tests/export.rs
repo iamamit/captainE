@@ -275,3 +275,73 @@ fn encode_args_describe_the_input() {
     assert!(j.contains("-ar 48000 -ac 2 -i a.f32"), "{j}");
     assert!(j.ends_with("o.mp4"));
 }
+
+#[test]
+fn codec_arguments() {
+    let args = |codec| {
+        let o = ExportOptions {
+            codec,
+            ..ExportOptions::default()
+        };
+        encode_args(
+            640,
+            360,
+            Rational::FPS_30,
+            48_000,
+            Path::new("a.f32"),
+            Path::new("o.mov"),
+            &o,
+        )
+        .join(" ")
+    };
+    assert!(args(Codec::H264).contains("-c:v libx264") && args(Codec::H264).contains("-c:a aac"));
+    let hevc = args(Codec::Hevc);
+    assert!(hevc.contains("-c:v libx265 -tag:v hvc1") && hevc.contains("-crf 18"));
+    let prores = args(Codec::ProRes);
+    assert!(
+        prores.contains("prores_ks")
+            && prores.contains("yuv422p10le")
+            && prores.contains("pcm_s16le")
+    );
+    assert!(!prores.contains("faststart"));
+}
+
+#[test]
+fn hevc_and_prores_files_come_out_right() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (a, b) = (scratch("c_a.mp4"), scratch("c_b.mp4"));
+    make_source(&a, true);
+    make_source(&b, false);
+    let built = build(&a, &b);
+    for (codec, name, expect) in [
+        (Codec::Hevc, "x.mp4", "hevc"),
+        (Codec::ProRes, "x.mov", "prores"),
+    ] {
+        let out = scratch(name);
+        let opts = ExportOptions {
+            codec,
+            preset: "ultrafast".into(),
+            ..ExportOptions::default()
+        };
+        export(built.ed.project(), built.tl, &out, &opts, &mut |_, _| {}).unwrap();
+        let probe_out = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&probe_out.stdout).trim(), expect);
+        assert_eq!(probe(&out).unwrap().length, 90);
+        assert!(probe(&out).unwrap().has_audio);
+    }
+}

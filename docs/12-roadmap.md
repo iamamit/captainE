@@ -21,6 +21,8 @@ Also decide: **CaptainE's license** ([11](11-licensing-and-legal.md)) and the UI
 
 ## Phase 1 — Engine core (2–3 months)
 
+**Status (2026-10-09): built headless; see [14](14-phase-1-status.md) for what is done and what is not.**
+
 - `time`, `model`, `ops` with undo/redo and the operation log; project directory format; autosave.
 - Media: probe, decode (SW + HW), proxies, thumbnails, waveforms; frame caches and prefetch.
 - Render: GPU compositor (transforms, opacity, blend modes, premultiplied linear-light), YUV/RGB conversion,

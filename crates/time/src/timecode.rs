@@ -226,3 +226,57 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn errors_describe_themselves() {
+        for e in [
+            TimecodeError::BadRate,
+            TimecodeError::DropFrameNotSupported,
+            TimecodeError::InvalidFields,
+            TimecodeError::Parse,
+            TimecodeError::Negative,
+        ] {
+            assert!(!e.to_string().is_empty());
+        }
+        let _: &dyn std::error::Error = &TimecodeError::Parse;
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        assert_eq!(
+            Timecode::from_frames(-1, Rational::FPS_24, false),
+            Err(TimecodeError::Negative)
+        );
+        let huge = Rational::new(500, 1).unwrap();
+        assert_eq!(
+            Timecode::from_frames(1, huge, false),
+            Err(TimecodeError::BadRate)
+        );
+        let tc = Timecode {
+            hours: 0,
+            minutes: 60,
+            seconds: 0,
+            frames: 0,
+            rate: Rational::FPS_24,
+            drop_frame: false,
+        };
+        assert_eq!(tc.to_frames(), Err(TimecodeError::InvalidFields));
+        assert_eq!(
+            Timecode::parse("0:00:00:00", Rational::FPS_24),
+            Err(TimecodeError::Parse)
+        );
+        assert_eq!(
+            Timecode::parse("00:00:00-00", Rational::FPS_24),
+            Err(TimecodeError::Parse)
+        );
+        assert_eq!(
+            Timecode::parse("0a:00:00:00", Rational::FPS_24),
+            Err(TimecodeError::Parse)
+        );
+        assert!(Timecode::parse(" 00:00:01.00", Rational::FPS_29_97).is_ok()); // '.' means drop-frame
+    }
+}

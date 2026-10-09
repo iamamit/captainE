@@ -228,3 +228,23 @@ mod tests {
         assert_eq!(t.rescale(sr, Rounding::Nearest).unwrap().value, 1602);
     }
 }
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    #[test]
+    fn rescale_that_does_not_fit_is_none() {
+        let t = RationalTime::new(i64::MAX, Rational::new(1, 1).unwrap());
+        assert!(t
+            .rescale(Rational::new(1_000_000, 1).unwrap(), Rounding::Floor)
+            .is_none());
+        assert!(RationalTime::new(i64::MAX, Rational::FPS_24)
+            .checked_add(RationalTime::new(1, Rational::FPS_24))
+            .is_none());
+        assert!(RationalTime::new(i64::MIN, Rational::FPS_24)
+            .checked_sub(RationalTime::new(1, Rational::FPS_24))
+            .is_none());
+        assert_eq!(RationalTime::zero(Rational::FPS_24).value, 0);
+    }
+}

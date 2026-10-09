@@ -40,8 +40,20 @@ impl From<std::io::Error> for ExportError {
     }
 }
 
+/// Output format. ProRes goes in a `.mov`; the others fit `.mp4`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    /// H.264 (x264) + AAC
+    H264,
+    /// HEVC (x265, tagged `hvc1` so Apple players accept it) + AAC
+    Hevc,
+    /// ProRes 422 HQ + 16-bit PCM audio
+    ProRes,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
+    pub codec: Codec,
     /// x264 constant rate factor (lower = better, 18 is visually lossless)
     pub crf: u32,
     pub preset: String,
@@ -52,6 +64,7 @@ pub struct ExportOptions {
 impl Default for ExportOptions {
     fn default() -> Self {
         ExportOptions {
+            codec: Codec::H264,
             crf: 18,
             preset: "medium".into(),
             audio_kbps: 192,
@@ -94,31 +107,52 @@ pub fn encode_args(
         audio.to_string_lossy().into_owned(),
     ]);
     // RGB -> limited-range BT.709 YUV, tagged as such so players decode it the way we composited it
-    a.extend(
-        [
-            "-vf",
-            "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
-        ]
-        .map(String::from),
-    );
-    a.extend(
-        [
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-color_range",
-            "tv",
-        ]
-        .map(String::from),
-    );
-    a.extend(["-c:v", "libx264", "-preset"].map(String::from));
-    a.extend([o.preset.clone(), "-crf".into(), o.crf.to_string()]);
-    a.extend(["-c:a", "aac", "-b:a"].map(String::from));
-    a.push(format!("{}k", o.audio_kbps));
-    a.extend(["-movflags", "+faststart"].map(String::from));
+    let pix = if o.codec == Codec::ProRes {
+        "yuv422p10le"
+    } else {
+        "yuv420p"
+    };
+    a.extend([
+        "-vf".to_string(),
+        format!("scale=out_color_matrix=bt709:out_range=tv,format={pix}"),
+    ]);
+    let tags = [
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_range",
+        "tv",
+    ];
+    a.extend(tags.map(String::from));
+    match o.codec {
+        Codec::H264 => {
+            a.extend(["-c:v", "libx264", "-preset"].map(String::from));
+            a.extend([o.preset.clone(), "-crf".into(), o.crf.to_string()]);
+        }
+        Codec::Hevc => {
+            a.extend(["-c:v", "libx265", "-tag:v", "hvc1", "-preset"].map(String::from));
+            a.extend([
+                o.preset.clone(),
+                "-crf".into(),
+                o.crf.to_string(),
+                "-x265-params".into(),
+                "log-level=error".into(),
+            ]);
+        }
+        Codec::ProRes => {
+            a.extend(["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"].map(String::from));
+        }
+    }
+    if o.codec == Codec::ProRes {
+        a.extend(["-c:a", "pcm_s16le"].map(String::from));
+    } else {
+        a.extend(["-c:a", "aac", "-b:a"].map(String::from));
+        a.push(format!("{}k", o.audio_kbps));
+        a.extend(["-movflags", "+faststart"].map(String::from));
+    }
     a.push(out.to_string_lossy().into_owned());
     a
 }

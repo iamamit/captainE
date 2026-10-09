@@ -28,6 +28,7 @@ there is no GUI yet. See [Building](#building) for what runs today.
 | 11 | [Licensing and legal](docs/11-licensing-and-legal.md) | Open-source licenses, codec patents, what's safe to ship |
 | 12 | [Roadmap](docs/12-roadmap.md) | Phases, deliverables, exit criteria, effort |
 | 13 | [Risks and open questions](docs/13-risks-and-open-questions.md) | What could sink it, decisions still to make |
+| 14 | [Phase 1 status](docs/14-phase-1-status.md) | What is built, decisions made while building, known gaps |
 | — | [References](docs/references.md) | Every source used, grouped by topic |
 
 ## Relationship to the other projects
@@ -49,8 +50,21 @@ cargo run -p captaine-cli -- --help
 | Crate | Role |
 |---|---|
 | `time` | `Rational`, `RationalTime`, `TimeRange`, SMPTE timecode incl. drop-frame |
-| `model` | Immutable project: media pool, timelines, tracks, clips, gaps; stable ids; copy-on-write snapshots |
-| `ops` | Invertible operations (insert, ripple delete, split/join, ripple trim, replace, transaction), `Editor` with undo/redo and history |
-| `media` | Probe files (ffprobe for now) |
-| `export` | Render the first video track through an FFmpeg filter graph (stand-in for the GPU renderer) |
-| `cli` | `captaine init/import/add/split/remove/trim/undo/redo/show/log/render`; project file = settings + op log |
+| `model` | Immutable project: media pool, timelines, tracks, clips, gaps, transform/audio properties; stable ids; copy-on-write snapshots |
+| `ops` | Invertible operations, editing gestures (overwrite, move, roll, slide, slip, ...), `Editor` with undo/redo |
+| `media` | Probe files and make proxies (ffprobe/ffmpeg for now) |
+| `render` | Timeline evaluator, frame decoder and cache, linear-light CPU compositor |
+| `audio` | Decode, mixer (gain, pan, fades), EBU R128 loudness, waveform peaks |
+| `export` | Render + mix + encode (H.264, HEVC, ProRes); byte-identical across runs |
+| `cli` | `captaine` binary: `init import add split remove lift move trim roll slide slip tidy set track undo redo show log proxy thumbs waveform frame loudness render` |
+
+Phase 1 status, decisions and known gaps: [docs/14](docs/14-phase-1-status.md).
+
+```
+captaine init proj.json --fps 30 --size 1920x1080
+captaine import proj.json clip.mp4 music.wav
+captaine add proj.json clip.mp4 --dur 6
+captaine split proj.json 2.5 && captaine set proj.json 1 --opacity 0.8 --scale 0.6 --x 300
+captaine add proj.json music.wav --track A2 && captaine set proj.json 0 --track A2 --gain-db -14
+captaine render proj.json out.mp4        # also: --codec hevc|prores, --proxy
+```

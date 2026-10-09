@@ -110,3 +110,30 @@ impl fmt::Display for Rational {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reduces_validates_and_prints() {
+        let r = Rational::new(60, 4).unwrap();
+        assert_eq!((r.num(), r.den()), (15, 1));
+        assert_eq!(r.to_string(), "15");
+        assert_eq!(Rational::FPS_29_97.to_string(), "30000/1001");
+        assert!(
+            Rational::new(0, 1).is_none()
+                && Rational::new(1, 0).is_none()
+                && Rational::new(-1, 2).is_none()
+        );
+        assert_eq!(Rational::from_int(25), Some(Rational::FPS_25));
+        assert_eq!(Rational::FPS_29_97.nominal(), 30);
+        assert_eq!(Rational::FPS_23_976.nominal(), 24);
+        assert!(
+            Rational::FPS_29_97.is_ntsc()
+                && Rational::FPS_59_94.is_ntsc()
+                && !Rational::FPS_30.is_ntsc()
+        );
+        assert!((Rational::FPS_24.as_f64() - 24.0).abs() < 1e-12);
+    }
+}

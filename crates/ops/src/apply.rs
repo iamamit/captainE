@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use captaine_model::{Clip, Gap, Id, Item, ItemLoc, Project};
+use captaine_model::{AudioProps, Clip, Gap, Id, Item, ItemLoc, Project};
 use captaine_time::{Rational, RationalTime, Rounding};
 
 use crate::{Edge, Op};
@@ -101,9 +101,18 @@ fn check_item(p: &Project, rate: Rational, item: &Item) -> Result<()> {
     Ok(())
 }
 
-/// `delta` (timeline rate) as an exact duration at `rate`.
-fn to_rate(delta: RationalTime, rate: Rational, what: &'static str) -> Result<RationalTime> {
-    delta.rescale_exact(rate).ok_or(OpError::Inexact(what))
+/// Timeline time as a source offset at `rate`, rounded down (the renderer's rule: the source frame shown
+/// `k` ticks into a clip is `floor(k * source_rate / timeline_rate)`), so cuts never change what is on screen.
+fn source_offset(delta: RationalTime, rate: Rational) -> Result<RationalTime> {
+    delta
+        .rescale(rate, Rounding::Floor)
+        .ok_or(OpError::Inexact("time in source"))
+}
+
+/// Shrink fade lengths so they fit a clip of `duration` ticks (fade-out has priority).
+fn fit_fades(fade_in: i64, fade_out: i64, duration: i64) -> (i64, i64) {
+    let fo = fade_out.min(duration);
+    (fade_in.min(duration - fo), fo)
 }
 
 fn arith<T>(v: Option<T>) -> Result<T> {
@@ -255,15 +264,27 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let rest = RationalTime::new(old.duration().value - at.value, rate);
             let (left, right) = match &old {
                 Item::Clip(c) => {
-                    let off = to_rate(*at, c.source_start.rate, "split offset in source")?;
+                    // the right half's first frame is the source frame the original showed at `at`
+                    let off = source_offset(*at, c.source_start.rate)?;
+                    // a fade-in stays with the left half and a fade-out with the right one; clamp to fit
                     let l = Clip {
                         duration: *at,
+                        audio: AudioProps {
+                            fade_in: c.audio.fade_in.min(at.value),
+                            fade_out: 0,
+                            ..c.audio
+                        },
                         ..c.clone()
                     };
                     let r = Clip {
                         id: *new_id,
                         source_start: arith(c.source_start.checked_add(off))?,
                         duration: rest,
+                        audio: AudioProps {
+                            fade_in: 0,
+                            fade_out: c.audio.fade_out.min(rest.value),
+                            ..c.audio
+                        },
                         ..c.clone()
                     };
                     (Item::Clip(l), Item::Clip(r))
@@ -285,9 +306,16 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 .track_mut(loc.track);
             t.items[loc.index] = left;
             t.items.insert(loc.index + 1, right);
-            Ok(Op::Join {
-                left: *item,
-                right: *new_id,
+            // exact undo: restore the original item and drop the new half
+            Ok(Op::Transaction {
+                description: "Undo split".into(),
+                ops: vec![
+                    Op::ReplaceRaw {
+                        item: *item,
+                        with: old,
+                    },
+                    Op::RemoveItem { item: *new_id },
+                ],
             })
         }
         Op::Join { left, right } => {
@@ -302,26 +330,41 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 p.item(ll).expect("located").clone(),
                 p.item(rl).expect("located").clone(),
             );
+            let track_id = p.timeline(ll.timeline).expect("located").tracks[ll.track].id;
             let joined = match (&l, &r) {
                 (Item::Clip(a), Item::Clip(b)) => {
-                    let contiguous = arith(a.source_start.checked_add(to_rate(
-                        a.duration,
-                        a.source_start.rate,
-                        "clip length in source",
-                    )?))
-                    .map(|end| end == b.source_start)
-                    .unwrap_or(false);
+                    // contiguous = the right clip starts where the left one ends, give or take the
+                    // one source frame lost when a cut falls between source frames
+                    let end = source_offset(a.duration, a.source_start.rate)?;
+                    let end = arith(a.source_start.checked_add(end))?;
+                    let slack = (end.value - b.source_start.value).abs() <= 1
+                        && end.rate == b.source_start.rate;
                     if a.media != b.media
                         || a.name != b.name
                         || a.enabled != b.enabled
-                        || !contiguous
+                        || a.video != b.video
+                        || (AudioProps {
+                            fade_in: 0,
+                            fade_out: 0,
+                            ..a.audio
+                        }) != (AudioProps {
+                            fade_in: 0,
+                            fade_out: 0,
+                            ..b.audio
+                        })
+                        || !slack
                     {
                         return Err(OpError::NotJoinable(
                             "clips are not a continuous run of one source",
                         ));
                     }
+                    let audio = AudioProps {
+                        fade_out: b.audio.fade_out,
+                        ..a.audio
+                    };
                     Item::Clip(Clip {
                         duration: arith(a.duration.checked_add(b.duration))?,
+                        audio,
                         ..a.clone()
                     })
                 }
@@ -331,17 +374,30 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 }),
                 _ => return Err(OpError::NotJoinable("a clip and a gap")),
             };
-            let at = l.duration();
+            if let Item::Clip(c) = &joined {
+                c.check_props(timeline_rate(p, ll.timeline))
+                    .map_err(OpError::BadProps)?;
+            }
             let t = p
                 .timeline_mut(ll.timeline)
                 .expect("located")
                 .track_mut(ll.track);
             t.items[ll.index] = joined;
             t.items.remove(rl.index);
-            Ok(Op::Split {
-                item: *left,
-                at,
-                new_id: *right,
+            // exact undo: put the left item back as it was and re-insert the right one
+            Ok(Op::Transaction {
+                description: "Undo join".into(),
+                ops: vec![
+                    Op::ReplaceRaw {
+                        item: *left,
+                        with: l.clone(),
+                    },
+                    Op::InsertItem {
+                        track: track_id,
+                        index: rl.index,
+                        item: r,
+                    },
+                ],
             })
         }
         Op::Trim { item, edge, delta } => {
@@ -351,39 +407,118 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 return Err(OpError::BadDuration(*item));
             }
             let old = p.item(loc).expect("located").clone();
-            let new = match (&old, edge) {
-                (Item::Clip(c), Edge::In) => Item::Clip(Clip {
-                    source_start: arith(c.source_start.checked_add(to_rate(
-                        *delta,
-                        c.source_start.rate,
-                        "trim in source",
-                    )?))?,
-                    duration: arith(c.duration.checked_sub(*delta))?,
-                    ..c.clone()
-                }),
-                (Item::Clip(c), Edge::Out) => Item::Clip(Clip {
-                    duration: arith(c.duration.checked_add(*delta))?,
-                    ..c.clone()
-                }),
-                (Item::Gap(g), Edge::In) => Item::Gap(Gap {
-                    id: g.id,
-                    duration: arith(g.duration.checked_sub(*delta))?,
-                }),
-                (Item::Gap(g), Edge::Out) => Item::Gap(Gap {
-                    id: g.id,
-                    duration: arith(g.duration.checked_add(*delta))?,
-                }),
+            let (new, inverse) = match (&old, edge) {
+                (Item::Clip(c), _) => {
+                    let (start, duration) = match edge {
+                        Edge::In => (
+                            arith(
+                                c.source_start
+                                    .checked_add(source_offset(*delta, c.source_start.rate)?),
+                            )?,
+                            arith(c.duration.checked_sub(*delta))?,
+                        ),
+                        Edge::Out => (c.source_start, arith(c.duration.checked_add(*delta))?),
+                    };
+                    // fades that no longer fit are shortened; undo puts them back
+                    let (fi, fo) = fit_fades(c.audio.fade_in, c.audio.fade_out, duration.value);
+                    let audio = AudioProps {
+                        fade_in: fi,
+                        fade_out: fo,
+                        ..c.audio
+                    };
+                    let new = Item::Clip(Clip {
+                        source_start: start,
+                        duration,
+                        audio,
+                        ..c.clone()
+                    });
+                    let mut undo = vec![Op::SetRange {
+                        item: *item,
+                        source_start: c.source_start,
+                        duration: c.duration,
+                    }];
+                    if audio != c.audio {
+                        undo.push(Op::SetAudio {
+                            item: *item,
+                            audio: c.audio,
+                        });
+                    }
+                    let inverse = if undo.len() == 1 {
+                        undo.remove(0)
+                    } else {
+                        Op::Transaction {
+                            description: "Undo trim".into(),
+                            ops: undo,
+                        }
+                    };
+                    (new, inverse)
+                }
+                (Item::Gap(g), _) => {
+                    let d = match edge {
+                        Edge::In => arith(g.duration.checked_sub(*delta))?,
+                        Edge::Out => arith(g.duration.checked_add(*delta))?,
+                    };
+                    let inv = Op::Trim {
+                        item: *item,
+                        edge: *edge,
+                        delta: RationalTime::new(-delta.value, rate),
+                    };
+                    (
+                        Item::Gap(Gap {
+                            id: g.id,
+                            duration: d,
+                        }),
+                        inv,
+                    )
+                }
             };
             check_item(p, rate, &new)?;
             p.timeline_mut(loc.timeline)
                 .expect("located")
                 .track_mut(loc.track)
                 .items[loc.index] = new;
-            let back = RationalTime::new(-delta.value, rate);
-            Ok(Op::Trim {
+            Ok(inverse)
+        }
+        Op::SetRange {
+            item,
+            source_start,
+            duration,
+        } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            let new = Item::Clip(Clip {
+                source_start: *source_start,
+                duration: *duration,
+                ..c.clone()
+            });
+            check_item(p, rate, &new)?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::SetRange {
                 item: *item,
-                edge: *edge,
-                delta: back,
+                source_start: c.source_start,
+                duration: c.duration,
+            })
+        }
+        Op::ReplaceRaw { item, with } => {
+            // like ReplaceItem but the new item may differ in length (used by undo of Join)
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            check_item(p, rate, with)?;
+            let slot = &mut p
+                .timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index];
+            let old = std::mem::replace(slot, with.clone());
+            Ok(Op::ReplaceRaw {
+                item: with.id(),
+                with: old,
             })
         }
         Op::Slip { item, delta } => {
@@ -395,19 +530,20 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             let Item::Clip(c) = p.item(loc).expect("located").clone() else {
                 return Err(OpError::NotFound("clip", *item));
             };
-            let d = to_rate(*delta, c.source_start.rate, "slip in source")?;
+            let d = source_offset(*delta, c.source_start.rate)?;
             let new = Item::Clip(Clip {
                 source_start: arith(c.source_start.checked_add(d))?,
-                ..c
+                ..c.clone()
             });
             check_item(p, rate, &new)?;
             p.timeline_mut(loc.timeline)
                 .expect("located")
                 .track_mut(loc.track)
                 .items[loc.index] = new;
-            Ok(Op::Slip {
+            Ok(Op::SetRange {
                 item: *item,
-                delta: RationalTime::new(-delta.value, rate),
+                source_start: c.source_start,
+                duration: c.duration,
             })
         }
         Op::SetVideo { item, video } => {

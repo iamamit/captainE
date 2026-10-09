@@ -13,5 +13,5 @@ mod renderer;
 pub use composite::draw_layer;
 pub use decode::{FrameCache, VideoReader};
 pub use eval::{layers_at, Layer, TimelineIndex};
-pub use frame::{Canvas, Frame8};
+pub use frame::{contact_sheet, save_rgb_png, Canvas, Frame8};
 pub use renderer::{RenderError, RenderOptions, Renderer};

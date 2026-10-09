@@ -66,6 +66,17 @@ pub enum Op {
         edge: Edge,
         delta: RationalTime,
     },
+    /// Set a clip's source window and length exactly (ripple). The exact inverse of trims and slips.
+    SetRange {
+        item: Id,
+        source_start: RationalTime,
+        duration: RationalTime,
+    },
+    /// Swap an item for another of any length. Internal: the undo of `Join`.
+    ReplaceRaw {
+        item: Id,
+        with: Item,
+    },
     /// Move the source window under a clip without changing where or how long it is.
     Slip {
         item: Id,
@@ -124,6 +135,8 @@ impl Op {
             Op::Split { item, at, .. } => format!("Split {item} at +{}", at.value),
             Op::Join { left, right } => format!("Join {left} and {right}"),
             Op::Trim { item, edge, delta } => format!("Trim {edge:?} of {item} by {}", delta.value),
+            Op::SetRange { item, .. } => format!("Set range of {item}"),
+            Op::ReplaceRaw { item, .. } => format!("Replace {item}"),
             Op::Slip { item, delta } => format!("Slip {item} by {}", delta.value),
             Op::SetVideo { item, .. } => format!("Set video properties of {item}"),
             Op::SetAudio { item, .. } => format!("Set audio properties of {item}"),

@@ -374,12 +374,16 @@ fn fuzz_gestures_keep_invariants_and_undo() {
             let at = t(rng.below(200) as i64);
             let dur = t(1 + rng.below(80) as i64);
             let op = match rng.below(8) {
-                0 | 1 => edit::overwrite(
-                    p,
-                    track,
-                    at,
-                    Clip::new(id(next), "n", id(1), t(rng.below(800) as i64), dur),
-                ),
+                0 | 1 => {
+                    // alternate between 30 fps and 24 fps sources on the 30 fps timeline
+                    let (m, rate) = if rng.below(2) == 0 {
+                        (1, Rational::FPS_30)
+                    } else {
+                        (7, Rational::FPS_24)
+                    };
+                    let src = RationalTime::new(rng.below(600) as i64, rate);
+                    edit::overwrite(p, track, at, Clip::new(id(next), "n", id(m), src, dur))
+                }
                 2 => edit::lift(p, pick(&mut rng)),
                 3 => edit::move_item(p, pick(&mut rng), tracks[rng.below(2)], at),
                 4 => edit::roll(
