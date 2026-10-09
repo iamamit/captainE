@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use std::hash::{Hash, Hasher};
 
-use captaine_model::{Effect, Id, Project, Title, TransitionKind, VideoProps};
+use captaine_model::{Effect, EffectKind, Id, Project, Title, TransitionKind, VideoProps};
 
 use crate::{
-    apply_effects, draw_layer, draw_layer_fx, layers_at, render_title, Canvas, Frame8, FrameCache,
-    Layer, LayerFx, TimelineIndex, TransitionState, VideoReader,
+    apply_effects, apply_effects_with, draw_layer, draw_layer_fx, layers_at, render_title, Canvas,
+    Frame8, FrameCache, Layer, LayerFx, TimelineIndex, TransitionState, VideoReader,
 };
 
 #[derive(Debug)]
@@ -65,6 +65,8 @@ pub struct Renderer {
     cache: FrameCache,
     readers: HashMap<Id, (VideoReader, u64)>,
     titles: HashMap<u64, Arc<Frame8>>,
+    /// Open matte videos (path -> reader), most recently used last
+    mattes: HashMap<String, (VideoReader, u64)>,
     clock: u64,
 }
 
@@ -84,6 +86,7 @@ impl Renderer {
             opts,
             readers: HashMap::new(),
             titles: HashMap::new(),
+            mattes: HashMap::new(),
             clock: 0,
         })
     }
@@ -162,6 +165,27 @@ impl Renderer {
         let f = reader.frame(frame).map_err(RenderError::Decode)?;
         self.cache.insert(media, frame, f.clone());
         Ok(f)
+    }
+
+    /// Frame `index` of a matte video, or None if the file cannot be read.
+    fn matte_frame(&mut self, path: &str, index: i64) -> Option<Arc<Frame8>> {
+        self.clock += 1;
+        if !self.mattes.contains_key(path) {
+            if self.mattes.len() >= 8 {
+                let oldest = self
+                    .mattes
+                    .iter()
+                    .min_by_key(|(_, (_, t))| *t)
+                    .map(|(k, _)| k.clone())?;
+                self.mattes.remove(&oldest);
+            }
+            let (w, h, fps) = probe_video(path)?;
+            let r = VideoReader::open(path, w, h, fps, index.max(0)).ok()?;
+            self.mattes.insert(path.to_string(), (r, self.clock));
+        }
+        let (r, used) = self.mattes.get_mut(path)?;
+        *used = self.clock;
+        r.frame(index.max(0)).ok()
     }
 
     /// The picture of a title on the current canvas, drawn once and kept.
@@ -256,7 +280,15 @@ impl Renderer {
                     effects,
                 } => {
                     let mut f = self.fetch(clip, media, frame, back)?;
-                    if let Some(g) = apply_effects(&f, &effects) {
+                    let mattes: Vec<Option<Arc<Frame8>>> = effects
+                        .iter()
+                        .map(|e| {
+                            (e.enabled && e.kind == EffectKind::Matte && !e.text.is_empty())
+                                .then(|| self.matte_frame(&e.text, frame - e.params[3] as i64))
+                                .flatten()
+                        })
+                        .collect();
+                    if let Some(g) = apply_effects_with(&f, &effects, &mattes) {
                         f = Arc::new(g);
                     }
                     draw_layer_fx(&mut canvas, &f, &props, &fx);
@@ -304,4 +336,31 @@ fn transition_fx(t: TransitionState) -> LayerFx {
         (TransitionKind::PushRight, false) => fx.shift.0 = p,
     }
     fx
+}
+
+/// Size and frame rate of a video file, by asking ffprobe.
+fn probe_video(path: &str) -> Option<(u32, u32, captaine_time::Rational)> {
+    let out = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut f = text.trim().split(',');
+    let (w, h) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?);
+    let (n, d) = f.next()?.split_once('/')?;
+    Some((
+        w,
+        h,
+        captaine_time::Rational::new(n.parse().ok()?, d.parse().ok()?)?,
+    ))
 }

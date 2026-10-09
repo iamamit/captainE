@@ -31,7 +31,7 @@ v09	Video	Motion tracking	2	0
 v10	Video	Text animators and animation presets	3	0.75	in/out animation presets (fade, slides, pop, zoom, typewriter) for titles and layers as editable keyframes; Copilot animate_title; no per-letter or word animators
 v11	Video	Adjustment layers	3	0.75	adjustment layer with the full effects stack, masks limit its reach, opacity mixes; applies to all tracks below
 v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V, rotate, fit and fill buttons
-v13	Video	AI background removal / rotoscoping	3	0	
+v13	Video	AI background removal / rotoscoping	3	0.75	AI subject cut-out via Apple Vision (people, animals, objects; person mode): matte video cached, Subject matte effect with feather/choke/invert, background job, Copilot remove_background; macOS only, no manual refine strokes
 c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.5	4 controls
 c02	Color	Wheels, curves, HSL	4	0.5	lift/gamma/gain wheels, 4-curve editor, 6-band HSL as slider effects; no graphical wheels/curve drag, no secondaries/qualifiers
 c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, vectorscope, histogram over the viewer; fixed size

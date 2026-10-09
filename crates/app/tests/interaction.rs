@@ -1335,3 +1335,42 @@ fn title_animation_presets_and_styling_from_the_inspector() {
     settle(&mut h);
     assert_eq!(title(app(&h)).font.as_deref(), Some("builtin:mono"));
 }
+
+#[test]
+fn remove_background_runs_in_the_background_and_lands_as_one_effect() {
+    if !have_ffmpeg() || captaine_vision::unavailable().is_some() {
+        return;
+    }
+    let mut h = editor();
+    let id = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    h.get_by_label("Remove background").scroll_to_me();
+    settle(&mut h);
+    let history = app(&h).session.editor.history().len();
+    h.get_by_label("Remove background").click();
+    for _ in 0..1200 {
+        h.step();
+        if !app(&h).vision_jobs.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        } else {
+            break;
+        }
+    }
+    assert!(app(&h).vision_jobs.is_empty(), "the job finished");
+    let c = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("a clip"),
+    };
+    assert_eq!(c.effects[0].kind, EffectKind::Matte);
+    assert!(std::path::Path::new(&c.effects[0].text).exists());
+    assert_eq!(app(&h).session.editor.history().len(), history + 1);
+    app_mut(&mut h).undo();
+    assert!(match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.effects.is_empty(),
+        _ => false,
+    });
+}

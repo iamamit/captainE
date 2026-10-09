@@ -323,6 +323,7 @@ impl ToolBox {
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
             "add_layer" => self.add_layer(input),
+            "remove_background" => self.remove_background_tool(input),
             "animate_title" => self.animate_title(input),
             "add_marker" => self.add_marker_tool(input),
             "remove_marker" => self.remove_marker_tool(input),
@@ -951,6 +952,24 @@ impl ToolBox {
         self.describe(t.id)
     }
 
+    fn remove_background_tool(&mut self, input: &Value) -> R {
+        let (clip, media, _) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let mode = match text(input, "mode").unwrap_or("subject") {
+            "subject" => captaine_vision::MatteMode::Subject,
+            "person" => captaine_vision::MatteMode::Person,
+            other => return Err(format!("mode is 'subject' or 'person', not '{other}'")),
+        };
+        let fx = crate::matte::remove_background(&clip, &media, mode)?;
+        let mut effects = clip.effects.clone();
+        effects.retain(|e| e.kind != EffectKind::Matte);
+        effects.insert(0, fx);
+        self.commit(Op::SetEffects {
+            item: clip.id,
+            effects,
+        })?;
+        self.describe(clip.id)
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -1157,6 +1176,7 @@ pub fn tool_definitions() -> Value {
         {"name": "add_marker", "description": "Pin a marker (a chapter, a note to self) on the timeline at a time. Optional note, duration_sec for a range, color (blue, green, yellow, red, purple, cyan).", "input_schema": obj(json!({"at_sec": {"type": "number"}, "name": {"type": "string"}, "note": {"type": "string"}, "duration_sec": {"type": "number"}, "color": {"type": "string"}}), &["at_sec", "name"])},
         {"name": "remove_marker", "description": "Remove a marker by its id (see get_timeline) or its exact name.", "input_schema": obj(json!({"marker_id": {"type": "string"}}), &["marker_id"])},
         {"name": "animate_title", "description": "Animate how a title or layer comes on (direction in) or goes off (out) with a preset: fade, slide_up, slide_down, slide_left, slide_right, pop, zoom, typewriter (in only). duration_sec is how long the move takes (default 0.6).", "input_schema": obj(json!({"item_id": item, "preset": {"type": "string"}, "direction": {"type": "string", "enum": ["in", "out"]}, "duration_sec": {"type": "number"}}), &["item_id", "preset"])},
+        {"name": "remove_background", "description": "Cut the subject out of its background using Apple's on-device vision model (Mac only): the background becomes transparent, so whatever is on the tracks below shows through. mode 'subject' (default: people, animals, objects) or 'person'. Takes a few seconds per second of footage.", "input_schema": obj(json!({"item_id": item, "mode": {"type": "string", "enum": ["subject", "person"]}}), &["item_id"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

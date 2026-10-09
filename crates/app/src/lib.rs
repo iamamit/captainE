@@ -18,6 +18,7 @@ pub mod titles_ui;
 pub mod transcript_ui;
 pub mod ui;
 pub mod viewer;
+pub mod vision_jobs;
 pub mod worker;
 
 use std::path::{Path, PathBuf};

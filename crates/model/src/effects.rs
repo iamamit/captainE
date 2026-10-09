@@ -18,6 +18,7 @@ pub enum EffectKind {
     Hsl,
     Lut,
     Mask,
+    Matte,
     // sound
     Eq,
     Compressor,
@@ -46,7 +47,7 @@ const fn p(name: &'static str, min: f64, max: f64, default: f64, decimals: usize
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 18] = [
+    pub const ALL: [EffectKind; 19] = [
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::Vignette,
@@ -59,6 +60,7 @@ impl EffectKind {
         EffectKind::Hsl,
         EffectKind::Lut,
         EffectKind::Mask,
+        EffectKind::Matte,
         EffectKind::Eq,
         EffectKind::Compressor,
         EffectKind::Limiter,
@@ -94,6 +96,7 @@ impl EffectKind {
             EffectKind::Hsl => "Hue / Sat / Lum",
             EffectKind::Lut => "LUT",
             EffectKind::Mask => "Mask",
+            EffectKind::Matte => "Subject matte",
             EffectKind::Eq => "EQ",
             EffectKind::Compressor => "Compressor",
             EffectKind::Limiter => "Limiter",
@@ -118,6 +121,7 @@ impl EffectKind {
             EffectKind::Hsl => "hsl",
             EffectKind::Lut => "lut",
             EffectKind::Mask => "mask",
+            EffectKind::Matte => "matte",
             EffectKind::Eq => "eq",
             EffectKind::Compressor => "compressor",
             EffectKind::Limiter => "limiter",
@@ -145,6 +149,7 @@ impl EffectKind {
             EffectKind::Hsl => &HSL,
             EffectKind::Lut => &LUT,
             EffectKind::Mask => &MASK,
+            EffectKind::Matte => &MATTE,
             EffectKind::Eq => &EQ,
             EffectKind::Compressor => &COMPRESSOR,
             EffectKind::Limiter => &LIMITER,
@@ -251,6 +256,14 @@ static MASK: [ParamDef; 8] = [
     p("Rotation", -180.0, 180.0, 0.0, 0),
     p("Feather", 0.0, 50.0, 8.0, 1),
     p("Invert", 0.0, 1.0, 0.0, 0),
+];
+// The picture is kept where the matte video (the effect's `text`: a grey video, white = keep) is white.
+// `Offset` is the source frame the matte video's first frame belongs to.
+static MATTE: [ParamDef; 4] = [
+    p("Invert", 0.0, 1.0, 0.0, 0),
+    p("Feather", 0.0, 30.0, 1.5, 1),
+    p("Choke", -10.0, 10.0, 0.0, 1),
+    p("Offset", 0.0, 100_000_000.0, 0.0, 0),
 ];
 // four bands: low shelf, two peaking bands, high shelf (gain in dB, frequency in Hz)
 static EQ: [ParamDef; 10] = [

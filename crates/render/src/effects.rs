@@ -6,14 +6,25 @@ use crate::Frame8;
 
 /// The frame with every enabled effect applied in order, or `None` when there is nothing to do.
 pub fn apply_effects(frame: &Frame8, effects: &[Effect]) -> Option<Frame8> {
+    apply_effects_with(frame, effects, &[])
+}
+
+/// Like [`apply_effects`], with the matte picture for each Subject matte effect: `mattes[i]` belongs to
+/// `effects[i]` (missing or `None`: the matte is not available, so the effect passes the picture through).
+pub fn apply_effects_with(
+    frame: &Frame8,
+    effects: &[Effect],
+    mattes: &[Option<std::sync::Arc<Frame8>>],
+) -> Option<Frame8> {
     let mut active = effects
         .iter()
-        .filter(|e| e.enabled && !e.kind.is_audio())
+        .enumerate()
+        .filter(|(_, e)| e.enabled && !e.kind.is_audio())
         .peekable();
     active.peek()?;
     let mut out = frame.clone();
     let k = (frame.height as f64 / 1080.0).max(0.01);
-    for e in active {
+    for (i, e) in active {
         let p = &e.params;
         match e.kind {
             EffectKind::Blur => blur(&mut out, p[0] * k),
@@ -34,6 +45,11 @@ pub fn apply_effects(frame: &Frame8, effects: &[Effect]) -> Option<Frame8> {
             EffectKind::Hsl => hsl(&mut out, p),
             EffectKind::Lut => lut(&mut out, &e.text, p[0] / 100.0),
             EffectKind::Mask => mask(&mut out, p),
+            EffectKind::Matte => {
+                if let Some(Some(m)) = mattes.get(i) {
+                    subject_matte(&mut out, m, p[0] >= 0.5, p[1] * k, p[2] * k);
+                }
+            }
             _ => {}
         }
     }
@@ -298,6 +314,79 @@ fn mask(f: &mut Frame8, p: &[f64]) {
             f.rgba[i + 3] = (f.rgba[i + 3] as f64 * inside).round() as u8;
         }
     }
+}
+
+/// Keep the picture where `matte` (a grey picture of any size) is white. The matte is stretched to the
+/// frame, softened by `feather` pixels and grown (`choke` > 0 shrinks the subject) by `choke` pixels.
+fn subject_matte(f: &mut Frame8, matte: &Frame8, invert: bool, feather: f64, choke: f64) {
+    let (w, h) = (f.width as usize, f.height as usize);
+    // the matte as a frame-sized float grid in 0..1
+    let mut m = vec![0.0f32; w * h];
+    let (mw, mh) = (matte.width as f32, matte.height as f32);
+    for y in 0..h {
+        let sy = ((y as f32 + 0.5) / h as f32 * mh - 0.5).clamp(0.0, mh - 1.0);
+        let (y0, fy) = (sy.floor() as usize, sy.fract());
+        let y1 = (y0 + 1).min(matte.height as usize - 1);
+        for x in 0..w {
+            let sx = ((x as f32 + 0.5) / w as f32 * mw - 0.5).clamp(0.0, mw - 1.0);
+            let (x0, fx) = (sx.floor() as usize, sx.fract());
+            let x1 = (x0 + 1).min(matte.width as usize - 1);
+            let at = |xx: usize, yy: usize| {
+                matte.rgba[(yy * matte.width as usize + xx) * 4] as f32 / 255.0
+            };
+            let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+            let bot = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+            m[y * w + x] = top * (1.0 - fy) + bot * fy;
+        }
+    }
+    // choke: erode (positive) or dilate (negative) with a separable min/max, then soften
+    let r = choke.abs().round() as usize;
+    if r > 0 {
+        m = morph(&m, w, h, r, choke > 0.0);
+    }
+    if feather >= 0.5 {
+        let mut px = vec![0.0f32; w * h * 4];
+        for (i, v) in m.iter().enumerate() {
+            px[i * 4] = *v;
+            px[i * 4 + 3] = 1.0;
+        }
+        let soft = blur_premul(px, w, h, feather / 2.0);
+        for (i, v) in m.iter_mut().enumerate() {
+            *v = soft[i * 4];
+        }
+    }
+    for (i, v) in m.iter().enumerate() {
+        let keep = if invert { 1.0 - v } else { *v };
+        f.rgba[i * 4 + 3] = (f.rgba[i * 4 + 3] as f32 * keep.clamp(0.0, 1.0)).round() as u8;
+    }
+}
+
+/// Minimum (erode) or maximum (dilate) over a square window of half-width `r`.
+fn morph(m: &[f32], w: usize, h: usize, r: usize, erode: bool) -> Vec<f32> {
+    let pick = |a: f32, b: f32| if erode { a.min(b) } else { a.max(b) };
+    let mut tmp = vec![0.0f32; m.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = m[y * w + x];
+            for d in 1..=r {
+                v = pick(v, m[y * w + x.saturating_sub(d)]);
+                v = pick(v, m[y * w + (x + d).min(w - 1)]);
+            }
+            tmp[y * w + x] = v;
+        }
+    }
+    let mut out = vec![0.0f32; m.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = tmp[y * w + x];
+            for d in 1..=r {
+                v = pick(v, tmp[y.saturating_sub(d) * w + x]);
+                v = pick(v, tmp[(y + d).min(h - 1) * w + x]);
+            }
+            out[y * w + x] = v;
+        }
+    }
+    out
 }
 
 /// Apply one 256-entry table per colour channel.
@@ -597,6 +686,79 @@ fn lut(f: &mut Frame8, path: &str, strength: f64) {
                 .round()
                 .clamp(0.0, 255.0) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod matte_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn white_left_half(w: u32, h: u32) -> Frame8 {
+        let mut m = Frame8::solid(w, h, [0, 0, 0, 255]);
+        for y in 0..h {
+            for x in 0..w / 2 {
+                let i = ((y * w + x) * 4) as usize;
+                m.rgba[i..i + 3].fill(255);
+            }
+        }
+        m
+    }
+
+    fn alpha(f: &Frame8, x: u32, y: u32) -> u8 {
+        f.rgba[((y * f.width + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn the_matte_keeps_white_and_hides_black_whatever_its_size() {
+        let pic = Frame8::solid(64, 32, [200, 100, 50, 255]);
+        let mut e = Effect::new(EffectKind::Matte);
+        e.params = vec![0.0, 0.0, 0.0, 0.0];
+        // a matte a quarter of the size is stretched over the picture
+        let out = apply_effects_with(
+            &pic,
+            std::slice::from_ref(&e),
+            &[Some(Arc::new(white_left_half(16, 8)))],
+        )
+        .unwrap();
+        assert_eq!((alpha(&out, 5, 16), alpha(&out, 60, 16)), (255, 0));
+        // inverted
+        e.params[0] = 1.0;
+        let inv = apply_effects_with(
+            &pic,
+            std::slice::from_ref(&e),
+            &[Some(Arc::new(white_left_half(16, 8)))],
+        )
+        .unwrap();
+        assert_eq!((alpha(&inv, 5, 16), alpha(&inv, 60, 16)), (0, 255));
+        // no matte available: the picture passes through
+        e.params[0] = 0.0;
+        let none = apply_effects_with(&pic, std::slice::from_ref(&e), &[None]).unwrap();
+        assert_eq!(none, pic);
+    }
+
+    #[test]
+    fn feather_softens_and_choke_shrinks_the_edge() {
+        // sizes are relative to a 1080-pixel-tall frame
+        let pic = Frame8::solid(64, 1080, [200, 100, 50, 255]);
+        let matte = Arc::new(white_left_half(64, 1080));
+        let mut e = Effect::new(EffectKind::Matte);
+        e.params = vec![0.0, 0.0, 0.0, 0.0];
+        let hard =
+            apply_effects_with(&pic, std::slice::from_ref(&e), &[Some(matte.clone())]).unwrap();
+        assert_eq!((alpha(&hard, 30, 540), alpha(&hard, 33, 540)), (255, 0));
+        e.params = vec![0.0, 30.0, 0.0, 0.0];
+        let soft =
+            apply_effects_with(&pic, std::slice::from_ref(&e), &[Some(matte.clone())]).unwrap();
+        let edge = alpha(&soft, 31, 540);
+        assert!(edge > 30 && edge < 225, "{edge}");
+        e.params = vec![0.0, 0.0, 10.0, 0.0];
+        let choked = apply_effects_with(&pic, std::slice::from_ref(&e), &[Some(matte)]).unwrap();
+        assert!(
+            alpha(&choked, 28, 540) < alpha(&hard, 28, 540),
+            "the subject lost its outer pixels"
+        );
     }
 }
 

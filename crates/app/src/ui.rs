@@ -1585,6 +1585,36 @@ pub fn toggle_transition(app: &mut App) {
 
 fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip, has_video: bool, has_audio: bool) {
     effects_stack(app, ui, clip.id, &clip.effects, has_video, has_audio);
+    if has_video {
+        subject_controls(app, ui, clip);
+    }
+}
+
+/// AI tools that need Apple's Vision framework: background removal now, tracking and reframing below.
+fn subject_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
+    section(ui, "AI");
+    let busy = app.vision_jobs.iter().any(|j| j.clip == clip.id);
+    if let Some(why) = captaine_vision::unavailable() {
+        ui.label(RichText::new(why).size(10.5).color(theme::FAINT));
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, "Remove background", false, !busy).clicked() {
+            app.remove_background(clip.id, captaine_vision::MatteMode::Subject);
+        }
+        if chip(ui, "People only", false, !busy).clicked() {
+            app.remove_background(clip.id, captaine_vision::MatteMode::Person);
+        }
+        if busy {
+            ui.spinner();
+            ui.label(RichText::new("Working…").size(11.0).color(theme::MUTED));
+        }
+    });
+    ui.label(
+        RichText::new("Runs on this Mac with Apple's vision model. The cut-out is an effect: switch it off or tune Feather and Choke.")
+            .size(10.5)
+            .color(theme::FAINT),
+    );
 }
 
 /// The effects list of a clip or of a generated layer, with add / remove / on-off and sliders.

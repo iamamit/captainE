@@ -201,6 +201,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Background jobs that need Apple's Vision framework
+    pub vision_jobs: Vec<crate::vision_jobs::VisionJob>,
     /// Length of the in and out animations of titles, seconds
     pub preset_secs: f64,
     /// Linked clips are selected and edited together
@@ -295,6 +297,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            vision_jobs: Vec::new(),
             preset_secs: 0.6,
             link_on: true,
             markers_open: false,
@@ -894,6 +897,7 @@ impl App {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
         self.advance_playback();
+        self.poll_vision_jobs();
         self.update_meters(ctx);
         self.sync_worker(ctx);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
