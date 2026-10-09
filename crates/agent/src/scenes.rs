@@ -34,7 +34,7 @@ pub fn split_at_scenes(
             && tick < total
             && far(tick)
             && far(total - tick)
-            && ticks.last().is_none_or(|p| far(tick - p))
+            && ticks.last().map_or(true, |p| far(tick - p))
         {
             ticks.push(tick);
         }
