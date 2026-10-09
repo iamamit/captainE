@@ -140,9 +140,8 @@ mod tests {
             for x in 0..w {
                 let t = x as f32 / (w - 1) as f32;
                 let i = ((y * w + x) * 4) as usize;
-                for c in 0..3 {
-                    f.rgba[i + c] =
-                        ((base[c] * (0.25 + 0.75 * t) * gain).clamp(0.0, 1.0) * 255.0) as u8;
+                for (c, b) in base.iter().enumerate() {
+                    f.rgba[i + c] = ((b * (0.25 + 0.75 * t) * gain).clamp(0.0, 1.0) * 255.0) as u8;
                 }
             }
         }

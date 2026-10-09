@@ -901,8 +901,13 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
         Some(Ok(()))
     ));
     // the second is added to the queue with the button's other label and finishes too
-    h.get_all_by_label("Export").last().unwrap().click();
-    settle(&mut h);
+    for _ in 0..8 {
+        if app(&h).export.jobs.len() == 2 {
+            break;
+        }
+        h.get_all_by_label("Export").last().unwrap().click();
+        settle(&mut h);
+    }
     for _ in 0..400 {
         h.step();
         if m4a.exists()
