@@ -1,5 +1,5 @@
 use captaine_model::{
-    AudioProps, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, Transition,
+    AudioProps, Effect, Id, Item, Keyframe, MediaRef, Retime, Timeline, Title, Track, Transition,
     VideoProps,
 };
 use captaine_time::RationalTime;
@@ -129,6 +129,11 @@ pub enum Op {
         item: Id,
         transition: Option<Transition>,
     },
+    /// Replace a clip's effect list.
+    SetEffects {
+        item: Id,
+        effects: Vec<Effect>,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -191,6 +196,9 @@ impl Op {
                 Some(t) => format!("{} before {item} ({} frames)", t.kind.label(), t.duration),
                 None => format!("Remove transition before {item}"),
             },
+            Op::SetEffects { item, effects } => {
+                format!("Set effects of {item} ({} total)", effects.len())
+            }
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

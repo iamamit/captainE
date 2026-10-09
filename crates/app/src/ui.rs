@@ -1382,6 +1382,78 @@ pub fn toggle_transition(app: &mut App) {
     });
 }
 
+fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
+    section(ui, "Effects");
+    let mut fx = clip.effects.clone();
+    let key = format!("fx:{}", clip.id.to_full_string());
+    let (mut changed, mut done, mut structural) = (false, false, false);
+    let mut remove = None;
+    for (i, e) in fx.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(e.kind.label())
+                    .strong()
+                    .size(12.0)
+                    .color(if e.enabled { theme::TEXT } else { theme::FAINT }),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if chip(ui, "Remove", false, true).clicked() {
+                    remove = Some(i);
+                }
+                if chip(ui, if e.enabled { "On" } else { "Off" }, e.enabled, true).clicked() {
+                    e.enabled = !e.enabled;
+                    structural = true;
+                }
+            });
+        });
+        for (v, d) in e.params.iter_mut().zip(e.kind.params()) {
+            let r = slider_row(
+                ui,
+                d.name,
+                v,
+                d.min..=d.max,
+                d.default,
+                d.decimals,
+                "",
+                e.enabled,
+            );
+            changed |= r.changed;
+            done |= r.done;
+        }
+        ui.add_space(4.0);
+    }
+    if let Some(i) = remove {
+        fx.remove(i);
+        structural = true;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for kind in EffectKind::ALL {
+            if chip(ui, &format!("+ {}", kind.label()), false, fx.len() < 16).clicked() {
+                fx.push(Effect::new(kind));
+                structural = true;
+            }
+        }
+    });
+    if structural {
+        app.end_merge();
+        app.do_op(Op::SetEffects {
+            item: clip.id,
+            effects: fx,
+        });
+    } else if changed {
+        app.do_merging(
+            Op::SetEffects {
+                item: clip.id,
+                effects: fx,
+            },
+            &key,
+        );
+    }
+    if done {
+        app.end_merge();
+    }
+}
+
 fn transition_controls(app: &mut App, ui: &mut Ui, clip: &Clip, track: Id) {
     section(ui, "Transition");
     let Some(prev) = clip_before(app, track, clip.id) else {
@@ -1756,6 +1828,7 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     }
     if has_video {
         transition_controls(app, ui, &clip, track);
+        effects_controls(app, ui, &clip);
     }
     if vchanged && has_video {
         app.do_merging(

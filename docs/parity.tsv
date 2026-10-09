@@ -23,9 +23,9 @@ v01	Video	Transform, opacity, blend modes	4	0.75	4 blend modes
 v02	Video	Titles and text with templates and styling	4	0.5	3 templates, one font
 v03	Video	Shapes and graphics layers	3	0	
 v04	Video	Masks	3	0	
-v05	Video	Chroma key	4	0	
-v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0	
-v07	Video	Effects stack, inspector, presets	4	0	
+v05	Video	Chroma key	4	0.5	chroma key with tolerance/softness/spill; no matte view or edge refine
+v06	Video	Built-in effects (blur, sharpen, glow, vignette, crop, mirror...)	4	0.5	blur, sharpen, vignette, mirror, crop, pixelate (CPU)
+v07	Video	Effects stack, inspector, presets	4	0.5	ordered stack on clips with on/off/remove and sliders; no presets, no keyframed effect params, clips only
 v08	Video	Stabilization	3	0	
 v09	Video	Motion tracking	2	0	
 v10	Video	Text animators and animation presets	3	0	

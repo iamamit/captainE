@@ -6,6 +6,7 @@
 mod color;
 mod composite;
 mod decode;
+mod effects;
 mod eval;
 mod frame;
 mod preview;
@@ -15,6 +16,7 @@ mod title;
 
 pub use composite::{draw_layer, draw_layer_fx, LayerFx};
 pub use decode::{FrameCache, VideoReader};
+pub use effects::apply_effects;
 pub use eval::{layers_at, ClipLayer, Layer, TimelineIndex, TitleLayer, TransitionState};
 pub use frame::{contact_sheet, save_rgb_png, Canvas, Frame8};
 pub use preview::preview_project;

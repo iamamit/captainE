@@ -468,3 +468,66 @@ fn transitions_blend_the_two_clips_around_the_cut() {
     assert!(check_transition(f.ed.project(), bid, &t(61)).is_err());
     assert!(check_transition(f.ed.project(), bid, &t(60)).is_ok());
 }
+
+#[test]
+fn a_keyed_clip_shows_what_is_under_it() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (red, green) = (scratch("k-red.mp4"), scratch("k-green.mp4"));
+    solid_video(&red, "0xff0000");
+    solid_video(&green, "0x00ff00");
+    let mut f = fixture((96, 54));
+    let (mr, mg) = (add_media(&mut f, &red), add_media(&mut f, &green));
+    let (under, over) = (clip(&mr, 0, 30), clip(&mg, 0, 30));
+    let oid = over.id;
+    for (track, c) in [(f.v1, under), (f.v2, over)] {
+        f.ed.apply(Author::User, edit::append(f.ed.project(), track, c))
+            .unwrap();
+    }
+    let centre = |f: &Fixture| {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        rgb_of(&r.render(5).unwrap(), 48, 27)
+    };
+    assert!(centre(&f)[1] > 250, "the green clip covers the red one");
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: oid,
+            effects: vec![Effect::new(EffectKind::ChromaKey)],
+        },
+    )
+    .unwrap();
+    let keyed = centre(&f);
+    assert!(
+        keyed[0] > 250 && keyed[1] < 5,
+        "red shows through: {keyed:?}"
+    );
+    // an effect can be switched off and undone
+    let mut off = Effect::new(EffectKind::ChromaKey);
+    off.enabled = false;
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: oid,
+            effects: vec![off],
+        },
+    )
+    .unwrap();
+    assert!(centre(&f)[1] > 250);
+    f.ed.undo();
+    assert!(centre(&f)[0] > 250);
+    // a parameter out of range is refused
+    let mut bad = Effect::new(EffectKind::Blur);
+    bad.params = vec![1000.0];
+    assert!(f
+        .ed
+        .apply(
+            Author::User,
+            Op::SetEffects {
+                item: oid,
+                effects: vec![bad]
+            }
+        )
+        .is_err());
+}

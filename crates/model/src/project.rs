@@ -5,6 +5,7 @@ use captaine_time::{Rational, RationalTime, Rounding};
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{is_property, Anim};
+use crate::effects::{check_effects, Effect};
 use crate::Id;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,6 +190,9 @@ pub struct Clip {
     /// A transition from the clip before this one, centred on the cut between them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// Picture effects, applied in order before the transform
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -348,6 +352,7 @@ impl Clip {
             anim: Anim::default(),
             retime: Retime::default(),
             transition: None,
+            effects: Vec::new(),
             audio: AudioProps::default(),
         }
     }
@@ -398,6 +403,7 @@ impl Clip {
         if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
             return Err("fades must be non-negative and fit inside the clip");
         }
+        check_effects(&self.effects)?;
         if self.transition.is_some_and(|t| t.duration < 2) {
             return Err("a transition needs at least two frames");
         }
@@ -981,6 +987,7 @@ mod tests {
             anim: Default::default(),
             retime: Default::default(),
             transition: None,
+            effects: Vec::new(),
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

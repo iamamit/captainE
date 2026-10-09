@@ -688,3 +688,38 @@ fn transition_shortcut_and_inspector_chips() {
         TransitionKind::WipeLeft
     );
 }
+
+#[test]
+fn adding_and_removing_an_effect_in_the_inspector() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let first = |a: &App| match &v1(a).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("first item is a clip"),
+    };
+    let id = first(app(&h)).id;
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    h.get_by_label("+ Blur").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("+ Blur").click();
+    settle(&mut h);
+    h.get_by_label("+ Vignette").click();
+    settle(&mut h);
+    let kinds = |a: &App| first(a).effects.iter().map(|e| e.kind).collect::<Vec<_>>();
+    assert_eq!(kinds(app(&h)), [EffectKind::Blur, EffectKind::Vignette]);
+    // the first "Off" switches the blur off
+    h.get_all_by_label("On").next().unwrap().click();
+    settle(&mut h);
+    assert!(!first(app(&h)).effects[0].enabled);
+    h.get_all_by_label("Remove").next().unwrap().click();
+    settle(&mut h);
+    assert_eq!(kinds(app(&h)), [EffectKind::Vignette]);
+    for _ in 0..4 {
+        app_mut(&mut h).undo();
+    }
+    settle(&mut h);
+    assert!(first(app(&h)).effects.is_empty());
+}

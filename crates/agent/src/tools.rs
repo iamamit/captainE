@@ -320,6 +320,7 @@ impl ToolBox {
             "set_keyframes" => self.set_keyframes(input),
             "set_speed" => self.set_speed(input),
             "set_transition" => self.set_transition(input),
+            "set_effects" => self.set_effects(input),
             "add_title" => self.add_title(input),
             "edit_title" => self.edit_title(input),
             "remove_silences" => self.remove_silences_tool(input),
@@ -672,6 +673,62 @@ impl ToolBox {
         self.describe(item.id())
     }
 
+    fn set_effects(&mut self, input: &Value) -> R {
+        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        if !matches!(item, Item::Clip(_)) {
+            return Err("effects go on clips".into());
+        }
+        let mut list = Vec::new();
+        for e in input
+            .get("effects")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
+            let name = req_text(e, "kind")?;
+            let kind = EffectKind::from_key(name).ok_or_else(|| {
+                format!(
+                    "unknown effect '{name}'; use one of {}",
+                    EffectKind::ALL
+                        .iter()
+                        .map(|k| k.key())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            let mut fx = Effect::new(kind);
+            if let Some(en) = flag(e, "enabled") {
+                fx.enabled = en;
+            }
+            if let Some(ps) = e.get("params").and_then(Value::as_object) {
+                for (k, v) in ps {
+                    let idx = kind
+                        .params()
+                        .iter()
+                        .position(|d| d.name.to_lowercase().replace(' ', "_") == *k)
+                        .ok_or_else(|| {
+                            format!(
+                                "{name} has no parameter '{k}'; it has {}",
+                                kind.params()
+                                    .iter()
+                                    .map(|d| d.name.to_lowercase().replace(' ', "_"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })?;
+                    fx.params[idx] = v.as_f64().ok_or("parameters are numbers")?;
+                }
+            }
+            fx.check().map_err(|m| format!("{name}: {m}"))?;
+            list.push(fx);
+        }
+        self.commit(Op::SetEffects {
+            item: item.id(),
+            effects: list,
+        })?;
+        self.describe(item.id())
+    }
+
     fn add_title(&mut self, input: &Value) -> R {
         let template = parse_template(text(input, "template").unwrap_or("lower_third"))?;
         let tl = self.timeline()?.clone();
@@ -837,6 +894,7 @@ pub fn tool_definitions() -> Value {
         {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, volume (dB), pan. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},
         {"name": "set_speed", "description": "Change a clip's speed (speed_percent: 100 normal, 200 twice as fast, 50 slow motion), play it backwards (reverse) or hold its first frame (freeze). The same stretch of source plays, so the clip gets shorter or longer and later items on its track move (ripple).", "input_schema": obj(json!({"item_id": item, "speed_percent": {"type": "number"}, "reverse": {"type": "boolean"}, "freeze": {"type": "boolean"}}), &["item_id"])},
         {"name": "set_transition", "description": "Put a transition on the cut between a clip and the clip right before it (item_id is the LATER clip). kind: dissolve, dip, wipe_right, wipe_left, push_left, push_right, or none to remove. The overlap is centred on the cut and does not change any lengths; it cannot be longer than twice the shorter of the two clips.", "input_schema": obj(json!({"item_id": item, "kind": {"type": "string", "enum": ["dissolve", "dip", "wipe_right", "wipe_left", "push_left", "push_right", "none"]}, "duration_sec": {"type": "number"}}), &["item_id"])},
+        {"name": "set_effects", "description": "Replace the picture effects of a clip (an empty list removes them). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %), pixelate (block_size px at 1080p). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption.", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
         {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p) or fades.", "input_schema": obj(json!({"item_id": item, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},

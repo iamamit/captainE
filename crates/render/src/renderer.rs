@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use std::hash::{Hash, Hasher};
 
-use captaine_model::{Id, Project, Title, TransitionKind, VideoProps};
+use captaine_model::{Effect, Id, Project, Title, TransitionKind, VideoProps};
 
 use crate::{
-    draw_layer, draw_layer_fx, layers_at, render_title, Canvas, Frame8, FrameCache, Layer, LayerFx,
-    TimelineIndex, TransitionState, VideoReader,
+    apply_effects, draw_layer, draw_layer_fx, layers_at, render_title, Canvas, Frame8, FrameCache,
+    Layer, LayerFx, TimelineIndex, TransitionState, VideoReader,
 };
 
 #[derive(Debug)]
@@ -193,6 +193,7 @@ impl Renderer {
                 props: VideoProps,
                 back: bool,
                 fx: LayerFx,
+                effects: Vec<Effect>,
             },
             Title {
                 title: Title,
@@ -209,6 +210,7 @@ impl Renderer {
                     props: c.clip.video_at(c.local_tick),
                     back: c.clip.retime.backwards(),
                     fx: c.transition.map(transition_fx).unwrap_or_default(),
+                    effects: c.clip.effects.clone(),
                 },
                 Layer::Title(t) => {
                     let dur = t.title.duration.value;
@@ -243,8 +245,12 @@ impl Renderer {
                     props,
                     back,
                     fx,
+                    effects,
                 } => {
-                    let f = self.fetch(clip, media, frame, back)?;
+                    let mut f = self.fetch(clip, media, frame, back)?;
+                    if let Some(g) = apply_effects(&f, &effects) {
+                        f = Arc::new(g);
+                    }
                     draw_layer_fx(&mut canvas, &f, &props, &fx);
                 }
                 Want::Title { title, props } => {

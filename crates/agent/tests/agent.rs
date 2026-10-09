@@ -183,7 +183,7 @@ fn looks_then_edits_and_returns_one_suggestion() {
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
     assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 17);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -505,4 +505,44 @@ fn set_transition_puts_a_dissolve_on_the_cut() {
         .clone();
     let t = second.transition.unwrap();
     assert_eq!((t.kind, t.duration), (TransitionKind::WipeLeft, 24));
+}
+
+#[test]
+fn set_effects_adds_a_chroma_key_with_named_parameters() {
+    let (p, ids) = project();
+    let id = ids[0].to_string();
+    let model = Scripted::new(vec![
+        tool(
+            "t1",
+            "set_effects",
+            json!({"item_id": id, "effects": [{"kind": "wobble"}]}),
+        ),
+        tool(
+            "t2",
+            "set_effects",
+            json!({"item_id": id, "effects": [{"kind": "blur", "params": {"radius": 9999}}]}),
+        ),
+        tool(
+            "t3",
+            "set_effects",
+            json!({"item_id": id, "effects": [
+                {"kind": "chroma_key", "params": {"tolerance": 50, "spill_removal": 80}},
+                {"kind": "vignette"}]}),
+        ),
+        end("Keyed the green screen and added a vignette."),
+    ]);
+    let r = ask(&model, &p, "key out the green", Some(ids[0])).unwrap();
+    assert_eq!(r.new_ops.len(), 1, "only the valid call changed anything");
+    let after = apply_all(&p, &r.new_ops);
+    let c = after.timelines.values().next().unwrap().tracks[0].items[0]
+        .as_clip()
+        .unwrap()
+        .clone();
+    assert_eq!(c.effects.len(), 2);
+    assert_eq!(c.effects[0].kind, EffectKind::ChromaKey);
+    assert_eq!(
+        (c.effects[0].params[3], c.effects[0].params[5]),
+        (50.0, 80.0)
+    );
+    assert_eq!(c.effects[0].params[1], 255.0, "green key by default");
 }
