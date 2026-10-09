@@ -38,10 +38,10 @@ c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, 
 c04	Color	LUTs	3	0.5	.cube 3D LUT with strength per clip; no 1D LUTs, no LUT browser
 c05	Color	Auto color and shot matching	2	0	
 a01	Audio	Gain, pan, fades, mute, waveforms	4	1	
-a02	Audio	Mixer panel with track faders and live meters	4	0	
+a02	Audio	Mixer panel with track faders and live meters	4	0.5	mixer tab: per-track faders, mute, live peak meters and master meter; no pan/solo/buses/automation
 a03	Audio	Loudness measure and normalize to a target	4	0.5	measure only
-a04	Audio	EQ, compressor, limiter, de-esser	4	0	
-a05	Audio	Noise reduction and voice cleanup	4	0	
+a04	Audio	EQ, compressor, limiter, de-esser	4	0.5	4-band EQ, compressor, limiter, de-esser per clip; no sidechain, no spectrum display
+a05	Audio	Noise reduction and voice cleanup	4	0.5	spectral-subtraction noise reduction with sensitivity; no learn-profile or voice isolation model
 a06	Audio	Auto ducking	3	0	
 a07	Audio	Audio effect plugins (CLAP/VST)	2	0	
 a08	Audio	Voice-over recording	2	0	

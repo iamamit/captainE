@@ -6,7 +6,10 @@ use crate::Frame8;
 
 /// The frame with every enabled effect applied in order, or `None` when there is nothing to do.
 pub fn apply_effects(frame: &Frame8, effects: &[Effect]) -> Option<Frame8> {
-    let mut active = effects.iter().filter(|e| e.enabled).peekable();
+    let mut active = effects
+        .iter()
+        .filter(|e| e.enabled && !e.kind.is_audio())
+        .peekable();
     active.peek()?;
     let mut out = frame.clone();
     let k = (frame.height as f64 / 1080.0).max(0.01);
@@ -30,6 +33,7 @@ pub fn apply_effects(frame: &Frame8, effects: &[Effect]) -> Option<Frame8> {
             EffectKind::Curves => curves(&mut out, p),
             EffectKind::Hsl => hsl(&mut out, p),
             EffectKind::Lut => lut(&mut out, &e.text, p[0] / 100.0),
+            _ => {}
         }
     }
     Some(out)

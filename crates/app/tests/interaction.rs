@@ -15,7 +15,13 @@ fn have_ffmpeg() -> bool {
     Command::new("ffmpeg").arg("-version").output().is_ok()
 }
 
+/// The three test clips, made once per test run (tests run in parallel and share the files).
 fn clips(dir: &Path) -> Vec<PathBuf> {
+    static FILES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    FILES.get_or_init(|| make_clips(dir)).clone()
+}
+
+fn make_clips(dir: &Path) -> Vec<PathBuf> {
     ["a.mp4", "b.mp4", "c.mp4"]
         .iter()
         .enumerate()
@@ -731,7 +737,9 @@ fn the_scopes_panel_draws_from_the_picture_on_screen() {
     }
     let mut h = editor();
     app_mut(&mut h).playhead = 5;
+    settle(&mut h);
     h.get_by_label("Scopes").click();
+    settle(&mut h);
     for _ in 0..200 {
         h.step();
         if app(&h).scope_tex.is_some() {
@@ -753,4 +761,33 @@ fn the_scopes_panel_draws_from_the_picture_on_screen() {
     h.get_by_label("Scopes").click();
     settle(&mut h);
     assert!(!app(&h).scopes_open);
+}
+
+#[test]
+fn mixer_tab_lists_tracks_and_audio_effects_can_be_added() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let first = |a: &App| match &v1(a).items[0] {
+        Item::Clip(c) => c.clone(),
+        _ => panic!("first item is a clip"),
+    };
+    app_mut(&mut h).selected_clip = Some(first(app(&h)).id);
+    settle(&mut h);
+    // clips with sound offer the sound effects
+    h.get_by_label("+ Compressor").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("+ Compressor").click();
+    settle(&mut h);
+    assert_eq!(first(app(&h)).effects[0].kind, EffectKind::Compressor);
+    h.get_by_label("Mixer").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h).inspector_tab,
+        captaine_app::app::InspectorTab::Mixer
+    );
+    h.get_by_label("V1");
+    assert!(h.get_all_by_label("Master").count() >= 1);
+    h.get_by_label_contains("Levels follow playback");
 }

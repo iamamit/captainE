@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use captaine_model::{value_at, Clip, Id, Item, Keyframe, Project};
+use captaine_model::{value_at, Clip, Effect, Id, Item, Keyframe, Project};
 use captaine_time::{Rational, RationalTime, Rounding};
 
 use crate::decode::decode_filtered;
+use crate::dsp::apply_audio_effects;
 use crate::AudioError;
 
 /// Decode this much of a clip at a time so long recordings never sit in memory whole.
@@ -12,6 +13,9 @@ const WINDOW_SECS: usize = 30;
 
 struct MixClip {
     id: Id,
+    /// Position of the clip's track in the timeline, for metering
+    track: usize,
+    effects: Vec<Effect>,
     path: String,
     /// where the clip starts and how long it is, in output samples
     start: i64,
@@ -39,6 +43,8 @@ pub struct Mixer {
     sample_rate: u32,
     clips: Vec<MixClip>,
     total: i64,
+    /// number of tracks in the timeline
+    tracks: usize,
     windows: HashMap<(Id, i64), Arc<Vec<f32>>>,
 }
 
@@ -73,7 +79,7 @@ impl Mixer {
                 .map_or(0, |t| t.value)
         };
         let mut clips = Vec::new();
-        for track in tl.tracks.iter().filter(|t| t.enabled) {
+        for (track_ix, track) in tl.tracks.iter().enumerate().filter(|(_, t)| t.enabled) {
             // the clip just before, if it made sound: (item index, index in `clips`)
             let mut prev: Option<(usize, usize)> = None;
             for (ii, (item, start)) in track.items.iter().zip(track.item_starts()).enumerate() {
@@ -89,6 +95,13 @@ impl Mixer {
                 let (s, e) = (to_samples(start), to_samples(end));
                 clips.push(MixClip {
                     id: c.id,
+                    track: track_ix,
+                    effects: c
+                        .effects
+                        .iter()
+                        .filter(|e| e.kind.is_audio())
+                        .cloned()
+                        .collect(),
                     path: m.path.clone(),
                     start: s,
                     len: e - s,
@@ -163,6 +176,7 @@ impl Mixer {
             sample_rate: sr,
             clips,
             total,
+            tracks: tl.tracks.len(),
             windows: HashMap::new(),
         })
     }
@@ -192,21 +206,30 @@ impl Mixer {
         } else {
             c.src_secs + from as f64 * c.speed / sr
         };
-        let pcm = Arc::new(decode_filtered(
-            &c.path,
-            secs,
-            n,
-            self.sample_rate,
-            2,
-            c.speed,
-            c.reverse,
-        )?);
+        let mut pcm = decode_filtered(&c.path, secs, n, self.sample_rate, 2, c.speed, c.reverse)?;
+        apply_audio_effects(&mut pcm, self.sample_rate, &c.effects);
+        let pcm = Arc::new(pcm);
         self.windows.insert((id, w), pcm.clone());
         Ok(pcm)
     }
 
     /// `count` stereo frames starting at output sample `start`, interleaved. Not clamped.
     pub fn render(&mut self, start: i64, count: usize) -> Result<Vec<f32>, AudioError> {
+        self.render_metered(start, count, None)
+    }
+
+    /// Like [`render`], also reporting the peak level of each timeline track (by track position) in
+    /// `peaks`, after its clips' gains and fades.
+    pub fn render_metered(
+        &mut self,
+        start: i64,
+        count: usize,
+        mut peaks: Option<&mut Vec<f32>>,
+    ) -> Result<Vec<f32>, AudioError> {
+        if let Some(p) = peaks.as_deref_mut() {
+            p.clear();
+            p.resize(self.tracks, 0.0);
+        }
         let end = start + count as i64;
         let mut out = vec![0.0f32; count * 2];
         let wl = (WINDOW_SECS * self.sample_rate as usize) as i64;
@@ -245,8 +268,13 @@ impl Mixer {
                     }
                     let si = ((p - w * wl) * 2) as usize;
                     let oi = ((cs + p - start) * 2) as usize;
-                    out[oi] += win[si] * gl * g;
-                    out[oi + 1] += win[si + 1] * gr * g;
+                    let (l, r) = (win[si] * gl * g, win[si + 1] * gr * g);
+                    out[oi] += l;
+                    out[oi + 1] += r;
+                    if let Some(pk) = peaks.as_deref_mut() {
+                        let t = self.clips[ci].track;
+                        pk[t] = pk[t].max(l.abs()).max(r.abs());
+                    }
                 }
                 pos = w_end;
             }

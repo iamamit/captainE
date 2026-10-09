@@ -1299,7 +1299,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                     (InspectorTab::Inspector, "Inspector"),
                     (InspectorTab::History, "History"),
                     (InspectorTab::Metadata, "Metadata"),
-                    (InspectorTab::Effects, "Effects"),
+                    (InspectorTab::Mixer, "Mixer"),
                 ] {
                     if tab(ui, l, app.inspector_tab == t).clicked() {
                         app.inspector_tab = t;
@@ -1320,15 +1320,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                             InspectorTab::Inspector => clip_controls(app, ui),
                             InspectorTab::History => crate::branches_ui::history_tab(app, ui),
                             InspectorTab::Metadata => metadata(app, ui),
-                            InspectorTab::Effects => {
-                                ui.add_space(30.0);
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        RichText::new("Effects arrive in a later phase")
-                                            .color(theme::MUTED),
-                                    )
-                                });
-                            }
+                            InspectorTab::Mixer => mixer_tab(app, ui),
                         });
                 });
         });
@@ -1341,6 +1333,71 @@ fn section(ui: &mut Ui, title: &str) {
 }
 
 /// The clip right before `clip` on its track, if there is one without a gap between.
+/// Track faders, mute buttons and level meters.
+fn mixer_tab(app: &mut App, ui: &mut Ui) {
+    let Some(tl) = app.timeline().cloned() else {
+        return;
+    };
+    section(ui, "Tracks");
+    // the top track first, like the timeline
+    for (ix, t) in tl.tracks.iter().enumerate().rev() {
+        let level = app.meters.get(ix).copied().unwrap_or(0.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&t.name).strong().size(12.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if t.kind == TrackKind::Audio && chip(ui, "Mute", !t.enabled, true).clicked() {
+                    app.do_op(Op::SetTrack {
+                        track: t.id,
+                        enabled: !t.enabled,
+                        gain_db: t.gain_db,
+                    });
+                }
+            });
+        });
+        let mut gain = t.gain_db;
+        let r = slider_row(ui, "Fader", &mut gain, -60.0..=12.0, 0.0, 1, " dB", true);
+        if r.changed {
+            app.do_merging(
+                Op::SetTrack {
+                    track: t.id,
+                    enabled: t.enabled,
+                    gain_db: gain,
+                },
+                &format!("g:{}", t.id.to_full_string()),
+            );
+        }
+        if r.done {
+            app.end_merge();
+        }
+        meter(ui, level);
+        ui.add_space(6.0);
+    }
+    section(ui, "Master");
+    meter(ui, app.meters.last().copied().unwrap_or(0.0));
+    ui.label(
+        RichText::new("Levels follow playback. Add EQ, compression, a limiter, a de-esser or noise reduction to a clip from the Inspector.")
+            .size(10.5)
+            .color(theme::FAINT),
+    );
+}
+
+/// A horizontal level bar from -60 dB to 0 dB, red above -3 dB.
+fn meter(ui: &mut Ui, peak: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, theme::FIELD);
+    let db = 20.0 * peak.max(1e-6).log10();
+    let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+    let fill = Rect::from_min_size(rect.min, vec2(rect.width() * frac, rect.height()));
+    let colour = if db > -3.0 {
+        Color32::from_rgb(0xe5, 0x48, 0x4d)
+    } else if db > -12.0 {
+        Color32::from_rgb(0xe6, 0xb4, 0x2e)
+    } else {
+        Color32::from_rgb(0x3d, 0xc2, 0x7a)
+    };
+    ui.painter().rect_filled(fill, 2.0, colour);
+}
+
 fn clip_before(app: &App, track: Id, clip: Id) -> Option<Clip> {
     let tl = app.timeline()?;
     let t = tl.tracks.iter().find(|t| t.id == track)?;
@@ -1382,7 +1439,7 @@ pub fn toggle_transition(app: &mut App) {
     });
 }
 
-fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
+fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip, has_video: bool, has_audio: bool) {
     section(ui, "Effects");
     let mut fx = clip.effects.clone();
     let key = format!("fx:{}", clip.id.to_full_string());
@@ -1445,6 +1502,9 @@ fn effects_controls(app: &mut App, ui: &mut Ui, clip: &Clip) {
     }
     ui.horizontal_wrapped(|ui| {
         for kind in EffectKind::ALL {
+            if kind.is_audio() && !has_audio || !kind.is_audio() && !has_video {
+                continue;
+            }
             if chip(ui, &format!("+ {}", kind.label()), false, fx.len() < 16).clicked() {
                 fx.push(Effect::new(kind));
                 structural = true;
@@ -1845,8 +1905,8 @@ fn clip_controls(app: &mut App, ui: &mut Ui) {
     }
     if has_video {
         transition_controls(app, ui, &clip, track);
-        effects_controls(app, ui, &clip);
     }
+    effects_controls(app, ui, &clip, has_video, has_audio);
     if vchanged && has_video {
         app.do_merging(
             Op::SetVideo {

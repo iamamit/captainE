@@ -49,7 +49,7 @@ pub enum InspectorTab {
     Inspector,
     History,
     Metadata,
-    Effects,
+    Mixer,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -184,6 +184,8 @@ pub struct App {
     pub program_tick: i64,
     /// The scopes panel over the viewer, which kind it shows, and its picture
     pub scopes_open: bool,
+    /// Smoothed peak levels: one per timeline track, then the master
+    pub meters: Vec<f32>,
     pub scope_kind: crate::scopes::ScopeKind,
     pub scope_tex: Option<TextureHandle>,
     pub scope_src: Option<egui::ColorImage>,
@@ -254,6 +256,7 @@ impl App {
             program: None,
             program_tick: 0,
             scopes_open: false,
+            meters: Vec::new(),
             scope_kind: crate::scopes::ScopeKind::Waveform,
             scope_tex: None,
             scope_src: None,
@@ -794,6 +797,7 @@ impl App {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
         self.advance_playback();
+        self.update_meters(ctx);
         self.sync_worker(ctx);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
             self.import(vec![f.path().to_path_buf()]);
@@ -840,5 +844,31 @@ impl App {
             }
         }
         self.scope_dirty = false;
+    }
+}
+
+impl App {
+    /// Meters rise at once and fall away smoothly.
+    fn update_meters(&mut self, ctx: &Context) {
+        let fresh = if self.playing && self.audio_live {
+            self.audio.as_ref().and_then(|a| a.levels())
+        } else {
+            None
+        };
+        if fresh.is_none() && self.meters.iter().all(|m| *m < 0.001) {
+            self.meters.iter_mut().for_each(|m| *m = 0.0);
+            return;
+        }
+        let decay = if self.playing { 0.82 } else { 0.7 };
+        match fresh {
+            Some(v) => {
+                self.meters.resize(v.len(), 0.0);
+                for (m, n) in self.meters.iter_mut().zip(v) {
+                    *m = n.max(*m * decay);
+                }
+            }
+            None => self.meters.iter_mut().for_each(|m| *m *= decay),
+        }
+        ctx.request_repaint();
     }
 }

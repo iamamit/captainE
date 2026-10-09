@@ -15,6 +15,8 @@ struct Shared {
     played: AtomicI64,
     running: AtomicBool,
     generation: AtomicU64,
+    /// Peak levels per timeline track plus the master (last), tagged with the first frame they cover
+    meters: Mutex<VecDeque<(i64, Vec<f32>)>>,
 }
 
 pub struct AudioEngine {
@@ -42,6 +44,7 @@ impl AudioEngine {
             played: AtomicI64::new(0),
             running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            meters: Mutex::new(VecDeque::new()),
         });
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => build::<f32>(&device, config, channels, shared.clone())?,
@@ -64,6 +67,7 @@ impl AudioEngine {
         self.start_secs = start_secs;
         self.shared.played.store(0, Ordering::SeqCst);
         self.shared.ring.lock().expect("ring").clear();
+        self.shared.meters.lock().expect("meters").clear();
         self.shared.running.store(true, Ordering::SeqCst);
         let mut p = project.clone();
         p.settings.sample_rate = self.rate;
@@ -85,6 +89,17 @@ impl AudioEngine {
         self.start_secs + self.shared.played.load(Ordering::SeqCst) as f64 / self.rate as f64
     }
 
+    /// Peak levels (per timeline track, then master) of the block being heard now.
+    pub fn levels(&self) -> Option<Vec<f32>> {
+        let played = self.shared.played.load(Ordering::SeqCst);
+        let mut m = self.shared.meters.lock().ok()?;
+        let mut latest = None;
+        while m.front().is_some_and(|(at, _)| *at <= played) {
+            latest = m.pop_front().map(|(_, v)| v);
+        }
+        latest
+    }
+
     /// Frames of sound ready to play: false for the first moments after `start` while the mixer warms up.
     pub fn is_primed(&self) -> bool {
         self.shared.played.load(Ordering::SeqCst) > 0
@@ -102,6 +117,7 @@ fn produce(
     let mut mixer = Mixer::new(&project, timeline).ok();
     let total = mixer.as_ref().map_or(0, |m| m.total_samples());
     let mut pos = (start_secs * rate as f64).round() as i64;
+    let first = pos;
     let want = (AHEAD_SECS * rate as f64) as usize * 2;
     while shared.generation.load(Ordering::SeqCst) == generation {
         let queued = shared.ring.lock().expect("ring").len();
@@ -110,12 +126,22 @@ fn produce(
             continue;
         }
         // past the end (or nothing to mix) we keep the clock running with silence
+        let mut peaks = Vec::new();
         let block = match (&mut mixer, pos < total) {
             (Some(m), true) => m
-                .render(pos, BLOCK_FRAMES)
+                .render_metered(pos, BLOCK_FRAMES, Some(&mut peaks))
                 .unwrap_or_else(|_| vec![0.0; BLOCK_FRAMES * 2]),
             _ => vec![0.0; BLOCK_FRAMES * 2],
         };
+        let master = block.iter().fold(0f32, |m, s| m.max(s.abs()));
+        peaks.push(master);
+        {
+            let mut m = shared.meters.lock().expect("meters");
+            m.push_back((pos - first, peaks));
+            while m.len() > 64 {
+                m.pop_front();
+            }
+        }
         pos += BLOCK_FRAMES as i64;
         if shared.generation.load(Ordering::SeqCst) != generation {
             break;

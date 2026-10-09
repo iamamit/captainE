@@ -529,3 +529,40 @@ fn a_transition_crossfades_the_sound_around_the_cut() {
     );
     assert!(at(&out, 1.75) > at(&out, 2.0) && at(&out, 2.0) > at(&out, 2.25));
 }
+
+#[test]
+fn sound_effects_run_in_the_mix_and_tracks_are_metered() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let p = scratch("loud.wav");
+    sine(&p, 440.0, 0.9, 4.0);
+    let mut f = fx();
+    let m = media(&mut f, &p);
+    let id = place(&mut f, 0, 0, clip(&m, 0.0, 90));
+    place(&mut f, 1, 0, clip(&m, 0.0, 90));
+    let peak = |s: &[f32]| s.iter().fold(0f32, |a, v| a.max(v.abs()));
+    // two copies of 0.9 add up to 1.8
+    let dry = mix(&f);
+    assert!(peak(&dry) > 1.7);
+    // a limiter on one clip takes that clip to -12 dB; the other is untouched
+    let mut lim = Effect::new(EffectKind::Limiter);
+    lim.params[0] = -12.0;
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: id,
+            effects: vec![lim],
+        },
+    )
+    .unwrap();
+    let mut mixer = Mixer::new(f.ed.project(), f.tl).unwrap();
+    let mut peaks = Vec::new();
+    let out = mixer
+        .render_metered(SR as i64 / 2, 4800, Some(&mut peaks))
+        .unwrap();
+    assert_eq!(peaks.len(), 2, "one peak per track");
+    assert!(peaks[0] < 0.26, "limited track {}", peaks[0]);
+    assert!(peaks[1] > 0.85, "plain track {}", peaks[1]);
+    assert!(peak(&out) < 1.2);
+}
