@@ -268,7 +268,7 @@ impl App {
 fn relink(item: &mut Item, links: &mut std::collections::HashMap<Id, Id>) {
     if let Item::Clip(c) = item {
         if let Some(old) = c.link {
-            c.link = Some(*links.entry(old).or_insert_with(Id::new));
+            c.link = Some(*links.entry(old).or_default());
         }
     }
 }
