@@ -58,6 +58,14 @@ fn make_clips(dir: &Path) -> Vec<PathBuf> {
 type H = Harness<'static, Option<App>>;
 
 fn editor() -> H {
+    // never read the developer's own preferences: an empty place for the whole test run
+    static PREFS: std::sync::Once = std::sync::Once::new();
+    PREFS.call_once(|| {
+        std::env::set_var(
+            "CAPTAINE_PREFS",
+            std::env::temp_dir().join(format!("captaine-no-prefs-{}.json", std::process::id())),
+        )
+    });
     let dir = std::env::temp_dir().join(format!("captaine-interaction-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let files = clips(&dir);
@@ -2214,4 +2222,72 @@ fn opening_a_damaged_project_falls_back_to_its_backup_and_says_so() {
     assert!(said.iter().any(|t| t.contains("backup")), "{said:?}");
     assert_eq!(app(&h).timeline().unwrap().name, "Timeline 1");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn shortcuts_can_be_changed_in_the_preferences_and_are_remembered() {
+    use captaine_app::keymap::*;
+    if !have_ffmpeg() {
+        return;
+    }
+    // the text form of a binding survives a round trip
+    for a in ACTIONS.iter() {
+        assert_eq!(Chord::from_text(&a.2.to_text()), Some(a.2), "{}", a.1);
+    }
+    assert_eq!(Chord::from_text("Cmd+Shift+B").unwrap().label(), "⌘⇧B");
+    assert!(Chord::from_text("Cmd+Nonsense").is_none());
+    let saved = std::env::temp_dir().join(format!("captaine-prefs-ui-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&saved);
+    let mut h = editor();
+    app_mut(&mut h).prefs_path = Some(saved.clone());
+    app_mut(&mut h).prefs_open = true;
+    settle(&mut h);
+    // bind the blade tool to Q
+    h.get_by_label("Shortcut Blade tool").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Shortcut Blade tool").click();
+    settle(&mut h);
+    assert_eq!(app(&h).rebinding, Some(Action::ToolBlade));
+    h.key_press(Key::Q);
+    settle(&mut h);
+    assert_eq!(app(&h).rebinding, None);
+    assert_eq!(app(&h).keymap.label(Action::ToolBlade), "Q");
+    // the new key works, the old one no longer does
+    app_mut(&mut h).prefs_open = false;
+    settle(&mut h);
+    h.key_press(Key::Q);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Blade);
+    h.key_press(Key::V);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Select);
+    h.key_press(Key::B);
+    settle(&mut h);
+    assert_eq!(app(&h).tool, Tool::Select, "B no longer picks the blade");
+    // it was written to the file and a fresh app reads it back
+    let prefs: Prefs = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+    assert_eq!(prefs.keys.get("ToolBlade").map(String::as_str), Some("Q"));
+    assert_eq!(
+        Keymap::from_overrides(&prefs.keys).label(Action::ToolBlade),
+        "Q"
+    );
+    // a key that another action uses is refused with a message
+    let mut km = app(&h).keymap.clone();
+    let err = km
+        .set(Action::ToolHand, Chord::from_text("Q").unwrap())
+        .unwrap_err();
+    assert!(err.contains("Blade tool"), "{err}");
+    // preferences have sane limits
+    let p = Prefs {
+        ui_scale: 9.0,
+        snapshot_minutes: 1000,
+        proxy_height: 5,
+        ..Prefs::default()
+    }
+    .sane();
+    assert_eq!(
+        (p.ui_scale, p.snapshot_minutes, p.proxy_height),
+        (1.6, 120, 120)
+    );
+    let _ = std::fs::remove_file(saved);
 }

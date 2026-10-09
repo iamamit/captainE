@@ -12,6 +12,7 @@ use egui::{
 };
 
 use crate::app::*;
+use crate::keymap::Action;
 use crate::theme::{self, mono, ui_font};
 
 // ---- small widgets -----------------------------------------------------------------------------
@@ -514,12 +515,21 @@ fn menus(app: &mut App, ui: &mut Ui) {
                     crate::open_project(app, p);
                 }
             }
-            if ui.button("Import Media…   ⌘I").clicked() {
+            if ui
+                .button(format!(
+                    "Import Media…   {}",
+                    app.keymap.label(Action::Import)
+                ))
+                .clicked()
+            {
                 ui.close();
                 import_dialog(app);
             }
             ui.separator();
-            if ui.button("Export…   ⌘E").clicked() {
+            if ui
+                .button(format!("Export…   {}", app.keymap.label(Action::Export)))
+                .clicked()
+            {
                 app.export.open = true;
                 ui.close();
             }
@@ -580,7 +590,13 @@ fn menus(app: &mut App, ui: &mut Ui) {
             }
         });
         ui.menu_button("Timeline", |ui| {
-            if ui.button("Split at Playhead   ⌘B").clicked() {
+            if ui
+                .button(format!(
+                    "Split at Playhead   {}",
+                    app.keymap.label(Action::Split)
+                ))
+                .clicked()
+            {
                 split_at_playhead(app);
                 ui.close();
             }
@@ -635,11 +651,17 @@ fn menus(app: &mut App, ui: &mut Ui) {
             }
         });
         ui.menu_button("Mark", |ui| {
-            if ui.button("Mark In   I").clicked() {
+            if ui
+                .button(format!("Mark In   {}", app.keymap.label(Action::MarkIn)))
+                .clicked()
+            {
                 app.mark_in = Some(app.playhead);
                 ui.close();
             }
-            if ui.button("Mark Out   O").clicked() {
+            if ui
+                .button(format!("Mark Out   {}", app.keymap.label(Action::MarkOut)))
+                .clicked()
+            {
                 app.mark_out = Some(app.playhead);
                 ui.close();
             }
@@ -663,8 +685,17 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
             ui.separator();
-            if ui.button("Copilot   ⌘J").clicked() {
+            if ui
+                .button(format!("Copilot   {}", app.keymap.label(Action::Copilot)))
+                .clicked()
+            {
                 app.show_copilot = !app.show_copilot;
+                ui.close();
+            }
+        });
+        ui.menu_button("Settings", |ui| {
+            if ui.button("Preferences…").clicked() {
+                app.prefs_open = true;
                 ui.close();
             }
         });
@@ -974,8 +1005,14 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
+    if app.rebinding.is_some() {
+        capture_rebinding(app, ctx);
+        return;
+    }
     let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
     let none = Modifiers::NONE;
+    let keys = app.keymap.clone();
+    let act = |a: Action| keys.pressed(ctx, a);
     if app.multicam.is_some() {
         let keys = [
             Key::Num1,
@@ -999,10 +1036,10 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     }
     if app.source.open {
         // the source monitor has its own marks and its own frame stepping
-        if pressed(none, Key::I) {
+        if act(Action::MarkIn) {
             app.source.mark_in = Some(app.source.frame);
         }
-        if pressed(none, Key::O) {
+        if act(Action::MarkOut) {
             app.source.mark_out = Some(app.source.frame);
         }
         if pressed(none, Key::ArrowLeft) {
@@ -1030,10 +1067,10 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(Modifiers::COMMAND, Key::Z) {
         app.undo();
     }
-    if pressed(Modifiers::COMMAND, Key::B) {
+    if act(Action::Split) {
         split_at_playhead(app);
     }
-    if pressed(none, Key::M) {
+    if act(Action::Marker) {
         app.add_marker(None, None);
     }
     if pressed(Modifiers::ALT, Key::ArrowLeft) {
@@ -1048,25 +1085,25 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(Modifiers::COMMAND, Key::V) {
         app.paste_at(app.playhead);
     }
-    if pressed(Modifiers::COMMAND, Key::D) {
+    if act(Action::Duplicate) {
         app.duplicate_selection();
     }
-    if pressed(Modifiers::COMMAND, Key::A) {
+    if act(Action::SelectAll) {
         app.select_all();
     }
-    if pressed(Modifiers::SHIFT, Key::F) {
+    if act(Action::FreezeFrame) {
         freeze_frame(app);
     }
-    if pressed(Modifiers::COMMAND, Key::T) {
+    if act(Action::Transition) {
         toggle_transition(app);
     }
-    if pressed(Modifiers::COMMAND, Key::I) {
+    if act(Action::Import) {
         import_dialog(app);
     }
-    if pressed(Modifiers::COMMAND, Key::E) {
+    if act(Action::Export) {
         app.export.open = true;
     }
-    if pressed(Modifiers::COMMAND, Key::J) {
+    if act(Action::Copilot) {
         app.show_copilot = !app.show_copilot;
     }
     if pressed(Modifiers::SHIFT, Key::Delete) || pressed(Modifiers::SHIFT, Key::Backspace) {
@@ -1075,7 +1112,7 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(none, Key::Delete) || pressed(none, Key::Backspace) {
         lift_selection(app);
     }
-    if pressed(none, Key::Space) {
+    if act(Action::PlayPause) {
         app.toggle_play();
     }
     if pressed(none, Key::K) {
@@ -1117,31 +1154,31 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(none, Key::End) {
         app.set_playhead(app.duration_ticks());
     }
-    if pressed(none, Key::I) {
+    if act(Action::MarkIn) {
         app.mark_in = Some(app.playhead);
     }
-    if pressed(none, Key::O) {
+    if act(Action::MarkOut) {
         app.mark_out = Some(app.playhead);
     }
     if pressed(Modifiers::ALT, Key::X) {
         app.mark_in = None;
         app.mark_out = None;
     }
-    for (k, t) in [
-        (Key::V, Tool::Select),
-        (Key::T, Tool::Trim),
-        (Key::N, Tool::Roll),
-        (Key::Y, Tool::Slip),
-        (Key::U, Tool::Slide),
-        (Key::B, Tool::Blade),
-        (Key::H, Tool::Hand),
-        (Key::Z, Tool::Zoom),
+    for (a, t) in [
+        (Action::ToolSelect, Tool::Select),
+        (Action::ToolTrim, Tool::Trim),
+        (Action::ToolRoll, Tool::Roll),
+        (Action::ToolSlip, Tool::Slip),
+        (Action::ToolSlide, Tool::Slide),
+        (Action::ToolBlade, Tool::Blade),
+        (Action::ToolHand, Tool::Hand),
+        (Action::ToolZoom, Tool::Zoom),
     ] {
-        if pressed(none, k) {
+        if act(a) {
             app.tool = t;
         }
     }
-    if pressed(none, Key::S) {
+    if act(Action::Snap) {
         app.snap = !app.snap;
     }
     if pressed(none, Key::Equals) || pressed(none, Key::Plus) {
@@ -1150,7 +1187,7 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(none, Key::Minus) {
         app.pps = (app.pps / 1.25).max(1.0);
     }
-    if pressed(Modifiers::SHIFT, Key::Z) {
+    if act(Action::FitTimeline) {
         crate::timeline::fit(app);
     }
     if pressed(none, Key::Escape) {
@@ -1160,6 +1197,162 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if pressed(Modifiers::SHIFT, Key::Slash) {
         app.show_shortcuts = true;
     }
+}
+
+/// While a shortcut is being changed: take the next key pressed (Esc cancels) as its new binding.
+fn capture_rebinding(app: &mut App, ctx: &Context) {
+    let Some(action) = app.rebinding else { return };
+    let hit = ctx.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => Some((*key, *modifiers)),
+            _ => None,
+        })
+    });
+    let Some((key, m)) = hit else { return };
+    app.rebinding = None;
+    if key == Key::Escape {
+        return;
+    }
+    let chord = crate::keymap::Chord {
+        cmd: m.command,
+        shift: m.shift,
+        alt: m.alt,
+        key,
+    };
+    match app.keymap.set(action, chord) {
+        Ok(()) => save_prefs(app),
+        Err(e) => app.toast(e, true),
+    }
+}
+
+pub fn save_prefs(app: &mut App) {
+    app.prefs.keys = app.keymap.overrides();
+    if let Some(p) = app.prefs_path.clone() {
+        if let Err(e) = app.prefs.save_to(&p) {
+            app.toast(e, true);
+        }
+    }
+}
+
+fn prefs_window(app: &mut App, ctx: &Context) {
+    if !app.prefs_open {
+        return;
+    }
+    let mut open = true;
+    let mut changed = false;
+    egui::Window::new("Preferences")
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(420.0)
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label(RichText::new("Interface").strong().size(12.5));
+            let mut scale = app.prefs.ui_scale as f64;
+            let r = slider_row(
+                ui,
+                "Interface size",
+                &mut scale,
+                0.8..=1.6,
+                1.0,
+                2,
+                "×",
+                true,
+            );
+            if r.changed {
+                app.prefs.ui_scale = scale as f32;
+            }
+            if r.done {
+                ctx.set_zoom_factor(app.prefs.ui_scale);
+                changed = true;
+            }
+            ui.add_space(6.0);
+            ui.label(RichText::new("Safety and speed").strong().size(12.5));
+            let mut mins = app.prefs.snapshot_minutes as f64;
+            let r = slider_row(
+                ui,
+                "Snapshot every",
+                &mut mins,
+                0.0..=60.0,
+                5.0,
+                0,
+                " min (0 = off)",
+                true,
+            );
+            if r.changed {
+                app.prefs.snapshot_minutes = mins.round() as u32;
+            }
+            changed |= r.done;
+            let mut h = app.prefs.proxy_height as f64;
+            let r = slider_row(
+                ui,
+                "Proxy height",
+                &mut h,
+                180.0..=1080.0,
+                540.0,
+                0,
+                " px",
+                true,
+            );
+            if r.changed {
+                app.prefs.proxy_height = h.round() as u32;
+            }
+            changed |= r.done;
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Keyboard shortcuts").strong().size(12.5));
+                if chip(ui, "Reset all", false, true).clicked() {
+                    app.keymap.reset_all();
+                    changed = true;
+                }
+            });
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for (a, name, _) in crate::keymap::ACTIONS.iter() {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [170.0, 22.0],
+                                egui::Label::new(RichText::new(*name).size(12.0)),
+                            );
+                            let waiting = app.rebinding == Some(*a);
+                            let label = if waiting {
+                                "press a key…".to_string()
+                            } else {
+                                app.keymap.label(*a)
+                            };
+                            let r = chip(ui, &label, waiting, true);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    format!("Shortcut {name}"),
+                                )
+                            });
+                            if r.clicked() {
+                                app.rebinding = Some(*a);
+                            }
+                            if !app.keymap.is_default(*a)
+                                && chip(ui, "Reset", false, true).clicked()
+                            {
+                                app.keymap.reset(*a);
+                                changed = true;
+                            }
+                        });
+                    }
+                });
+        });
+    if changed {
+        save_prefs(app);
+    }
+    if !open {
+        app.rebinding = None;
+    }
+    app.prefs_open = open;
 }
 
 // ---- media pool ------------------------------------------------------------------------------------
@@ -1530,7 +1723,7 @@ fn media_cell(app: &mut App, ui: &mut Ui, m: &MediaRef, w: f32) {
             }
         });
         if m.has_video && ui.button("Make proxy").clicked() {
-            app.make_proxies(&[m.id], 540);
+            app.make_proxies(&[m.id], app.prefs.proxy_height);
             ui.close();
         }
     });
@@ -2735,11 +2928,11 @@ fn metadata(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
             {
-                app.make_proxies(&[m.id], 540);
+                app.make_proxies(&[m.id], app.prefs.proxy_height);
             }
             let all: Vec<Id> = app.project().media.keys().copied().collect();
             if chip(ui, "Make all proxies", false, true).clicked() {
-                app.make_proxies(&all, 540);
+                app.make_proxies(&all, app.prefs.proxy_height);
             }
         });
     }
@@ -2918,6 +3111,7 @@ pub fn dialogs(app: &mut App, ctx: &Context) {
     }
     new_project_dialog(app, ctx);
     export_dialog(app, ctx);
+    prefs_window(app, ctx);
 }
 
 fn new_project_dialog(app: &mut App, ctx: &Context) {

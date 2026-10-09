@@ -218,6 +218,13 @@ pub struct App {
     pub voiceover: Option<crate::voiceover::Recorder>,
     /// The folder the LUT browser lists
     pub lut_folder: Option<PathBuf>,
+    pub prefs: crate::keymap::Prefs,
+    /// Where preferences are saved (the user's file unless a test says otherwise)
+    pub prefs_path: Option<PathBuf>,
+    pub keymap: crate::keymap::Keymap,
+    pub prefs_open: bool,
+    /// The action waiting for its new key in the preferences
+    pub rebinding: Option<crate::keymap::Action>,
     /// Proxy files being made
     pub proxies: crate::media_org::ProxyJobs,
     /// Show only this user bin in the media pool
@@ -282,6 +289,8 @@ pub struct App {
 impl App {
     pub fn new(ctx: &Context, session: Session, path: Option<PathBuf>) -> App {
         theme::apply(ctx);
+        let prefs = crate::keymap::Prefs::load();
+        ctx.set_zoom_factor(prefs.ui_scale);
         let mut app = App {
             ctx: ctx.clone(),
             session,
@@ -337,6 +346,11 @@ impl App {
             audio: AudioEngine::new(),
             voiceover: None,
             lut_folder: None,
+            keymap: crate::keymap::Keymap::from_overrides(&prefs.keys),
+            prefs,
+            prefs_path: crate::keymap::Prefs::path(),
+            prefs_open: false,
+            rebinding: None,
             proxies: Default::default(),
             user_bin: None,
             meta_draft: None,
@@ -945,7 +959,11 @@ impl App {
                 Ok(()) => {
                     self.dirty_since = None;
                     // a timed copy every five minutes of work, the newest twenty kept
-                    let _ = self.session.snapshot(p, 300, 20);
+                    if self.prefs.snapshot_minutes > 0 {
+                        let _ =
+                            self.session
+                                .snapshot(p, self.prefs.snapshot_minutes as u64 * 60, 20);
+                    }
                 }
                 Err(e) => {
                     self.dirty_since = None;
