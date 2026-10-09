@@ -1,0 +1,10 @@
+[package]
+name = "captaine-time"
+description = "Rational time, ranges and SMPTE timecode for CaptainE (see docs/03)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_time"
