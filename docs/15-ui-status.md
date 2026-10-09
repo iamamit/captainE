@@ -54,3 +54,8 @@ wall clock. Proxies (`captaine proxy`) are used automatically for preview when t
 - The window has no undo-history list, no multi-selection and no ripple/roll/slide drag modes yet (the gestures
   exist in `ops::edit` and the CLI).
 - Fonts: it uses the macOS system fonts when found, otherwise egui's built-ins.
+
+## Branches (Phase 4)
+
+The branch pill in the top bar opens the branch menu; the inspector has a **History** tab; **Compare** and **Merge** are
+full-window review screens; Copilot can save a suggestion on its own branch. See [16](16-phase-4-status.md).

@@ -600,19 +600,69 @@ pub fn summarize(changes: &[Change], rate: Rational) -> String {
     if n > 0 {
         parts.push(format!("changes the properties of {}", plural(n, "item")));
     }
-    let n = real
-        .iter()
-        .filter(|c| matches!(c.what, What::Track | What::Timeline))
-        .count();
+    let tracks = |kind: ChangeKind| {
+        real.iter()
+            .filter(|c| c.what == What::Track && c.kind == kind)
+            .count()
+    };
+    let timelines = |kind: ChangeKind| {
+        real.iter()
+            .filter(|c| c.what == What::Timeline && c.kind == kind)
+            .count()
+    };
+    if timelines(ChangeKind::Added) > 0 {
+        parts.push(format!(
+            "adds {}",
+            plural(timelines(ChangeKind::Added), "timeline")
+        ));
+    }
+    if timelines(ChangeKind::Removed) > 0 {
+        parts.push(format!(
+            "removes {}",
+            plural(timelines(ChangeKind::Removed), "timeline")
+        ));
+    }
+    if tracks(ChangeKind::Added) > 0 {
+        parts.push(format!(
+            "adds {}",
+            plural(tracks(ChangeKind::Added), "track")
+        ));
+    }
+    if tracks(ChangeKind::Removed) > 0 {
+        parts.push(format!(
+            "removes {}",
+            plural(tracks(ChangeKind::Removed), "track")
+        ));
+    }
+    let n = tracks(ChangeKind::Modified) + timelines(ChangeKind::Modified);
     if n > 0 {
         parts.push(format!(
             "changes {}",
             plural(n, "track or timeline setting")
         ));
     }
-    let n = real.iter().filter(|c| c.what == What::Media).count();
-    if n > 0 {
-        parts.push(format!("changes {} in the media pool", plural(n, "item")));
+    let media = |kind: ChangeKind| {
+        real.iter()
+            .filter(|c| c.what == What::Media && c.kind == kind)
+            .count()
+    };
+    if media(ChangeKind::Added) > 0 {
+        parts.push(format!(
+            "imports {}",
+            plural(media(ChangeKind::Added), "media file")
+        ));
+    }
+    if media(ChangeKind::Removed) > 0 {
+        parts.push(format!(
+            "removes {} from the media pool",
+            plural(media(ChangeKind::Removed), "media file")
+        ));
+    }
+    if media(ChangeKind::Modified) > 0 {
+        parts.push(format!(
+            "changes {} in the media pool",
+            plural(media(ChangeKind::Modified), "item")
+        ));
     }
     parts.join(", ")
 }

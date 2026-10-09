@@ -25,6 +25,9 @@ pub fn tab(ui: &mut Ui, label: &str, active: bool) -> Response {
     );
     let size = vec2(galley.size().x + 22.0, 28.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label)
+    });
     let color = if active {
         Color32::WHITE
     } else if resp.hovered() {
@@ -74,6 +77,9 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool, enabled: bool) -> Response {
             Sense::hover()
         },
     );
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, active, label)
+    });
     let fill = if active {
         theme::ACCENT
     } else if resp.hovered() && enabled {
@@ -123,6 +129,7 @@ pub fn toggle_text(ui: &mut Ui, label: &str, on: bool, enabled: bool) -> Respons
             Sense::hover()
         },
     );
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, label));
     if on {
         ui.painter()
             .rect_filled(rect.shrink2(vec2(2.0, 3.0)), 4.0, theme::ACCENT_SOFT);
@@ -417,6 +424,12 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
                     ui.painter().circle_filled(dot, 3.5, theme::OK);
                     if r.clicked() {
                         app.show_copilot = !app.show_copilot;
+                    }
+                    ui.add_space(8.0);
+                    let pill = crate::branches_ui::pill(app, ui);
+                    app.branch_pill = pill.rect;
+                    if pill.clicked() {
+                        app.branch_menu = !app.branch_menu;
                     }
                     ui.add_space(8.0);
                     let rate = app.rate();
@@ -1166,6 +1179,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                 ui.add_space(8.0);
                 for (t, l) in [
                     (InspectorTab::Inspector, "Inspector"),
+                    (InspectorTab::History, "History"),
                     (InspectorTab::Metadata, "Metadata"),
                     (InspectorTab::Effects, "Effects"),
                 ] {
@@ -1186,6 +1200,7 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                         .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| match app.inspector_tab {
                             InspectorTab::Inspector => clip_controls(app, ui),
+                            InspectorTab::History => crate::branches_ui::history_tab(app, ui),
                             InspectorTab::Metadata => metadata(app, ui),
                             InspectorTab::Effects => {
                                 ui.add_space(30.0);

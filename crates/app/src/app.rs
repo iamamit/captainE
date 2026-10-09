@@ -47,6 +47,7 @@ pub enum PoolTab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InspectorTab {
     Inspector,
+    History,
     Metadata,
     Effects,
 }
@@ -154,6 +155,15 @@ pub struct App {
     pub central_rect: egui::Rect,
     /// Where the timeline was drawn last frame (screen coordinates); lets tests and tooling aim at things.
     pub timeline_layout: Option<TimelineLayout>,
+    /// The Compare / Merge screen, when open
+    pub compare: Option<crate::compare::CompareState>,
+    pub branch_menu: bool,
+    pub branch_draft: String,
+    pub commit_draft: String,
+    /// Where the branch pill is, so its menu can open under it
+    pub branch_pill: egui::Rect,
+    /// One-line descriptions of commits, computed once
+    pub summaries: HashMap<captaine_project::captaine_vcs::CommitId, String>,
     pub preview_override: Option<Project>,
 
     // playback
@@ -169,7 +179,7 @@ pub struct App {
     // engine plumbing
     worker: RenderWorker,
     jobs: Jobs,
-    sent_revision: Option<u64>,
+    sent_revision: Option<(u64, u64)>,
     pub program: Option<TextureHandle>,
     pub program_tick: i64,
     pub thumbs: HashMap<Id, TextureHandle>,
@@ -218,6 +228,12 @@ impl App {
             ),
             preview_override: None,
             timeline_layout: None,
+            compare: None,
+            branch_menu: false,
+            branch_draft: String::new(),
+            commit_draft: String::new(),
+            branch_pill: egui::Rect::NOTHING,
+            summaries: HashMap::new(),
             playhead: 0,
             playing: false,
             shuttle: 1.0,
@@ -277,6 +293,20 @@ impl App {
         self.copilot.suggestion = None;
         self.queue_media_jobs();
         self.fit_on_start();
+    }
+
+    /// The whole project was swapped for another version (branch switch, merge): refresh everything that was derived from it.
+    pub fn session_changed(&mut self) {
+        self.sent_revision = None;
+        self.last_requested = None;
+        self.preview_override = None;
+        self.copilot.suggestion = None;
+        if self.selected_clip.is_some() && self.selected_span().is_none() {
+            self.selected_clip = None;
+        }
+        self.playhead = self.playhead.clamp(0, self.duration_ticks().max(0));
+        self.summaries.clear();
+        self.drag = Drag::None;
     }
 
     pub fn fit_on_start(&mut self) {
@@ -645,7 +675,7 @@ impl App {
     // ---- per-frame update --------------------------------------------------------------------
 
     fn sync_worker(&mut self, ctx: &Context) {
-        let rev = self.session.editor.revision();
+        let rev = (self.session.epoch(), self.session.editor.revision());
         if self.sent_revision != Some(rev) {
             if let Some(tl) = self.timeline_id() {
                 let shown = self
@@ -753,13 +783,20 @@ impl App {
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
             self.import(vec![f.path().to_path_buf()]);
         }
-        ui::handle_shortcuts(self, ctx);
+        if self.compare.is_none() {
+            ui::handle_shortcuts(self, ctx);
+        }
         ui::top_bar(self, root);
-        timeline::panel(self, root);
-        ui::media_pool(self, root);
-        ui::inspector(self, root);
-        viewer::central(self, root);
+        if self.compare.is_some() {
+            crate::compare::show(self, root);
+        } else {
+            timeline::panel(self, root);
+            ui::media_pool(self, root);
+            ui::inspector(self, root);
+            viewer::central(self, root);
+        }
         copilot::show(self, ctx);
+        crate::branches_ui::popup(self, ctx, self.branch_pill);
         ui::dialogs(self, ctx);
         ui::toasts(self, ctx);
         self.toasts

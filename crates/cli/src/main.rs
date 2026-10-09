@@ -210,9 +210,58 @@ enum Cmd {
     Show {
         project: PathBuf,
     },
-    /// The operation log
+    /// History: the commits of a branch, then any edits not yet committed
     Log {
         project: PathBuf,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// List branches, create one (`branch p.json try`), or delete one (`--delete try`)
+    Branch {
+        project: PathBuf,
+        name: Option<String>,
+        /// Delete this branch
+        #[arg(long)]
+        delete: Option<String>,
+        /// Start the new branch from this commit (default: where you are)
+        #[arg(long)]
+        from: Option<String>,
+        /// Switch to the new branch (your uncommitted edits come along)
+        #[arg(long)]
+        switch: bool,
+    },
+    /// Switch branch (uncommitted edits are committed on the branch you leave)
+    Checkout {
+        project: PathBuf,
+        branch: String,
+    },
+    /// Turn the edits since the last commit into a commit
+    Commit {
+        project: PathBuf,
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// What differs between two versions: branch names, commit ids, or `working`
+    Diff {
+        project: PathBuf,
+        a: String,
+        b: String,
+    },
+    /// Merge a branch into the current one
+    Merge {
+        project: PathBuf,
+        branch: String,
+        /// Only show what would happen
+        #[arg(long)]
+        dry_run: bool,
+        /// Who wins when both sides changed the same thing
+        #[arg(long, value_enum, default_value = "ours")]
+        conflicts: SideArg,
+        /// Leave out changes to this item or track (by name); repeatable
+        #[arg(long)]
+        skip: Vec<String>,
+        #[arg(short, long)]
+        message: Option<String>,
     },
     /// Make lightweight proxy files for faster editing (kept in <project>.cache/)
     Proxy {
@@ -272,6 +321,12 @@ enum TemplateArg {
     LowerThird,
     Centered,
     Caption,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum SideArg {
+    Ours,
+    Theirs,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -1042,11 +1097,165 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 .ok_or("nothing to redo".to_string())
         }),
         Cmd::Show { project } => show(&Session::load(&project)?),
-        Cmd::Log { project } => {
-            for (i, e) in Session::load(&project)?.editor.history().iter().enumerate() {
-                println!("{:>3}  {:?}  {}", i + 1, e.author, e.op.describe());
+        Cmd::Log { project, branch } => {
+            let s = Session::load(&project)?;
+            let branch = branch.unwrap_or_else(|| s.branch().to_string());
+            if s.has_uncommitted() && branch == s.branch() {
+                println!("* {} uncommitted edit(s):", s.uncommitted_count());
+                for e in s.editor.history().iter().rev().take(s.uncommitted_count()) {
+                    println!("    {}", e.op.describe());
+                }
+            }
+            for c in s.log(&branch)? {
+                let tags = if c.branches.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({})", c.branches.join(", "))
+                };
+                println!(
+                    "{}  {}  {} · {}{tags}",
+                    c.id,
+                    c.message,
+                    captaine_project::author_label(&c.author),
+                    captaine_project::time_ago(c.time)
+                );
+                let summary = s.commit_summary(&c.id);
+                if !summary.is_empty() {
+                    println!("          {summary}");
+                }
             }
             Ok(())
+        }
+        Cmd::Branch {
+            project,
+            name,
+            delete,
+            from,
+            switch,
+        } => {
+            let mut s = Session::load(&project)?;
+            if let Some(d) = delete {
+                s.delete_branch(&d)?;
+                println!("deleted branch {d}");
+            } else if let Some(n) = name {
+                match from {
+                    Some(c) => s.create_branch_at(&n, &c)?,
+                    None => s.create_branch(&n, false)?,
+                }
+                if switch {
+                    s.checkout(&n)?;
+                }
+                println!(
+                    "created branch {n}{}",
+                    if switch { " and switched to it" } else { "" }
+                );
+            } else {
+                for b in s.branch_infos() {
+                    let rel = match (b.ahead, b.behind) {
+                        _ if b.current => String::new(),
+                        (a, 0) => format!("  {a} ahead"),
+                        (0, bh) => format!("  {bh} behind"),
+                        (a, bh) => format!("  {a} ahead, {bh} behind"),
+                    };
+                    println!(
+                        "{} {}{rel}  — {} ({})",
+                        if b.current { "*" } else { " " },
+                        b.name,
+                        b.last_message,
+                        captaine_project::time_ago(b.last_time)
+                    );
+                }
+                return Ok(());
+            }
+            s.save(&project)
+        }
+        Cmd::Checkout { project, branch } => {
+            let mut s = Session::load(&project)?;
+            s.checkout(&branch)?;
+            s.save(&project)?;
+            println!("on {branch}");
+            Ok(())
+        }
+        Cmd::Commit { project, message } => {
+            let mut s = Session::load(&project)?;
+            match s.commit(message.as_deref())? {
+                Some(id) => {
+                    s.save(&project)?;
+                    println!("committed {id}: {}", s.log(s.branch())?[0].message);
+                }
+                None => println!("nothing to commit"),
+            }
+            Ok(())
+        }
+        Cmd::Diff { project, a, b } => {
+            let s = Session::load(&project)?;
+            let changes = s.compare(&a, &b)?;
+            let rate = timeline(&s).map(|t| t.rate).unwrap_or(Rational::FPS_30);
+            for c in changes.iter().filter(|c| !c.is_noise()) {
+                println!("  {}", c.summary);
+            }
+            println!(
+                "{a} → {b}: {}",
+                captaine_project::captaine_vcs::summarize(&changes, rate)
+            );
+            Ok(())
+        }
+        Cmd::Merge {
+            project,
+            branch,
+            dry_run,
+            conflicts,
+            skip,
+            message,
+        } => {
+            let mut s = Session::load(&project)?;
+            let setup = s.prepare_merge(&branch)?;
+            if setup.up_to_date {
+                println!("already up to date");
+                return Ok(());
+            }
+            use captaine_project::captaine_vcs::{Choice, Status};
+            let mut choices = std::collections::HashMap::new();
+            for e in &setup.plan.entries {
+                let skipped = skip.contains(&e.change.name);
+                let conflict = matches!(e.status, Status::Conflict(_));
+                let take = !skipped && (!conflict || matches!(conflicts, SideArg::Theirs));
+                choices.insert(
+                    e.change.id.clone(),
+                    if take { Choice::Take } else { Choice::Skip },
+                );
+                let mark = match (&e.status, take) {
+                    (Status::Conflict(why), t) => {
+                        format!("CONFLICT ({why}) -> {}", if t { "theirs" } else { "ours" })
+                    }
+                    (_, true) => "take".to_string(),
+                    (_, false) => "skip".to_string(),
+                };
+                println!("  [{mark}] {}", e.change.summary);
+            }
+            if dry_run {
+                println!("(dry run: nothing merged)");
+                s.save(&project)?; // preparing the merge saved work in progress
+                return Ok(());
+            }
+            match s.merge(&branch, &choices, message.as_deref())? {
+                captaine_project::MergeReport::FastForward => {
+                    println!("fast-forwarded {} to {branch}", s.branch())
+                }
+                captaine_project::MergeReport::UpToDate => println!("already up to date"),
+                captaine_project::MergeReport::Merged {
+                    applied, skipped, ..
+                } => {
+                    println!(
+                        "merged {branch} into {}: {applied} change(s) brought in",
+                        s.branch()
+                    );
+                    for (what, why) in skipped {
+                        println!("  could not bring in {what}: {why}");
+                    }
+                }
+            }
+            s.save(&project)
         }
         Cmd::Frame {
             project,

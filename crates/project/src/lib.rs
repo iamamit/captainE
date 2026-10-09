@@ -111,6 +111,8 @@ pub struct Session {
     boundary: usize,
     /// Undo went back past the last commit: the working state is then described by a state difference
     diverged: bool,
+    /// Bumped whenever the editor is replaced wholesale (switching branch, merging, opening), so a UI knows to refresh
+    epoch: u64,
 }
 
 impl Session {
@@ -122,11 +124,17 @@ impl Session {
             redo: Vec::new(),
             boundary: 0,
             diverged: false,
+            epoch: 0,
         }
     }
 
     pub fn repo(&self) -> &Repo {
         &self.repo
+    }
+
+    /// Changes whenever the whole project in the editor was swapped for another (see `checkout`, `merge`).
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     // ---- files -----------------------------------------------------------------------------------------
@@ -161,6 +169,7 @@ impl Session {
                     redo: f.redo,
                     boundary: 0,
                     diverged: false,
+                    epoch: 0,
                 };
                 for e in f.working {
                     s.editor
@@ -322,6 +331,7 @@ impl Session {
         self.redo.clear();
         self.boundary = 0;
         self.diverged = false;
+        self.epoch += 1;
         Ok(())
     }
 
@@ -364,6 +374,19 @@ impl Session {
             self.repo.checkout(name).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// A new branch at any commit (id prefix), not switched to.
+    pub fn create_branch_at(&mut self, name: &str, commit: &str) -> Result<(), String> {
+        let id = self
+            .repo
+            .find_commit(commit)
+            .map_err(|e| e.to_string())?
+            .id
+            .clone();
+        self.repo
+            .create_branch(name, &id)
+            .map_err(|e| e.to_string())
     }
 
     /// Switch to another branch. Working edits are committed first so they are not lost.
@@ -592,5 +615,26 @@ pub fn slugify(text: &str, max_words: usize) -> String {
         "edit".into()
     } else {
         words.join("-")
+    }
+}
+
+/// "just now", "5 min ago", "2 h ago", "3 d ago"
+pub fn time_ago(secs: u64) -> String {
+    let d = now().saturating_sub(secs);
+    match d {
+        0..=44 => "just now".into(),
+        45..=3599 => format!("{} min ago", (d / 60).max(1)),
+        3600..=86_399 => format!("{} h ago", d / 3600),
+        _ => format!("{} d ago", d / 86_400),
+    }
+}
+
+/// Who made a commit, as a person would say it.
+pub fn author_label(a: &Author) -> String {
+    match a {
+        Author::User => "You".into(),
+        Author::Agent(n) if n == "copilot" => "Copilot".into(),
+        Author::Agent(n) | Author::Script(n) => n.clone(),
+        Author::Merge => "Merge".into(),
     }
 }

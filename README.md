@@ -30,6 +30,7 @@ there is no GUI yet. See [Building](#building) for what runs today.
 | 13 | [Risks and open questions](docs/13-risks-and-open-questions.md) | What could sink it, decisions still to make |
 | 14 | [Phase 1 status](docs/14-phase-1-status.md) | What is built, decisions made while building, known gaps |
 | 15 | [The editor window](docs/15-ui-status.md) | The egui UI: what follows the design, how to run it, known limits |
+| 16 | [Phase 4 status](docs/16-phase-4-status.md) | Branches, compare, merge, Copilot on a branch |
 | — | [References](docs/references.md) | Every source used, grouped by topic |
 
 ## Relationship to the other projects
@@ -57,10 +58,11 @@ cargo run -p captaine-cli -- --help
 | `render` | Timeline evaluator, frame decoder and cache, linear-light CPU compositor |
 | `audio` | Decode, mixer (gain, pan, fades), EBU R128 loudness, waveform peaks |
 | `export` | Render + mix + encode (H.264, HEVC, ProRes); byte-identical across runs |
-| `project` | Project file = settings + operation log, replayed into an `Editor` |
+| `vcs` | Commits, branches, diff, three-way merge, state→ops (docs/07) |
+| `project` | The open project: working edits on a branch, commit/checkout/merge, the v2 project file |
 | `agent` | The Claude co-editor: 13 tools over the ops layer, the agent loop, the Anthropic transport |
 | `app` | **The editor window** (egui): media pool, viewer, inspector, timeline, Copilot |
-| `cli` | `captaine` binary: `init import add split remove lift move trim roll slide slip tidy set track undo redo show log proxy thumbs waveform frame loudness render` |
+| `cli` | `captaine` binary: `init import add title split remove lift move trim roll slide slip tidy set track undo redo show log branch checkout commit diff merge proxy thumbs waveform frame loudness render` |
 
 Phase 1 status, decisions and known gaps: [docs/14](docs/14-phase-1-status.md).
 

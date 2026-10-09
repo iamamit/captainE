@@ -163,7 +163,13 @@ fn tracks_media_and_properties() {
         s.iter().any(|x| x.contains("Changed media 'm1': proxy")),
         "{s:?}"
     );
-    assert!(summarize(&d, R).contains("changes 2 track or timeline settings"));
+    let sentence = summarize(&d, R);
+    assert!(
+        sentence.contains("adds 1 track")
+            && sentence.contains("changes 1 track or timeline setting")
+            && sentence.contains("changes 1 item in the media pool"),
+        "{sentence}"
+    );
 }
 
 #[test]

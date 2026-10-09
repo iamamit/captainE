@@ -56,6 +56,8 @@ Also decide: **CaptainE's license** ([11](11-licensing-and-legal.md)) and the UI
 
 ## Phase 4 — Branches and compare (1–2 months)
 
+**Status (2026-10-09): built; see [16](16-phase-4-status.md).**
+
 - Commits, branches, history panel; diff engine; Compare view (stacked timelines + synced/wipe/difference viewers).
 - Three-way merge with intent-aware rebasing of ripple edits; conflict UI.
 - Agent works on `agent/*` branches by default; merge from the chat.

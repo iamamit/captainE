@@ -82,3 +82,10 @@ Three-way merge (base = common ancestor):
 Get Syncd (Git-style history for Resolve via OTIO), vit (git-backed JSON timelines, clip/field-level merge),
 branchcut (intent diff + three-way merge of EDLs), vit-studio; DaVinci Resolve's Compare Timelines window; Git's
 object model; Xet/git-cdc content-defined chunking; Automerge/Yjs CRDTs. See [references](references.md).
+
+## Status (2026-10-09): built
+
+See [16](16-phase-4-status.md). One departure from the text above: merge works on **states matched by id**
+(base, ours, theirs), with gaps as real items and per-field merging, rather than re-basing operations; the merge result is
+then turned into ordinary ops so the merge commit is readable and undoable. This avoids needing an operational
+transform for every op and handled ripple edits on either side correctly in the fuzz tests.

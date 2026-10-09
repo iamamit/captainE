@@ -52,6 +52,8 @@ pub struct State {
     /// Whether an API key is available (checked at start and when it changes)
     key: Option<Option<String>>,
     pub key_input: String,
+    /// The branch Copilot last saved a suggestion on, kept so it can be opened for review
+    pub last_branch: Option<String>,
     /// Supplies the model connection instead of the Anthropic API (tests use a scripted one).
     pub transport: Option<TransportFactory>,
 }
@@ -124,6 +126,8 @@ pub fn show(app: &mut App, ctx: &Context) {
     let mut close = false;
     let mut send: Option<String> = None;
     let mut apply_it = false;
+    let mut branch_it = false;
+    let mut review: Option<String> = None;
     let mut preview_it = false;
     let mut discard = false;
     egui::Area::new(egui::Id::new("copilot"))
@@ -243,12 +247,20 @@ pub fn show(app: &mut App, ctx: &Context) {
                                             ui,
                                             s,
                                             app.preview_override.is_some(),
+                                            suggestion_is_big(s),
                                             &mut apply_it,
+                                            &mut branch_it,
                                             &mut preview_it,
                                             &mut discard,
                                         );
                                     }
                                 });
+                            if let Some(b) = app.copilot.last_branch.clone() {
+                                ui.add_space(4.0);
+                                if ui.add(egui::Button::new(RichText::new(format!("Review {b}")).strong().color(Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                                    review = Some(b);
+                                }
+                            }
                             ui.add_space(6.0);
                             ui.horizontal_wrapped(|ui| {
                                 let chips: [(&str, &str); 3] = if has_key {
@@ -338,6 +350,9 @@ pub fn show(app: &mut App, ctx: &Context) {
             false,
         );
     }
+    if let Some(b) = review {
+        crate::branches_ui::start_merge(app, ctx, &b);
+    }
     if let Some(text) = send {
         ask(app, text);
     }
@@ -360,9 +375,47 @@ pub fn show(app: &mut App, ctx: &Context) {
             }
         }
     }
+    if branch_it {
+        if let Some(s) = app.copilot.suggestion.take() {
+            app.set_preview(None);
+            let ops = match s.op {
+                Op::Transaction { ops, .. } => ops,
+                other => vec![other],
+            };
+            let wanted = format!("agent/{}", captaine_project::slugify(&s.title, 4));
+            match app.session.commit_to_new_branch(
+                &wanted,
+                Author::Agent("copilot".into()),
+                &s.title,
+                ops,
+            ) {
+                Ok(name) => {
+                    app.dirty_since.get_or_insert_with(std::time::Instant::now);
+                    app.summaries.clear();
+                    app.copilot.messages.push(Msg { user: false, text: format!("Saved on branch {name}. Your timeline is unchanged: review it, then merge what you like.") });
+                    app.copilot.last_branch = Some(name);
+                }
+                Err(e) => app.toast(e, true),
+            }
+        }
+    }
     if discard {
         app.set_preview(None);
         app.copilot.suggestion = None;
+    }
+    if let Some(b) = app.copilot.last_branch.clone() {
+        let exists = app.session.branch_infos().iter().any(|i| i.name == b);
+        if !exists || app.session.branch() == b {
+            app.copilot.last_branch = None;
+        }
+    }
+}
+
+/// Edits with more than a couple of steps are offered on a branch by default.
+fn suggestion_is_big(s: &Suggestion) -> bool {
+    match &s.op {
+        Op::Transaction { ops, .. } => ops.len() >= 3,
+        _ => false,
     }
 }
 
@@ -389,11 +442,14 @@ fn bubble(ui: &mut egui::Ui, m: &Msg) {
     ui.add_space(6.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn suggestion_card(
     ui: &mut egui::Ui,
     s: &Suggestion,
     previewing: bool,
+    big: bool,
     apply_it: &mut bool,
+    branch_it: &mut bool,
     preview_it: &mut bool,
     discard: &mut bool,
 ) {
@@ -413,15 +469,16 @@ fn suggestion_card(
             ui.label(RichText::new(&s.title).strong().size(12.5));
             ui.label(RichText::new(&s.body).size(11.5).color(theme::MUTED));
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("Apply").strong().color(Color32::WHITE))
-                            .fill(theme::ACCENT),
-                    )
-                    .clicked()
-                {
+            ui.horizontal_wrapped(|ui| {
+                // a big edit is best reviewed on its own branch; a small one can just go in
+                let primary = |label: &str| egui::Button::new(RichText::new(label).strong().color(Color32::WHITE)).fill(theme::ACCENT);
+                let quiet = |label: &str| egui::Button::new(RichText::new(label).color(theme::TEXT)).fill(theme::FIELD);
+                let (apply_b, branch_b) = if big { (quiet("Apply here"), primary("Review on a branch")) } else { (primary("Apply"), quiet("Review on a branch")) };
+                if ui.add(apply_b).clicked() {
                     *apply_it = true;
+                }
+                if ui.add(branch_b).on_hover_text("Saves the edit on a new agent/… branch. Your timeline stays as it is; compare, then merge what you like.").clicked() {
+                    *branch_it = true;
                 }
                 if chip(
                     ui,
