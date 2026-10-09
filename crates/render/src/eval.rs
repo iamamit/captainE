@@ -1,0 +1,183 @@
+use captaine_model::{Clip, Id, Item, MediaRef, Project, TrackKind};
+use captaine_time::{RationalTime, Rounding};
+
+/// `(start, end, item index)` of each clip on one track, sorted by start.
+type Spans = Vec<(i64, i64, usize)>;
+
+/// Where every clip sits on each video track, for fast "what is visible at tick t" lookups.
+pub struct TimelineIndex {
+    /// per video track (bottom first): (track index in the timeline, sorted `(start, end, item index)` of clips)
+    tracks: Vec<(usize, Spans)>,
+}
+
+impl TimelineIndex {
+    pub fn new(project: &Project, timeline: Id) -> Option<TimelineIndex> {
+        let tl = project.timeline(timeline)?;
+        let tracks = tl
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind == TrackKind::Video && t.enabled)
+            .map(|(ti, t)| {
+                let spans = t
+                    .items
+                    .iter()
+                    .zip(t.item_starts())
+                    .enumerate()
+                    .filter(|(_, (it, _))| matches!(it, Item::Clip(c) if c.enabled))
+                    .map(|(i, (it, st))| (st, st + it.duration().value, i))
+                    .collect();
+                (ti, spans)
+            })
+            .collect();
+        Some(TimelineIndex { tracks })
+    }
+}
+
+/// One clip contributing to a frame.
+pub struct Layer<'a> {
+    pub clip: &'a Clip,
+    pub media: &'a MediaRef,
+    /// Frame number in the media at its own frame rate
+    pub source_frame: i64,
+    pub track: usize,
+}
+
+/// Clips visible at `tick`, bottom layer first. Audio-only media contributes no picture.
+pub fn layers_at<'a>(
+    project: &'a Project,
+    timeline: Id,
+    index: &TimelineIndex,
+    tick: i64,
+) -> Vec<Layer<'a>> {
+    let Some(tl) = project.timeline(timeline) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (ti, spans) in &index.tracks {
+        let pos = spans.partition_point(|(_, end, _)| *end <= tick);
+        let Some(&(start, _, item)) = spans.get(pos) else {
+            continue;
+        };
+        if tick < start {
+            continue;
+        }
+        let Item::Clip(clip) = &tl.tracks[*ti].items[item] else {
+            continue;
+        };
+        let Some(media) = project.media.get(&clip.media).filter(|m| m.has_video) else {
+            continue;
+        };
+        let offset = RationalTime::new(tick - start, tl.rate)
+            .rescale(clip.source_start.rate, Rounding::Floor)
+            .map_or(0, |t| t.value);
+        out.push(Layer {
+            clip,
+            media,
+            source_frame: clip.source_start.value + offset,
+            track: *ti,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use captaine_model::*;
+    use captaine_time::Rational;
+
+    use super::*;
+
+    fn t(v: i64, r: Rational) -> RationalTime {
+        RationalTime::new(v, r)
+    }
+
+    fn project() -> (Project, Id) {
+        let mut p = Project::new(ProjectSettings::default());
+        let m = Id::from_u128(1);
+        p.media.insert(
+            m,
+            MediaRef {
+                id: m,
+                name: "m".into(),
+                path: "/m".into(),
+                duration: Some(t(1000, Rational::FPS_24)),
+                has_audio: false,
+                width: 4,
+                height: 4,
+                has_video: true,
+                proxy: None,
+            },
+        );
+        let mut tl = Timeline::new(Id::from_u128(2), "tl", Rational::FPS_30);
+        let mut v1 = Track::new(Id::from_u128(3), "V1", TrackKind::Video);
+        // gap 0..10, clip 10..40 (source from frame 100 @24)
+        v1.items.push(Item::Gap(Gap {
+            id: Id::from_u128(10),
+            duration: t(10, Rational::FPS_30),
+        }));
+        v1.items.push(Item::Clip(Clip::new(
+            Id::from_u128(11),
+            "a",
+            m,
+            t(100, Rational::FPS_24),
+            t(30, Rational::FPS_30),
+        )));
+        let mut v2 = Track::new(Id::from_u128(4), "V2", TrackKind::Video);
+        v2.items.push(Item::Clip(Clip::new(
+            Id::from_u128(12),
+            "b",
+            m,
+            t(0, Rational::FPS_24),
+            t(20, Rational::FPS_30),
+        )));
+        tl.tracks.push(Arc::new(v1));
+        tl.tracks.push(Arc::new(v2));
+        let id = tl.id;
+        p.timelines.insert(id, Arc::new(tl));
+        (p, id)
+    }
+
+    #[test]
+    fn finds_layers_bottom_first() {
+        let (p, tl) = project();
+        let idx = TimelineIndex::new(&p, tl).unwrap();
+        let names = |tick| {
+            layers_at(&p, tl, &idx, tick)
+                .iter()
+                .map(|l| l.clip.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(0), ["b"]); // V1 has a gap here
+        assert_eq!(names(10), ["a", "b"]);
+        assert_eq!(names(19), ["a", "b"]);
+        assert_eq!(names(20), ["a"]); // end of b is exclusive
+        assert_eq!(names(39), ["a"]);
+        assert!(names(40).is_empty());
+    }
+
+    #[test]
+    fn source_frame_follows_the_media_rate() {
+        let (p, tl) = project();
+        let idx = TimelineIndex::new(&p, tl).unwrap();
+        let f = |tick| {
+            layers_at(&p, tl, &idx, tick)
+                .iter()
+                .find(|l| l.clip.name == "a")
+                .map(|l| l.source_frame)
+        };
+        assert_eq!(f(10), Some(100));
+        assert_eq!(f(15), Some(104)); // 5 frames @30 = 4 frames @24
+        assert_eq!(f(39), Some(123)); // floor(29 * 0.8) = 23
+    }
+
+    #[test]
+    fn disabled_tracks_and_clips_are_skipped() {
+        let (mut p, tl) = project();
+        p.timeline_mut(tl).unwrap().track_mut(1).enabled = false;
+        let idx = TimelineIndex::new(&p, tl).unwrap();
+        assert!(layers_at(&p, tl, &idx, 0).is_empty());
+    }
+}

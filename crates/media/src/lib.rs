@@ -28,16 +28,32 @@ impl std::error::Error for MediaError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeInfo {
-    pub fps: Rational,
-    pub frames: i64,
+    /// Frame rate for video; the sample rate for audio-only media.
+    pub rate: Rational,
+    /// Length in ticks of `rate`.
+    pub length: i64,
+    /// Display size with rotation applied; 0 for audio-only.
     pub width: u32,
     pub height: u32,
+    pub has_video: bool,
     pub has_audio: bool,
 }
 
 fn parse_rate(s: &str) -> Option<Rational> {
     let (n, d) = s.split_once('/')?;
     Rational::new(n.trim().parse().ok()?, d.trim().parse().ok()?)
+}
+
+/// Clockwise rotation (degrees, 0/90/180/270) that players apply to a video stream.
+fn rotation(video: &serde_json::Value) -> i64 {
+    let from_side = video["side_data_list"]
+        .as_array()
+        .and_then(|l| l.iter().find_map(|d| d["rotation"].as_f64()));
+    let from_tag = video["tags"]["rotate"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok());
+    let deg = from_side.or(from_tag).unwrap_or(0.0).round() as i64;
+    deg.rem_euclid(360)
 }
 
 /// Parses `ffprobe -print_format json -show_streams -show_format` output.
@@ -47,24 +63,54 @@ pub fn parse_probe(json: &str) -> Result<ProbeInfo, MediaError> {
     let streams = v["streams"]
         .as_array()
         .ok_or_else(|| MediaError::Parse("no streams".into()))?;
+    let secs = |x: &serde_json::Value| x.as_str().and_then(|s| s.parse::<f64>().ok());
+    // cover art in an mp3 shows up as a video stream: it is not video
     let video = streams
         .iter()
-        .find(|s| s["codec_type"] == "video")
-        .ok_or_else(|| MediaError::Parse("no video stream".into()))?;
-    let rate = ["avg_frame_rate", "r_frame_rate"]
-        .iter()
-        .find_map(|k| video[*k].as_str().and_then(parse_rate))
-        .ok_or_else(|| MediaError::Parse("no frame rate".into()))?;
-    let secs = |x: &serde_json::Value| x.as_str().and_then(|s| s.parse::<f64>().ok());
-    let duration = secs(&video["duration"])
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1);
+    let audio = streams.iter().find(|s| s["codec_type"] == "audio");
+
+    if let Some(video) = video {
+        let rate = ["avg_frame_rate", "r_frame_rate"]
+            .iter()
+            .find_map(|k| video[*k].as_str().and_then(parse_rate))
+            .ok_or_else(|| MediaError::Parse("no frame rate".into()))?;
+        let duration = secs(&video["duration"])
+            .or_else(|| secs(&v["format"]["duration"]))
+            .ok_or_else(|| MediaError::Parse("no duration (still image?)".into()))?;
+        let (w, h) = (
+            video["width"].as_u64().unwrap_or(0) as u32,
+            video["height"].as_u64().unwrap_or(0) as u32,
+        );
+        let (width, height) = if rotation(video) % 180 == 90 {
+            (h, w)
+        } else {
+            (w, h)
+        };
+        return Ok(ProbeInfo {
+            rate,
+            length: (duration * rate.as_f64()).round() as i64,
+            width,
+            height,
+            has_video: true,
+            has_audio: audio.is_some(),
+        });
+    }
+    let audio = audio.ok_or_else(|| MediaError::Parse("no video or audio stream".into()))?;
+    let sr: i64 = audio["sample_rate"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| MediaError::Parse("no sample rate".into()))?;
+    let duration = secs(&audio["duration"])
         .or_else(|| secs(&v["format"]["duration"]))
-        .ok_or_else(|| MediaError::Parse("no duration (still image?)".into()))?;
+        .ok_or_else(|| MediaError::Parse("no duration".into()))?;
     Ok(ProbeInfo {
-        fps: rate,
-        frames: (duration * rate.as_f64()).round() as i64,
-        width: video["width"].as_u64().unwrap_or(0) as u32,
-        height: video["height"].as_u64().unwrap_or(0) as u32,
-        has_audio: streams.iter().any(|s| s["codec_type"] == "audio"),
+        rate: Rational::new(sr, 1).ok_or_else(|| MediaError::Parse("bad sample rate".into()))?,
+        length: (duration * sr as f64).round() as i64,
+        width: 0,
+        height: 0,
+        has_video: false,
+        has_audio: true,
     })
 }
 
@@ -100,8 +146,12 @@ pub fn media_ref(path: &Path, id: Id) -> Result<MediaRef, MediaError> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
         path: path.to_string_lossy().into_owned(),
-        duration: Some(RationalTime::new(info.frames, info.fps)),
+        duration: Some(RationalTime::new(info.length, info.rate)),
         has_audio: info.has_audio,
+        width: info.width,
+        height: info.height,
+        has_video: info.has_video,
+        proxy: None,
     })
 }
 
@@ -115,9 +165,9 @@ mod tests {
             {"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30000/1001","duration":"10.010000"},
             {"codec_type":"audio"}],"format":{"duration":"10.01"}}"#;
         let p = parse_probe(j).unwrap();
-        assert_eq!(p.fps, Rational::FPS_29_97);
-        assert_eq!(p.frames, 300);
-        assert!(p.has_audio);
+        assert_eq!(p.rate, Rational::FPS_29_97);
+        assert_eq!((p.length, p.width, p.height), (300, 1920, 1080));
+        assert!(p.has_audio && p.has_video);
     }
 
     #[test]
@@ -126,13 +176,42 @@ mod tests {
             "format":{"duration":"2.0"}}"#;
         let p = parse_probe(j).unwrap();
         assert_eq!(
-            (p.fps, p.frames, p.has_audio),
+            (p.rate, p.length, p.has_audio),
             (Rational::FPS_24, 48, false)
         );
     }
 
     #[test]
-    fn rejects_audio_only() {
-        assert!(parse_probe(r#"{"streams":[{"codec_type":"audio"}],"format":{}}"#).is_err());
+    fn phone_video_rotation_swaps_the_size() {
+        let side = r#"{"streams":[{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30/1","duration":"1",
+            "side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]}],"format":{}}"#;
+        let p = parse_probe(side).unwrap();
+        assert_eq!((p.width, p.height), (1080, 1920));
+        let tag = r#"{"streams":[{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30/1","duration":"1",
+            "tags":{"rotate":"90"}}],"format":{}}"#;
+        assert_eq!(parse_probe(tag).unwrap().width, 1080);
+        let flip = r#"{"streams":[{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30/1","duration":"1",
+            "side_data_list":[{"rotation":180}]}],"format":{}}"#;
+        assert_eq!(parse_probe(flip).unwrap().width, 1920);
+    }
+
+    #[test]
+    fn audio_only_is_measured_in_samples() {
+        let j = r#"{"streams":[{"codec_type":"audio","sample_rate":"44100","duration":"2.5"}],"format":{}}"#;
+        let p = parse_probe(j).unwrap();
+        assert_eq!((p.has_video, p.has_audio, p.length), (false, true, 110_250));
+        assert_eq!(p.rate, Rational::new(44100, 1).unwrap());
+    }
+
+    #[test]
+    fn cover_art_is_not_video() {
+        let j = r#"{"streams":[{"codec_type":"audio","sample_rate":"48000","duration":"1"},
+            {"codec_type":"video","width":500,"height":500,"avg_frame_rate":"90000/1","disposition":{"attached_pic":1}}],"format":{}}"#;
+        assert!(!parse_probe(j).unwrap().has_video);
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(parse_probe(r#"{"streams":[],"format":{}}"#).is_err());
     }
 }

@@ -1,5 +1,6 @@
 [package]
 name = "captaine-export"
+description = "Export a timeline to a video file: render frames and mix audio with the engine, encode with FFmpeg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +12,8 @@ name = "captaine_export"
 [dependencies]
 captaine-time.workspace = true
 captaine-model.workspace = true
+captaine-render.workspace = true
+captaine-audio.workspace = true
 
 [dev-dependencies]
 captaine-media.workspace = true

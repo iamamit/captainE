@@ -18,3 +18,7 @@ captaine-ops = { path = "crates/ops" }
 captaine-media = { path = "crates/media" }
 captaine-export = { path = "crates/export" }
 clap = { version = "4", features = ["derive"] }
+captaine-render = { path = "crates/render" }
+captaine-audio = { path = "crates/audio" }
+png = "0.17"
+ebur128 = "0.1"

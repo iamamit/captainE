@@ -1,21 +1,22 @@
-//! Export a timeline to a video file by building an FFmpeg filter graph.
-//!
-//! This is the Phase 1 stand-in for the GPU renderer: it handles the first video track only
-//! (clips and gaps in order, audio taken from the same clips), which is enough to cut and ship.
+//! Export (docs/04): frames come from the engine's compositor and audio from its mixer, and
+//! FFmpeg only encodes. The same project therefore renders the same way on every run.
 
 use std::fmt;
-use std::path::Path;
-use std::process::Command;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use captaine_model::{Clip, Id, Item, Project, TrackKind};
-use captaine_time::{Rational, RationalTime, Rounding};
+use captaine_model::{Id, Project};
+use captaine_render::{RenderOptions, Renderer};
+use captaine_time::Rational;
 
 #[derive(Debug)]
 pub enum ExportError {
     NoTimeline(Id),
     Empty,
-    MissingMedia(Id),
-    Time(&'static str),
+    Render(String),
+    Audio(String),
     Io(std::io::Error),
     Ffmpeg(String),
 }
@@ -24,142 +25,193 @@ impl fmt::Display for ExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExportError::NoTimeline(id) => write!(f, "timeline {id} not found"),
-            ExportError::Empty => write!(f, "nothing to export: the first video track is empty"),
-            ExportError::MissingMedia(id) => write!(f, "media {id} not found"),
-            ExportError::Time(w) => write!(f, "time conversion failed: {w}"),
-            ExportError::Io(e) => write!(f, "cannot run ffmpeg (is FFmpeg installed?): {e}"),
+            ExportError::Empty => write!(f, "nothing to export: the timeline is empty"),
+            ExportError::Render(s) | ExportError::Audio(s) => write!(f, "{s}"),
+            ExportError::Io(e) => write!(f, "i/o error: {e}"),
             ExportError::Ffmpeg(s) => write!(f, "ffmpeg failed:\n{s}"),
         }
     }
 }
 impl std::error::Error for ExportError {}
 
-fn secs(t: RationalTime) -> f64 {
-    t.to_seconds_f64()
+impl From<std::io::Error> for ExportError {
+    fn from(e: std::io::Error) -> Self {
+        ExportError::Io(e)
+    }
 }
 
-/// The ffmpeg arguments (after the program name) that render `timeline` to `out`.
-pub fn plan(project: &Project, timeline: Id, out: &Path) -> Result<Vec<String>, ExportError> {
-    let tl = project
-        .timeline(timeline)
-        .ok_or(ExportError::NoTimeline(timeline))?;
-    let track = tl
-        .tracks
-        .iter()
-        .find(|t| t.kind == TrackKind::Video)
-        .ok_or(ExportError::Empty)?;
-    if track.items.is_empty() {
-        return Err(ExportError::Empty);
-    }
-    let (w, h) = (project.settings.width, project.settings.height);
-    let fps = tl.rate;
-    let sr = project.settings.sample_rate;
+#[derive(Clone, Debug)]
+pub struct ExportOptions {
+    /// x264 constant rate factor (lower = better, 18 is visually lossless)
+    pub crf: u32,
+    pub preset: String,
+    pub audio_kbps: u32,
+    pub render: RenderOptions,
+}
 
-    let mut inputs: Vec<&str> = Vec::new();
-    let mut graph: Vec<String> = Vec::new();
-    let mut concat = String::new();
-
-    for (n, item) in track.items.iter().enumerate() {
-        let frames = item.duration().value;
-        let secs_out = secs(item.duration());
-        let live: Option<(&Clip, usize)> = match item {
-            Item::Clip(c) if c.enabled => {
-                let m = project
-                    .media
-                    .get(&c.media)
-                    .ok_or(ExportError::MissingMedia(c.media))?;
-                let idx = inputs.iter().position(|p| *p == m.path).unwrap_or_else(|| {
-                    inputs.push(&m.path);
-                    inputs.len() - 1
-                });
-                Some((c, idx))
-            }
-            _ => None,
-        };
-        match live {
-            Some((c, i)) => {
-                let m = &project.media[&c.media];
-                let src_rate = c.source_start.rate;
-                let src_len = c
-                    .duration
-                    .rescale(src_rate, Rounding::Ceil)
-                    .ok_or(ExportError::Time("clip length"))?;
-                let start = c.source_start.value;
-                graph.push(format!(
-                    "[{i}:v]trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS,fps={fps},trim=end_frame={frames},\
-                     setpts=PTS-STARTPTS,scale={w}:{h}:force_original_aspect_ratio=decrease,\
-                     pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{n}]",
-                    end = start + src_len.value,
-                    fps = rate_arg(fps),
-                ));
-                if m.has_audio {
-                    graph.push(format!(
-                        "[{i}:a]atrim=start={:.6}:duration={:.6},asetpts=PTS-STARTPTS,aresample={sr},\
-                         aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={:.6}[a{n}]",
-                        secs(c.source_start),
-                        secs_out,
-                        secs_out,
-                    ));
-                } else {
-                    graph.push(silence(n, sr, secs_out));
-                }
-            }
-            None => {
-                graph.push(format!(
-                    "color=c=black:s={w}x{h}:r={}:d={secs_out:.6},format=yuv420p,setsar=1[v{n}]",
-                    rate_arg(fps)
-                ));
-                graph.push(silence(n, sr, secs_out));
-            }
+impl Default for ExportOptions {
+    fn default() -> Self {
+        ExportOptions {
+            crf: 18,
+            preset: "medium".into(),
+            audio_kbps: 192,
+            render: RenderOptions::default(),
         }
-        concat.push_str(&format!("[v{n}][a{n}]"));
     }
-    graph.push(format!(
-        "{concat}concat=n={}:v=1:a=1[v][a]",
-        track.items.len()
-    ));
-
-    let mut args: Vec<String> = ["-y", "-hide_banner", "-loglevel", "error"]
-        .map(String::from)
-        .to_vec();
-    for p in &inputs {
-        args.push("-i".into());
-        args.push((*p).to_string());
-    }
-    args.extend(["-filter_complex".into(), graph.join(";")]);
-    for a in [
-        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-pix_fmt", "yuv420p",
-    ] {
-        args.push(a.into());
-    }
-    for a in ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"] {
-        args.push(a.into());
-    }
-    args.push(out.to_string_lossy().into_owned());
-    Ok(args)
 }
 
 fn rate_arg(r: Rational) -> String {
     format!("{}/{}", r.num(), r.den())
 }
 
-fn silence(n: usize, sr: u32, secs: f64) -> String {
-    format!("anullsrc=r={sr}:cl=stereo,atrim=duration={secs:.6},asetpts=PTS-STARTPTS[a{n}]")
+/// FFmpeg arguments that encode raw RGB frames from stdin plus a raw stereo f32 audio file.
+pub fn encode_args(
+    width: u32,
+    height: u32,
+    fps: Rational,
+    sample_rate: u32,
+    audio: &Path,
+    out: &Path,
+    o: &ExportOptions,
+) -> Vec<String> {
+    let mut a: Vec<String> = ["-y", "-hide_banner", "-loglevel", "error"]
+        .map(String::from)
+        .to_vec();
+    a.extend(["-f", "rawvideo", "-pix_fmt", "rgb24", "-s"].map(String::from));
+    a.push(format!("{width}x{height}"));
+    a.extend([
+        "-r".to_string(),
+        rate_arg(fps),
+        "-i".to_string(),
+        "-".to_string(),
+    ]);
+    a.extend(["-f", "f32le", "-ar"].map(String::from));
+    a.extend([
+        sample_rate.to_string(),
+        "-ac".into(),
+        "2".into(),
+        "-i".into(),
+        audio.to_string_lossy().into_owned(),
+    ]);
+    // RGB -> limited-range BT.709 YUV, tagged as such so players decode it the way we composited it
+    a.extend(
+        [
+            "-vf",
+            "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+        ]
+        .map(String::from),
+    );
+    a.extend(
+        [
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-color_range",
+            "tv",
+        ]
+        .map(String::from),
+    );
+    a.extend(["-c:v", "libx264", "-preset"].map(String::from));
+    a.extend([o.preset.clone(), "-crf".into(), o.crf.to_string()]);
+    a.extend(["-c:a", "aac", "-b:a"].map(String::from));
+    a.push(format!("{}k", o.audio_kbps));
+    a.extend(["-movflags", "+faststart"].map(String::from));
+    a.push(out.to_string_lossy().into_owned());
+    a
 }
 
-/// Renders `timeline` to `out` with the `ffmpeg` binary.
-pub fn export(project: &Project, timeline: Id, out: &Path) -> Result<(), ExportError> {
-    let args = plan(project, timeline, out)?;
-    let res = Command::new("ffmpeg")
-        .args(&args)
-        .output()
-        .map_err(ExportError::Io)?;
-    if res.status.success() {
-        Ok(())
-    } else {
-        Err(ExportError::Ffmpeg(
-            String::from_utf8_lossy(&res.stderr).trim().to_string(),
-        ))
+fn temp_audio_path() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("captaine-audio-{}-{nanos}.f32", std::process::id()))
+}
+
+/// Render `timeline` to `out`. `progress(done, total)` is called after every frame.
+pub fn export(
+    project: &Project,
+    timeline: Id,
+    out: &Path,
+    opts: &ExportOptions,
+    progress: &mut dyn FnMut(i64, i64),
+) -> Result<(), ExportError> {
+    let tl = project
+        .timeline(timeline)
+        .ok_or(ExportError::NoTimeline(timeline))?;
+    let total = tl.duration().value;
+    if total == 0 {
+        return Err(ExportError::Empty);
     }
+    let sr = project.settings.sample_rate;
+
+    // 1. mix the whole soundtrack to a raw file, a second at a time
+    let audio_path = temp_audio_path();
+    let result = (|| -> Result<(), ExportError> {
+        let mut mixer = captaine_audio::Mixer::new(project, timeline)
+            .map_err(|e| ExportError::Audio(e.to_string()))?;
+        {
+            let mut w = BufWriter::new(File::create(&audio_path)?);
+            let n = mixer.total_samples();
+            let mut at = 0;
+            while at < n {
+                let block = (sr as i64).min(n - at) as usize;
+                let pcm = mixer
+                    .render(at, block)
+                    .map_err(|e| ExportError::Audio(e.to_string()))?;
+                for s in pcm {
+                    w.write_all(&s.clamp(-1.0, 1.0).to_le_bytes())?;
+                }
+                at += block as i64;
+            }
+            w.flush()?;
+        }
+
+        // 2. render frames into the encoder
+        let mut renderer = Renderer::new(project, timeline, opts.render.clone())
+            .map_err(|e| ExportError::Render(e.to_string()))?;
+        let (w, h) = renderer.size();
+        let args = encode_args(w, h, tl.rate, sr, &audio_path, out, opts);
+        let mut child = Command::new("ffmpeg")
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(ExportError::Io)?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let mut write_err = None;
+        for tick in 0..total {
+            let frame = match renderer.render(tick) {
+                Ok(f) => f,
+                Err(e) => {
+                    drop(stdin);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ExportError::Render(e.to_string()));
+                }
+            };
+            if let Err(e) = stdin.write_all(&frame.to_rgb8()) {
+                write_err = Some(e); // ffmpeg exited early: its stderr says why
+                break;
+            }
+            progress(tick + 1, total);
+        }
+        drop(stdin);
+        let res = child.wait_with_output()?;
+        if !res.status.success() {
+            let msg = String::from_utf8_lossy(&res.stderr).trim().to_string();
+            return Err(ExportError::Ffmpeg(if msg.is_empty() {
+                format!("{write_err:?}")
+            } else {
+                msg
+            }));
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_file(&audio_path);
+    result
 }

@@ -1,0 +1,19 @@
+[package]
+name = "captaine-audio"
+description = "Audio decode, mixer (gain, fades, pan), EBU R128 loudness and waveform peaks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_audio"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+ebur128.workspace = true
+
+[dev-dependencies]
+captaine-media.workspace = true
+captaine-ops.workspace = true

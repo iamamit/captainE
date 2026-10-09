@@ -4,6 +4,7 @@
 //! which is what makes undo, history, diff and agent tools one mechanism.
 
 mod apply;
+pub mod edit;
 mod editor;
 mod op;
 

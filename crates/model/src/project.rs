@@ -35,12 +35,97 @@ pub struct MediaRef {
     pub duration: Option<RationalTime>,
     #[serde(default)]
     pub has_audio: bool,
+    /// Display size after rotation metadata is applied. 0 for audio-only media.
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default = "yes")]
+    pub has_video: bool,
+    /// Lightweight stand-in used for playback when proxy mode is on
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackKind {
     Video,
     Audio,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BlendMode {
+    Normal,
+    Add,
+    Multiply,
+    Screen,
+}
+
+/// Placement of a clip's picture on the canvas. The picture is first fitted inside the canvas
+/// (letterboxed), then `scale`, `rotation_deg` and `position` apply.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Transform {
+    /// Offset from the canvas center, in canvas pixels (+x right, +y down).
+    pub position: (f64, f64),
+    /// 1.0 = the fitted size.
+    pub scale: (f64, f64),
+    /// Clockwise degrees around the picture center.
+    pub rotation_deg: f64,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Transform {
+            position: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            rotation_deg: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VideoProps {
+    pub transform: Transform,
+    /// 0.0..=1.0
+    pub opacity: f64,
+    pub blend: BlendMode,
+}
+
+impl Default for VideoProps {
+    fn default() -> Self {
+        VideoProps {
+            transform: Transform::default(),
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AudioProps {
+    pub muted: bool,
+    pub gain_db: f64,
+    /// -1.0 (left) ..= 1.0 (right)
+    pub pan: f64,
+    /// Linear fades, in ticks of the timeline rate. `fade_in + fade_out` may not exceed the clip.
+    pub fade_in: i64,
+    pub fade_out: i64,
+}
+
+impl Default for AudioProps {
+    fn default() -> Self {
+        AudioProps {
+            muted: false,
+            gain_db: 0.0,
+            pan: 0.0,
+            fade_in: 0,
+            fade_out: 0,
+        }
+    }
 }
 
 /// A piece of media on a track.
@@ -55,6 +140,67 @@ pub struct Clip {
     pub source_start: RationalTime,
     pub duration: RationalTime,
     pub enabled: bool,
+    #[serde(default)]
+    pub video: VideoProps,
+    #[serde(default)]
+    pub audio: AudioProps,
+}
+
+impl Clip {
+    pub fn new(
+        id: Id,
+        name: impl Into<String>,
+        media: Id,
+        source_start: RationalTime,
+        duration: RationalTime,
+    ) -> Clip {
+        Clip {
+            id,
+            name: name.into(),
+            media,
+            source_start,
+            duration,
+            enabled: true,
+            video: VideoProps::default(),
+            audio: AudioProps::default(),
+        }
+    }
+}
+
+impl Clip {
+    /// Property ranges: finite numbers, opacity 0..=1, pan -1..=1, fades inside the clip.
+    pub fn check_props(&self, rate: Rational) -> Result<(), &'static str> {
+        let t = &self.video.transform;
+        let finite = [
+            t.position.0,
+            t.position.1,
+            t.scale.0,
+            t.scale.1,
+            t.rotation_deg,
+            self.video.opacity,
+            self.audio.gain_db,
+            self.audio.pan,
+        ]
+        .iter()
+        .all(|v| v.is_finite());
+        if !finite {
+            return Err("non-finite property");
+        }
+        if !(0.0..=1.0).contains(&self.video.opacity) {
+            return Err("opacity must be 0..=1");
+        }
+        if !(-1.0..=1.0).contains(&self.audio.pan) {
+            return Err("pan must be -1..=1");
+        }
+        if t.scale.0 == 0.0 || t.scale.1 == 0.0 {
+            return Err("scale cannot be zero");
+        }
+        let (a, b) = (self.audio.fade_in, self.audio.fade_out);
+        if a < 0 || b < 0 || self.duration.rate != rate || a + b > self.duration.value {
+            return Err("fades must be non-negative and fit inside the clip");
+        }
+        Ok(())
+    }
 }
 
 /// Explicit empty space. Tracks are sequential (OTIO style), so gaps are real items.
@@ -100,6 +246,12 @@ pub struct Track {
     pub name: String,
     pub kind: TrackKind,
     pub items: Vec<Item>,
+    /// Video: visible. Audio: not muted.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Applied to every clip's audio on this track.
+    #[serde(default)]
+    pub gain_db: f64,
 }
 
 impl Track {
@@ -109,6 +261,8 @@ impl Track {
             name: name.into(),
             kind,
             items: Vec::new(),
+            enabled: true,
+            gain_db: 0.0,
         }
     }
 
@@ -279,6 +433,9 @@ impl Project {
                         ));
                     }
                     if let Item::Clip(c) = item {
+                        if let Err(e) = c.check_props(tl.rate) {
+                            errs.push(format!("clip {}: {e}", c.id));
+                        }
                         match self.media.get(&c.media) {
                             None => errs.push(format!(
                                 "clip {} references missing media {}",
@@ -336,6 +493,10 @@ mod tests {
                 path: "/a.mov".into(),
                 duration: Some(RationalTime::new(300, Rational::FPS_30)),
                 has_audio: true,
+                width: 1920,
+                height: 1080,
+                has_video: true,
+                proxy: None,
             },
         );
         let mut tl = Timeline::new(Id::from_u128(2), "main", Rational::FPS_30);
@@ -347,6 +508,8 @@ mod tests {
             source_start: RationalTime::new(0, Rational::FPS_30),
             duration: RationalTime::new(30, Rational::FPS_30),
             enabled: true,
+            video: VideoProps::default(),
+            audio: AudioProps::default(),
         }));
         tl.tracks.push(Arc::new(tr));
         p.timelines.insert(tl.id, Arc::new(tl));

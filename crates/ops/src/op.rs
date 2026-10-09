@@ -1,4 +1,4 @@
-use captaine_model::{Id, Item, MediaRef, Timeline, Track};
+use captaine_model::{AudioProps, Id, Item, MediaRef, Timeline, Track, VideoProps};
 use captaine_time::RationalTime;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,33 @@ pub enum Op {
         edge: Edge,
         delta: RationalTime,
     },
+    /// Move the source window under a clip without changing where or how long it is.
+    Slip {
+        item: Id,
+        delta: RationalTime,
+    },
+    SetVideo {
+        item: Id,
+        video: VideoProps,
+    },
+    SetAudio {
+        item: Id,
+        audio: AudioProps,
+    },
+    SetTrack {
+        track: Id,
+        enabled: bool,
+        gain_db: f64,
+    },
+    /// Reorder tracks within their timeline (index 0 is the bottom video layer).
+    MoveTrack {
+        track: Id,
+        index: usize,
+    },
+    SetProxy {
+        media: Id,
+        proxy: Option<String>,
+    },
     SetEnabled {
         item: Id,
         enabled: bool,
@@ -97,6 +124,12 @@ impl Op {
             Op::Split { item, at, .. } => format!("Split {item} at +{}", at.value),
             Op::Join { left, right } => format!("Join {left} and {right}"),
             Op::Trim { item, edge, delta } => format!("Trim {edge:?} of {item} by {}", delta.value),
+            Op::Slip { item, delta } => format!("Slip {item} by {}", delta.value),
+            Op::SetVideo { item, .. } => format!("Set video properties of {item}"),
+            Op::SetAudio { item, .. } => format!("Set audio properties of {item}"),
+            Op::SetTrack { track, .. } => format!("Set track {track}"),
+            Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
+            Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
             Op::SetEnabled { item, enabled } => {
                 format!("{} {item}", if *enabled { "Enable" } else { "Disable" })
             }

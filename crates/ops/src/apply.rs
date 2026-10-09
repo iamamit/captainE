@@ -21,6 +21,7 @@ pub enum OpError {
     Inexact(&'static str),
     OutOfRange(&'static str),
     NotJoinable(&'static str),
+    BadProps(&'static str),
 }
 
 impl fmt::Display for OpError {
@@ -39,6 +40,7 @@ impl fmt::Display for OpError {
             OpError::Inexact(w) => write!(f, "not exactly representable: {w}"),
             OpError::OutOfRange(w) => write!(f, "out of range: {w}"),
             OpError::NotJoinable(w) => write!(f, "cannot join: {w}"),
+            OpError::BadProps(w) => write!(f, "bad property: {w}"),
         }
     }
 }
@@ -77,6 +79,7 @@ fn check_item(p: &Project, rate: Rational, item: &Item) -> Result<()> {
         return Err(OpError::BadDuration(item.id()));
     }
     if let Item::Clip(c) = item {
+        c.check_props(rate).map_err(OpError::BadProps)?;
         let m = p
             .media
             .get(&c.media)
@@ -381,6 +384,120 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
                 item: *item,
                 edge: *edge,
                 delta: back,
+            })
+        }
+        Op::Slip { item, delta } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            if delta.rate != rate {
+                return Err(OpError::BadDuration(*item));
+            }
+            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            let d = to_rate(*delta, c.source_start.rate, "slip in source")?;
+            let new = Item::Clip(Clip {
+                source_start: arith(c.source_start.checked_add(d))?,
+                ..c
+            });
+            check_item(p, rate, &new)?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = new;
+            Ok(Op::Slip {
+                item: *item,
+                delta: RationalTime::new(-delta.value, rate),
+            })
+        }
+        Op::SetVideo { item, video } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            let new = Clip {
+                video: *video,
+                ..c.clone()
+            };
+            check_item(p, rate, &Item::Clip(new.clone()))?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = Item::Clip(new);
+            Ok(Op::SetVideo {
+                item: *item,
+                video: c.video,
+            })
+        }
+        Op::SetAudio { item, audio } => {
+            let loc = item_loc(p, *item)?;
+            let rate = timeline_rate(p, loc.timeline);
+            let Item::Clip(c) = p.item(loc).expect("located").clone() else {
+                return Err(OpError::NotFound("clip", *item));
+            };
+            let new = Clip {
+                audio: *audio,
+                ..c.clone()
+            };
+            check_item(p, rate, &Item::Clip(new.clone()))?;
+            p.timeline_mut(loc.timeline)
+                .expect("located")
+                .track_mut(loc.track)
+                .items[loc.index] = Item::Clip(new);
+            Ok(Op::SetAudio {
+                item: *item,
+                audio: c.audio,
+            })
+        }
+        Op::SetTrack {
+            track,
+            enabled,
+            gain_db,
+        } => {
+            if !gain_db.is_finite() {
+                return Err(OpError::BadProps("non-finite gain"));
+            }
+            let (tl, ti) = p
+                .find_track(*track)
+                .ok_or(OpError::NotFound("track", *track))?;
+            let t = p.timeline_mut(tl).expect("located").track_mut(ti);
+            let prev = Op::SetTrack {
+                track: *track,
+                enabled: t.enabled,
+                gain_db: t.gain_db,
+            };
+            t.enabled = *enabled;
+            t.gain_db = *gain_db;
+            Ok(prev)
+        }
+        Op::MoveTrack { track, index } => {
+            let (tl_id, ti) = p
+                .find_track(*track)
+                .ok_or(OpError::NotFound("track", *track))?;
+            let tl = p.timeline_mut(tl_id).expect("located");
+            if *index >= tl.tracks.len() {
+                return Err(OpError::IndexOutOfBounds {
+                    index: *index,
+                    len: tl.tracks.len(),
+                });
+            }
+            let t = tl.tracks.remove(ti);
+            tl.tracks.insert(*index, t);
+            Ok(Op::MoveTrack {
+                track: *track,
+                index: ti,
+            })
+        }
+        Op::SetProxy { media, proxy } => {
+            let m = p
+                .media
+                .get_mut(media)
+                .ok_or(OpError::NotFound("media", *media))?;
+            let prev = std::mem::replace(&mut m.proxy, proxy.clone());
+            Ok(Op::SetProxy {
+                media: *media,
+                proxy: prev,
             })
         }
         Op::SetEnabled { item, enabled } => {

@@ -1,0 +1,19 @@
+[package]
+name = "captaine-render"
+description = "Timeline evaluator, frame decoder with cache, and the linear-light CPU compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_render"
+
+[dependencies]
+captaine-time.workspace = true
+captaine-model.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+captaine-media.workspace = true
+captaine-ops.workspace = true

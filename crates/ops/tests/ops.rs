@@ -11,14 +11,7 @@ fn id(n: u128) -> Id {
     Id::from_u128(n)
 }
 fn clip(n: u128, media: u128, src: i64, dur: i64) -> Item {
-    Item::Clip(Clip {
-        id: id(n),
-        name: format!("c{n}"),
-        media: id(media),
-        source_start: t(src),
-        duration: t(dur),
-        enabled: true,
-    })
+    Item::Clip(Clip::new(id(n), format!("c{n}"), id(media), t(src), t(dur)))
 }
 fn gap(n: u128, dur: i64) -> Item {
     Item::Gap(Gap {
@@ -40,6 +33,10 @@ fn editor() -> Editor {
         path: "/m.mov".into(),
         duration: Some(t(1000)),
         has_audio: true,
+        width: 1920,
+        height: 1080,
+        has_video: true,
+        proxy: None,
     };
     ed.apply(Author::User, Op::AddMedia { media }).unwrap();
     ed.apply(
@@ -226,6 +223,10 @@ fn trim_in_with_different_media_rate() {
         path: "/m".into(),
         duration: Some(src(240)),
         has_audio: true,
+        width: 1920,
+        height: 1080,
+        has_video: true,
+        proxy: None,
     };
     ed.apply(Author::User, Op::AddMedia { media }).unwrap();
     ed.apply(
@@ -244,14 +245,7 @@ fn trim_in_with_different_media_rate() {
         },
     )
     .unwrap();
-    let c = Item::Clip(Clip {
-        id: id(10),
-        name: "c".into(),
-        media: id(1),
-        source_start: src(0),
-        duration: t(60),
-        enabled: true,
-    });
+    let c = Item::Clip(Clip::new(id(10), "c", id(1), src(0), t(60)));
     insert(&mut ed, 0, c);
     ed.apply(
         Author::User,
@@ -503,14 +497,13 @@ fn random_op(rng: &mut Rng, ed: &Editor, next_id: &mut u128) -> Op {
                     duration: t(rng.range(1, 40)),
                 })
             } else {
-                Item::Clip(Clip {
-                    id: new,
-                    name: "r".into(),
-                    media: id(MEDIA),
-                    source_start: t(rng.range(0, 800)),
-                    duration: t(rng.range(1, 150)),
-                    enabled: true,
-                })
+                Item::Clip(Clip::new(
+                    new,
+                    "r",
+                    id(MEDIA),
+                    t(rng.range(0, 800)),
+                    t(rng.range(1, 150)),
+                ))
             };
             Op::InsertItem {
                 track: id(V1),
