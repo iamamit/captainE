@@ -296,10 +296,10 @@ pub struct Prefs {
 }
 
 fn default_pool_w() -> f32 {
-    330.0
+    340.0
 }
 fn default_inspector_w() -> f32 {
-    300.0
+    340.0
 }
 fn default_timeline_h() -> f32 {
     300.0
@@ -360,8 +360,9 @@ impl Prefs {
         };
         self.snapshot_minutes = self.snapshot_minutes.min(120);
         self.proxy_height = self.proxy_height.clamp(120, 1080);
-        self.pool_w = self.pool_w.clamp(240.0, 560.0);
-        self.inspector_w = self.inspector_w.clamp(240.0, 520.0);
+        // narrower than the tab rows would clip them
+        self.pool_w = self.pool_w.clamp(340.0, 640.0);
+        self.inspector_w = self.inspector_w.clamp(340.0, 600.0);
         self.timeline_h = self.timeline_h.clamp(180.0, 900.0);
         self
     }

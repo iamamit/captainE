@@ -1375,6 +1375,7 @@ pub struct TitleDrag(pub TitleTemplate);
 pub struct LayerDrag(pub Option<ShapeKind>);
 
 pub fn media_pool(app: &mut App, root: &mut Ui) {
+    let avail = root.available_rect_before_wrap();
     let shown = egui::Panel::left("media_pool")
         .exact_size(app.prefs.pool_w)
         .resizable(false)
@@ -1446,7 +1447,14 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                     grid(app, ui);
                 });
         });
-    drag_edge(app, root, shown.response.rect, PanelKind::Pool);
+    let w = app.prefs.pool_w;
+    let _ = &shown;
+    drag_edge(
+        app,
+        root,
+        Rect::from_min_size(avail.min, vec2(w, avail.height())),
+        PanelKind::Pool,
+    );
 }
 
 /// The project's sequences: insert one into the current sequence, or step into it.
@@ -1745,6 +1753,7 @@ fn extension(name: &str) -> String {
 // ---- inspector -----------------------------------------------------------------------------------
 
 pub fn inspector(app: &mut App, root: &mut Ui) {
+    let avail = root.available_rect_before_wrap();
     let shown = egui::Panel::right("inspector")
         .exact_size(app.prefs.inspector_w)
         .resizable(false)
@@ -1788,7 +1797,14 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                         });
                 });
         });
-    drag_edge(app, root, shown.response.rect, PanelKind::Inspector);
+    let w = app.prefs.inspector_w;
+    let _ = &shown;
+    drag_edge(
+        app,
+        root,
+        Rect::from_min_max(pos2(avail.right() - w, avail.top()), avail.max),
+        PanelKind::Inspector,
+    );
 }
 
 /// The grab strip on the inner edge of a side panel. The width lives in the preferences, so it cannot

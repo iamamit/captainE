@@ -25,6 +25,7 @@ pub fn fit(app: &mut App) {
 
 pub fn panel(app: &mut App, root: &mut egui::Ui) {
     let ctx = root.ctx().clone();
+    let avail = root.available_rect_before_wrap();
     let shown = egui::Panel::bottom("timeline")
         .resizable(false)
         .exact_size(app.prefs.timeline_h)
@@ -37,10 +38,12 @@ pub fn panel(app: &mut App, root: &mut egui::Ui) {
             toolbar(app, ui);
             body(app, ui);
         });
+    let _ = &shown;
+    let h = app.prefs.timeline_h;
     ui::drag_edge(
         app,
         root,
-        shown.response.rect,
+        Rect::from_min_max(pos2(avail.left(), avail.bottom() - h), avail.max),
         crate::keymap::PanelKind::Timeline,
     );
     drag_ghost(app, &ctx);

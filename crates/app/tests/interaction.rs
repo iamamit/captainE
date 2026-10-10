@@ -1845,6 +1845,7 @@ fn mixer_solo_lock_pan_and_loudness_buttons() {
     app_mut(&mut h).undo();
     // loudness: measure, then normalise to a target
     h.get_by_label("Measure mix").scroll_to_me();
+    settle(&mut h);
     h.get_by_label("Measure mix").click();
     settle(&mut h);
     assert!(app(&h).loudness.is_some());
@@ -2541,7 +2542,7 @@ fn panel_sizes_are_remembered_between_runs() {
     use captaine_app::keymap::*;
     let mut p = Prefs::default();
     assert!(
-        !p.note_panel(PanelKind::Pool, 330.5),
+        !p.note_panel(PanelKind::Pool, 340.5),
         "a pixel of noise is not a change"
     );
     assert!(p.note_panel(PanelKind::Pool, 480.0));
@@ -2549,7 +2550,7 @@ fn panel_sizes_are_remembered_between_runs() {
         p.note_panel(PanelKind::Inspector, 9999.0),
         "kept inside the allowed range"
     );
-    assert_eq!((p.pool_w, p.inspector_w), (480.0, 520.0));
+    assert_eq!((p.pool_w, p.inspector_w), (480.0, 600.0));
     assert!(p.note_panel(PanelKind::Timeline, 400.0));
     let text = serde_json::to_string(&p).unwrap();
     let back: Prefs = serde_json::from_str(&text).unwrap();
@@ -2558,7 +2559,7 @@ fn panel_sizes_are_remembered_between_runs() {
     let old: Prefs =
         serde_json::from_str(r#"{"ui_scale":1.0,"snapshot_minutes":5,"proxy_height":540}"#)
             .unwrap();
-    assert_eq!(old.pool_w, 330.0);
+    assert_eq!(old.pool_w, 340.0);
 }
 
 #[test]
@@ -2568,7 +2569,7 @@ fn a_dragged_panel_keeps_its_width_while_the_pointer_moves_about() {
     }
     let mut h = editor();
     let width = |h: &H| h.get_by_label("+").rect().right();
-    drag(&mut h, pos2(335.0, 300.0), pos2(455.0, 300.0));
+    drag(&mut h, pos2(345.0, 300.0), pos2(465.0, 300.0));
     let set = width(&h);
     assert!(set > 400.0, "it was widened: {set}");
     // hovering around repaints the window many times; the width must not creep back
