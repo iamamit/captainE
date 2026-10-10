@@ -63,7 +63,10 @@ fn editor() -> H {
                         None,
                     );
                     app.import(vec![path.clone()]);
-                    let id = *app.project().media.keys().next().unwrap();
+                    let id = *app.project().media.keys().next().unwrap_or_else(|| {
+                        let said: Vec<_> = app.toasts.iter().map(|t| t.text.clone()).collect();
+                        panic!("the clip was not imported: {said:?}")
+                    });
                     app.place_media(id, None, None);
                     app.show_copilot = true;
                     app

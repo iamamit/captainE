@@ -139,7 +139,7 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
 /// Probes `path` and builds its media-pool entry.
 pub fn media_ref(path: &Path, id: Id) -> Result<MediaRef, MediaError> {
     let info = probe(path)?;
-    let path = path.canonicalize().map_err(MediaError::Io)?;
+    let path = plain_path(path.canonicalize().map_err(MediaError::Io)?);
     Ok(MediaRef {
         id,
         name: path
@@ -217,6 +217,16 @@ pub fn detect_space(path: &str) -> InputSpace {
         c.insert(path.to_string(), space);
     }
     space
+}
+
+/// On Windows `canonicalize` gives `\\?\C:\...`, which other programs (FFmpeg, Python) do not all accept;
+/// this puts the plain `C:\...` back. Elsewhere the path is left as it is.
+pub fn plain_path(p: std::path::PathBuf) -> std::path::PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+        _ => p,
+    }
 }
 
 /// A file path written the way an FFmpeg filter option wants it: forward slashes, and the drive colon escaped
@@ -389,5 +399,26 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert!(parse_probe(r#"{"streams":[],"format":{}}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod plain_path_tests {
+    use super::*;
+
+    #[test]
+    fn the_verbatim_windows_prefix_is_dropped_but_network_paths_are_kept() {
+        let strip = |s: &str| {
+            plain_path(std::path::PathBuf::from(s))
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(strip(r"\\?\C:\Users\me\a.mp4"), r"C:\Users\me\a.mp4");
+        assert_eq!(
+            strip(r"\\?\UNC\server\share\a.mp4"),
+            r"\\?\UNC\server\share\a.mp4"
+        );
+        assert_eq!(strip("/tmp/a.mp4"), "/tmp/a.mp4");
+        assert_eq!(strip(r"C:\a.mp4"), r"C:\a.mp4");
     }
 }
