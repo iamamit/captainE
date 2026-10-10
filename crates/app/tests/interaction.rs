@@ -915,7 +915,11 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
         if app(&h).export.jobs.len() == 2 {
             break;
         }
-        h.get_all_by_label("Export").last().unwrap().click();
+        // the button reads "Add to queue" while a job is running and "Export" otherwise
+        match h.query_by_label("Add to queue") {
+            Some(button) => button.click(),
+            None => h.get_all_by_label("Export").last().unwrap().click(),
+        }
         settle(&mut h);
     }
     for _ in 0..2400 {
@@ -1854,6 +1858,7 @@ fn mixer_solo_lock_pan_and_loudness_buttons() {
     assert_eq!(app(&h).loudness_target, -23.0);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_bundled_app_finds_its_helpers_even_with_a_bare_path() {
     let exe = std::path::Path::new("/Applications/captainE.app/Contents/MacOS/captaine-app");

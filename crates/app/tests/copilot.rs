@@ -19,7 +19,12 @@ type H = Harness<'static, Option<App>>;
 fn editor() -> H {
     let dir = std::env::temp_dir().join(format!("captaine-copilot-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("talk.mp4");
+    // every test makes its own file: they run side by side and Windows will not share a half-written one
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let path = dir.join(format!(
+        "talk-{}.mp4",
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
     let audio =
         "aevalsrc=0.5*sin(2*PI*200*t)*(lt(t\\,1)+between(t\\,3\\,4.5)+gt(t\\,6)):s=48000:d=7";
     let ok = Command::new("ffmpeg")

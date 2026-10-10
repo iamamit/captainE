@@ -210,26 +210,26 @@ impl eframe::App for Shell {
 /// PATH for the helper programs (ffmpeg, python). An app opened from Finder gets a bare PATH, so
 /// put a bundled `Resources/bin` first and the usual install places last.
 pub fn helper_search_path(current: &str, exe: &std::path::Path) -> String {
-    let mut dirs: Vec<String> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(res) = exe
         .parent()
         .and_then(|m| m.parent())
         .map(|c| c.join("Resources"))
     {
-        dirs.push(res.join("bin").to_string_lossy().into());
+        dirs.push(res.join("bin"));
     }
-    dirs.extend(
-        current
-            .split(':')
-            .filter(|d| !d.is_empty())
-            .map(String::from),
-    );
-    for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        if !dirs.iter().any(|d| d == extra) {
-            dirs.push(extra.into());
+    dirs.extend(std::env::split_paths(current).filter(|d| !d.as_os_str().is_empty()));
+    if cfg!(unix) {
+        for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
+            if !dirs.iter().any(|d| d == std::path::Path::new(extra)) {
+                dirs.push(extra.into());
+            }
         }
     }
-    dirs.join(":")
+    std::env::join_paths(dirs).map_or_else(
+        |_| current.to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    )
 }
 
 pub fn run(arg: Option<PathBuf>) -> eframe::Result {

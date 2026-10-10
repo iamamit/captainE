@@ -13,6 +13,17 @@ use captaine_model::{Id, Project};
 use captaine_render::{RenderOptions, Renderer};
 use captaine_time::{Rational, RationalTime, Rounding};
 
+/// Delete a half-written file. Windows keeps a killed program's file locked for a moment, so try a few times.
+fn remove_when_free(path: &Path) {
+    for _ in 0..40 {
+        match fs::remove_file(path) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ExportError {
     NoTimeline(Id),
@@ -506,7 +517,7 @@ pub fn export(
                 drop(stdin);
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = fs::remove_file(out);
+                remove_when_free(out);
                 return Err(ExportError::Cancelled);
             }
             let frame = match renderer.render(tick) {
