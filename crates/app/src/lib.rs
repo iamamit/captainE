@@ -152,6 +152,7 @@ pub fn startup_session_noted(arg: Option<PathBuf>) -> (Session, PathBuf, Option<
     }
     let s = blank_session(1920, 1080, Rational::FPS_30);
     let _ = s.save(&path);
+    remember(&path);
     (s, path, None)
 }
 

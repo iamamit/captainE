@@ -1371,7 +1371,7 @@ pub struct LayerDrag(pub Option<ShapeKind>);
 pub fn media_pool(app: &mut App, root: &mut Ui) {
     egui::Panel::left("media_pool")
         .default_size(330.0)
-        .min_size(240.0)
+        .size_range(240.0..=560.0)
         .resizable(true)
         .frame(
             egui::Frame::new()
@@ -1741,7 +1741,7 @@ fn extension(name: &str) -> String {
 pub fn inspector(app: &mut App, root: &mut Ui) {
     egui::Panel::right("inspector")
         .default_size(300.0)
-        .min_size(240.0)
+        .size_range(240.0..=520.0)
         .resizable(true)
         .frame(
             egui::Frame::new()
