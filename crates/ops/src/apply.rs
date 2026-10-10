@@ -1013,6 +1013,21 @@ fn apply_in_place(p: &mut Project, op: &Op) -> Result<Op> {
             t.locked = *locked;
             Ok(prev)
         }
+        Op::SetTrackStyle { track, name, color } => {
+            if name.trim().is_empty() || name.len() > 40 {
+                return Err(OpError::BadProps("a track name is 1 to 40 characters"));
+            }
+            let (tl, ti) = p
+                .find_track(*track)
+                .ok_or(OpError::NotFound("track", *track))?;
+            let t = p.timeline_mut(tl).expect("located").track_mut(ti);
+            let prev = Op::SetTrackStyle {
+                track: *track,
+                name: std::mem::replace(&mut t.name, name.clone()),
+                color: std::mem::replace(&mut t.color, *color),
+            };
+            Ok(prev)
+        }
         Op::MoveTrack { track, index } => {
             let (tl_id, ti) = p
                 .find_track(*track)

@@ -6,10 +6,12 @@ use captaine_ops::{edit, Edge, Op};
 use egui::{pos2, vec2, Align2, Color32, Context, Painter, Rect, RichText, Sense, Shape, Stroke};
 
 use crate::app::*;
+use crate::glyphs::{self, Glyph};
+use crate::keymap::Action;
 use crate::theme::{self, mono, ui_font};
-use crate::ui::{self, chip, toggle_text, LayerDrag, MediaDrag, TitleDrag};
+use crate::ui::{self, chip, LayerDrag, MediaDrag, TitleDrag};
 
-const HEADER_W: f32 = 56.0;
+use crate::track_ui::{RowSize, HEADER_W};
 const RULER_H: f32 = 26.0;
 const EDGE_PX: f32 = 7.0;
 
@@ -46,32 +48,111 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                for (t, l, k) in [
-                    (Tool::Select, "Select", "V"),
-                    (Tool::Trim, "Trim", "T"),
-                    (Tool::Roll, "Roll", "N"),
-                    (Tool::Slip, "Slip", "Y"),
-                    (Tool::Slide, "Slide", "U"),
-                    (Tool::Blade, "Blade", "B"),
-                    (Tool::Hand, "Hand", "H"),
-                    (Tool::Zoom, "Zoom", "Z"),
+                for (t, g, l) in [
+                    (Tool::Select, Glyph::Select, "Select"),
+                    (Tool::Trim, Glyph::Trim, "Trim"),
+                    (Tool::Roll, Glyph::Roll, "Roll"),
+                    (Tool::Slip, Glyph::Slip, "Slip"),
+                    (Tool::Slide, Glyph::Slide, "Slide"),
+                    (Tool::Blade, Glyph::Blade, "Blade"),
+                    (Tool::Hand, Glyph::Hand, "Hand"),
+                    (Tool::Zoom, Glyph::Zoom, "Zoom"),
                 ] {
-                    if chip(ui, l, app.tool == t, true).on_hover_text(k).clicked() {
+                    let key = tool_action(t).map_or(String::new(), |a| app.keymap.label(a));
+                    if glyphs::button(ui, g, app.tool == t, true, l, &key).clicked() {
                         app.tool = t;
                     }
                 }
-                ui.add_space(8.0);
-                ui.painter().vline(
-                    ui.cursor().left(),
-                    ui.max_rect().y_range(),
-                    Stroke::new(1.0, theme::BORDER),
-                );
-                ui.add_space(8.0);
-                if toggle_text(ui, "Snap", app.snap, true)
-                    .on_hover_text("S")
-                    .clicked()
+                separator(ui);
+                if glyphs::button(
+                    ui,
+                    Glyph::Magnet,
+                    app.snap,
+                    true,
+                    "Snap",
+                    &app.keymap.label(Action::Snap),
+                )
+                .clicked()
                 {
                     app.snap = !app.snap;
+                }
+                if glyphs::button(
+                    ui,
+                    Glyph::Link,
+                    app.link_on,
+                    true,
+                    "Link",
+                    "linked clips are edited together",
+                )
+                .clicked()
+                {
+                    app.link_on = !app.link_on;
+                }
+                if glyphs::button(
+                    ui,
+                    Glyph::Flag,
+                    false,
+                    true,
+                    "Add marker",
+                    &app.keymap.label(Action::Marker),
+                )
+                .clicked()
+                {
+                    app.add_marker(None, None);
+                }
+                if glyphs::button(
+                    ui,
+                    Glyph::List,
+                    app.markers_open,
+                    true,
+                    "Markers",
+                    "list the markers",
+                )
+                .clicked()
+                {
+                    app.markers_open = !app.markers_open;
+                }
+                separator(ui);
+                let has_src = app.source_media().is_some();
+                if glyphs::button(
+                    ui,
+                    Glyph::Insert,
+                    false,
+                    has_src,
+                    "Insert",
+                    "from the source monitor, at the playhead (,)",
+                )
+                .clicked()
+                {
+                    app.source_edit(true);
+                }
+                if glyphs::button(
+                    ui,
+                    Glyph::Overwrite,
+                    false,
+                    has_src,
+                    "Overwrite",
+                    "from the source monitor, at the playhead (.)",
+                )
+                .clicked()
+                {
+                    app.source_edit(false);
+                }
+                let rec = app.voiceover.is_some();
+                if glyphs::button(
+                    ui,
+                    Glyph::Mic,
+                    rec,
+                    true,
+                    "Voice-over",
+                    "record the microphone while the timeline plays",
+                )
+                .clicked()
+                {
+                    app.voiceover_toggle();
+                }
+                if rec {
+                    ui.ctx().request_repaint();
                 }
                 if let Some(mc) = app.multicam.as_ref().map(|m| m.angles.len()) {
                     ui.label(RichText::new("Multicam").size(12.0).color(theme::ACCENT));
@@ -84,19 +165,10 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                         app.end_multicam();
                     }
                 }
-                if toggle_text(ui, "Link", app.link_on, true)
-                    .on_hover_text("Linked clips are selected and edited together")
-                    .clicked()
-                {
-                    app.link_on = !app.link_on;
-                }
-                if toggle_text(ui, "Markers", app.markers_open, true)
-                    .on_hover_text("List the markers (M adds one at the playhead)")
-                    .clicked()
-                {
-                    app.markers_open = !app.markers_open;
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if glyphs::button(ui, Glyph::Plus, false, true, "Zoom in", "=").clicked() {
+                        app.pps = (app.pps * 1.25).min(600.0);
+                    }
                     // zoom slider (logarithmic)
                     let (rect, resp) =
                         ui.allocate_exact_size(vec2(90.0, 20.0), Sense::click_and_drag());
@@ -117,19 +189,20 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                             app.pps = (lo + (hi - lo) * nt).exp();
                         }
                     }
-                    ui.label(RichText::new("Zoom").size(12.0).color(theme::MUTED));
-                    ui.add_space(10.0);
-                    if toggle_text(ui, "Extract", false, true)
-                        .on_hover_text("Delete and close the gap (⇧⌫)")
-                        .clicked()
-                    {
-                        ui::extract_selection(app);
+                    if glyphs::button(ui, Glyph::Minus, false, true, "Zoom out", "-").clicked() {
+                        app.pps = (app.pps / 1.25).max(1.0);
                     }
-                    if toggle_text(ui, "Lift", false, true)
-                        .on_hover_text("Delete and leave a gap (⌫)")
-                        .clicked()
+                    if glyphs::button(
+                        ui,
+                        Glyph::Fit,
+                        false,
+                        true,
+                        "Fit timeline",
+                        &app.keymap.label(Action::FitTimeline),
+                    )
+                    .clicked()
                     {
-                        ui::lift_selection(app);
+                        crate::timeline::fit(app);
                     }
                     ui.add_space(8.0);
                     let name = app.timeline().map_or(String::new(), |t| t.name.clone());
@@ -178,9 +251,57 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                             }
                         },
                     );
+                    ui.add_space(8.0);
+                    if glyphs::button(
+                        ui,
+                        Glyph::Extract,
+                        false,
+                        true,
+                        "Extract",
+                        "delete and close the gap (⇧⌫)",
+                    )
+                    .clicked()
+                    {
+                        ui::extract_selection(app);
+                    }
+                    if glyphs::button(
+                        ui,
+                        Glyph::Lift,
+                        false,
+                        true,
+                        "Lift",
+                        "delete and leave a gap (⌫)",
+                    )
+                    .clicked()
+                    {
+                        ui::lift_selection(app);
+                    }
                 });
             });
         });
+}
+
+fn separator(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    ui.painter().vline(
+        ui.cursor().left(),
+        ui.max_rect().y_range(),
+        Stroke::new(1.0, theme::BORDER),
+    );
+    ui.add_space(6.0);
+}
+
+fn tool_action(t: Tool) -> Option<Action> {
+    Some(match t {
+        Tool::Select => Action::ToolSelect,
+        Tool::Trim => Action::ToolTrim,
+        Tool::Roll => Action::ToolRoll,
+        Tool::Slip => Action::ToolSlip,
+        Tool::Slide => Action::ToolSlide,
+        Tool::Blade => Action::ToolBlade,
+        Tool::Hand => Action::ToolHand,
+        Tool::Zoom => Action::ToolZoom,
+    })
 }
 
 struct ClipRect {
@@ -195,7 +316,7 @@ struct ClipRect {
 struct Row {
     track: Id,
     kind: TrackKind,
-    name: String,
+    color: Option<[u8; 3]>,
     enabled: bool,
     top: f32,
     h: f32,
@@ -273,16 +394,25 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     order.extend(tl.tracks.iter().filter(|t| t.kind == TrackKind::Audio));
     let n = order.len().max(1) as f32;
     let row_h = ((area.bottom() - tracks_top) / n).clamp(34.0, 56.0);
+    let mut top = tracks_top;
     let rows: Vec<Row> = order
         .iter()
-        .enumerate()
-        .map(|(i, t)| Row {
-            track: t.id,
-            kind: t.kind,
-            name: t.name.clone(),
-            enabled: t.enabled,
-            top: tracks_top + i as f32 * row_h,
-            h: row_h,
+        .map(|t| {
+            let h = match app.row_size(t.id) {
+                RowSize::Small => 28.0,
+                RowSize::Medium => row_h,
+                RowSize::Large => 88.0,
+            };
+            let r = Row {
+                track: t.id,
+                kind: t.kind,
+                color: t.color,
+                enabled: t.enabled,
+                top,
+                h,
+            };
+            top += h;
+            r
         })
         .collect();
     let body_rect = Rect::from_min_max(
@@ -808,61 +938,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         );
         p.hline(r.x_range(), r.bottom(), Stroke::new(1.0, theme::BORDER));
         let head = Rect::from_min_max(r.min, pos2(r.left() + HEADER_W, r.bottom()));
-        p.rect_filled(head, 0.0, theme::PANEL);
-        p.vline(
-            head.right(),
-            head.y_range(),
-            Stroke::new(1.0, theme::BORDER),
-        );
-        let col = if row.enabled {
-            Color32::WHITE
-        } else {
-            theme::FAINT
-        };
-        p.text(
-            pos2(head.left() + 10.0, head.top() + 12.0),
-            Align2::LEFT_CENTER,
-            &row.name,
-            ui_font(12.0),
-            col,
-        );
-        if !row.enabled {
-            p.text(
-                pos2(head.left() + 10.0, head.top() + 28.0),
-                Align2::LEFT_CENTER,
-                if row.kind == TrackKind::Video {
-                    "hidden"
-                } else {
-                    "muted"
-                },
-                ui_font(9.5),
-                theme::FAINT,
-            );
-        }
-        // clicking a header toggles the track
-        let hr = ui.interact(
-            head,
-            egui::Id::new(("track_head", row.track)),
-            Sense::click(),
-        );
-        if hr.clicked() {
-            let (enabled, gain) = tl
-                .tracks
-                .iter()
-                .find(|t| t.id == row.track)
-                .map(|t| (t.enabled, t.gain_db))
-                .unwrap_or((true, 0.0));
-            app.do_op(Op::SetTrack {
-                track: row.track,
-                enabled: !enabled,
-                gain_db: gain,
-            });
-        }
-        hr.on_hover_text(if row.kind == TrackKind::Video {
-            "Click to show / hide this track"
-        } else {
-            "Click to mute / unmute this track"
-        });
+        crate::track_ui::header(app, ui, &p, head, row.track);
     }
     let body_painter = ui.painter_at(body_rect);
     // marked range
@@ -1182,9 +1258,10 @@ fn draw_clip(
     if rect.right() < p.clip_rect().left() || rect.left() > p.clip_rect().right() {
         return;
     }
-    let base = match row.kind {
-        TrackKind::Video => theme::VIDEO_CLIP,
-        TrackKind::Audio => theme::AUDIO_CLIP,
+    let base = match (row.color, row.kind) {
+        (Some(c), _) => Color32::from_rgb(c[0], c[1], c[2]).gamma_multiply(0.75),
+        (None, TrackKind::Video) => theme::VIDEO_CLIP,
+        (None, TrackKind::Audio) => theme::AUDIO_CLIP,
     };
     let mut fill = if clip.enabled && row.enabled {
         base

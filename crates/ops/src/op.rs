@@ -127,6 +127,12 @@ pub enum Op {
         solo: bool,
         locked: bool,
     },
+    /// A track's name and colour.
+    SetTrackStyle {
+        track: Id,
+        name: String,
+        color: Option<[u8; 3]>,
+    },
     /// Reorder tracks within their timeline (index 0 is the bottom video layer).
     MoveTrack {
         track: Id,
@@ -219,6 +225,7 @@ impl Op {
             Op::SetAudio { item, .. } => format!("Set audio properties of {item}"),
             Op::SetTrack { track, .. } => format!("Set track {track}"),
             Op::SetTrackMix { track, .. } => format!("Set pan, solo or lock of track {track}"),
+            Op::SetTrackStyle { name, .. } => format!("Rename or recolour track {name}"),
             Op::MoveTrack { track, index } => format!("Move track {track} to {index}"),
             Op::SetProxy { media, .. } => format!("Set proxy of {media}"),
             Op::SetMediaMeta { media, meta } => match meta {

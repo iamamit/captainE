@@ -180,8 +180,12 @@ pub fn sync_ops(from: &Project, to: &Project) -> Result<Vec<Op>, String> {
         }
         for tt in &t.tracks {
             if let Some(ft) = f.tracks.iter().find(|x| x.id == tt.id) {
-                if ft.name != tt.name {
-                    return Err(format!("track '{}' was renamed, which has no op", ft.name));
+                if ft.name != tt.name || ft.color != tt.color {
+                    ops.push(Op::SetTrackStyle {
+                        track: tt.id,
+                        name: tt.name.clone(),
+                        color: tt.color,
+                    });
                 }
                 if ft.pan != tt.pan || ft.solo != tt.solo || ft.locked != tt.locked {
                     ops.push(Op::SetTrackMix {

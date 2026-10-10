@@ -1065,6 +1065,9 @@ pub struct Track {
     /// Edits are refused on a locked track
     #[serde(default)]
     pub locked: bool,
+    /// Colour of the track's label and clips, if the user picked one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
 }
 
 impl Track {
@@ -1079,6 +1082,7 @@ impl Track {
             pan: 0.0,
             solo: false,
             locked: false,
+            color: None,
         }
     }
 

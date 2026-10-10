@@ -3112,6 +3112,7 @@ pub fn dialogs(app: &mut App, ctx: &Context) {
     new_project_dialog(app, ctx);
     export_dialog(app, ctx);
     prefs_window(app, ctx);
+    crate::track_ui::dialogs(app, ctx);
 }
 
 fn new_project_dialog(app: &mut App, ctx: &Context) {

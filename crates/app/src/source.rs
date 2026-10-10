@@ -127,7 +127,7 @@ impl App {
         self.source.open = true;
     }
 
-    fn source_media(&self) -> Option<MediaRef> {
+    pub fn source_media(&self) -> Option<MediaRef> {
         self.source
             .media
             .and_then(|id| self.project().media.get(&id).cloned())

@@ -218,6 +218,10 @@ pub struct App {
     pub voiceover: Option<crate::voiceover::Recorder>,
     /// The folder the LUT browser lists
     pub lut_folder: Option<PathBuf>,
+    /// How tall each track's row is drawn
+    pub row_sizes: std::collections::HashMap<Id, crate::track_ui::RowSize>,
+    pub track_rename: Option<(Id, String)>,
+    pub add_tracks_dialog: Option<(captaine_model::TrackKind, u32)>,
     pub prefs: crate::keymap::Prefs,
     /// Where preferences are saved (the user's file unless a test says otherwise)
     pub prefs_path: Option<PathBuf>,
@@ -346,6 +350,9 @@ impl App {
             audio: AudioEngine::new(),
             voiceover: None,
             lut_folder: None,
+            row_sizes: Default::default(),
+            track_rename: None,
+            add_tracks_dialog: None,
             keymap: crate::keymap::Keymap::from_overrides(&prefs.keys),
             prefs,
             prefs_path: crate::keymap::Prefs::path(),

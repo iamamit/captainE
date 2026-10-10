@@ -2293,3 +2293,182 @@ fn shortcuts_can_be_changed_in_the_preferences_and_are_remembered() {
     );
     let _ = std::fs::remove_file(saved);
 }
+
+fn track_names(a: &App) -> Vec<String> {
+    a.timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+fn right_click(h: &mut H, at: Pos2) {
+    // close anything still open, then aim
+    h.hover_at(pos2(700.0, 300.0));
+    settle(h);
+    h.hover_at(at);
+    settle(h);
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    settle(h);
+}
+
+#[test]
+fn the_track_header_has_icons_and_a_right_click_menu() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let a1 = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .find(|t| t.name == "A1")
+        .unwrap()
+        .id;
+    let before = track_names(app(&h));
+    assert_eq!(before, ["V1", "V2", "A1", "A2"]);
+    // the lock icon
+    h.get_by_label("Lock A1").click();
+    settle(&mut h);
+    assert!(
+        app(&h)
+            .timeline()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == a1)
+            .unwrap()
+            .locked
+    );
+    h.get_by_label("Lock A1").click();
+    settle(&mut h);
+    // mute and solo icons
+    h.get_by_label("Mute A1").click();
+    settle(&mut h);
+    assert!(
+        !app(&h)
+            .timeline()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == a1)
+            .unwrap()
+            .enabled
+    );
+    h.get_by_label("Solo A1").click();
+    settle(&mut h);
+    assert!(
+        app(&h)
+            .timeline()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == a1)
+            .unwrap()
+            .solo
+    );
+    // right-click the header of A1
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let at = pos2(40.0, g.row_center(a1).unwrap());
+    right_click(&mut h, at);
+    h.get_by_label("Add Track").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h).timeline().unwrap().tracks.len(),
+        5,
+        "{:?}",
+        track_names(app(&h))
+    );
+    // move A1 down one place (below the new audio track after it)
+    let g = app(&h).timeline_layout.clone().unwrap();
+    right_click(&mut h, pos2(40.0, g.row_center(a1).unwrap()));
+    h.get_by_label("Move Track Down").click();
+    settle(&mut h);
+    let names = track_names(app(&h));
+    let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
+    assert!(pos("A1") > pos("A3") && pos("A1") < pos("A2"), "{names:?}");
+    // the colour changes the label and survives undo
+    let g = app(&h).timeline_layout.clone().unwrap();
+    right_click(&mut h, pos2(40.0, g.row_center(a1).unwrap()));
+    h.get_by_label_contains("Change Track Color").click();
+    settle(&mut h);
+    h.get_by_label_contains("Blue").click();
+    settle(&mut h);
+    assert_eq!(
+        app(&h)
+            .timeline()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == a1)
+            .unwrap()
+            .color,
+        Some([0x4f, 0x8c, 0xf5])
+    );
+    // delete the empty tracks: only tracks without clips go, and one track always stays
+    let g = app(&h).timeline_layout.clone().unwrap();
+    right_click(&mut h, pos2(40.0, g.row_center(a1).unwrap()));
+    h.get_by_label("Delete Empty Tracks").click();
+    settle(&mut h);
+    assert_eq!(track_names(app(&h)), ["V1"], "V1 holds the clips");
+    for _ in 0..3 {
+        app_mut(&mut h).undo();
+    }
+    settle(&mut h);
+    assert!(app(&h).timeline().unwrap().tracks.len() >= 4);
+}
+
+#[test]
+fn a_track_can_be_renamed_and_several_added_at_once() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let v1 = v1(app(&h)).id;
+    let g = app(&h).timeline_layout.clone().unwrap();
+    right_click(&mut h, pos2(40.0, g.row_center(v1).unwrap()));
+    h.get_by_label("Rename Track…").click();
+    settle(&mut h);
+    assert!(app(&h).track_rename.is_some());
+    app_mut(&mut h).track_rename = Some((v1, "Main video".into()));
+    settle(&mut h);
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert!(track_names(app(&h)).contains(&"Main video".to_string()));
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    assert!(track_names(app(&h)).contains(&"V1".to_string()));
+    app_mut(&mut h).add_tracks(TrackKind::Audio, 3);
+    settle(&mut h);
+    let audio = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .count();
+    assert_eq!(audio, 5);
+    app_mut(&mut h).undo();
+    settle(&mut h);
+    let audio = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .count();
+    assert_eq!(audio, 2, "all three go in one undo step");
+}
