@@ -85,6 +85,7 @@ fn make_media(dir: &Path) -> Vec<PathBuf> {
 
 fn demo_app(ctx: &egui::Context, dir: &Path, files: &[PathBuf]) -> App {
     let session = captaine_app::blank_session(1920, 1080, Rational::FPS_24);
+    std::env::set_var("CAPTAINE_NO_CLAUDE_CLI", "1");
     let mut app = App::new(ctx, session, None);
     app.import(files.to_vec());
     let tl = app.timeline_id().unwrap();

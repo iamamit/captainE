@@ -56,6 +56,7 @@ fn editor() -> H {
         .build_ui_state(
             move |ui, state: &mut Option<App>| {
                 let app = state.get_or_insert_with(|| {
+                    std::env::set_var("CAPTAINE_NO_CLAUDE_CLI", "1");
                     let mut app = App::new(
                         &ui.ctx().clone(),
                         captaine_app::blank_session(1280, 720, Rational::FPS_24),

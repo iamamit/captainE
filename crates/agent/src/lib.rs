@@ -20,7 +20,7 @@ mod tools;
 
 pub use color::{auto_color, clip_stats, match_color};
 pub use follow::{reframe, track_attach};
-pub use http::{AnthropicTransport, Credentials, Transport};
+pub use http::{AnthropicTransport, ClaudeCli, Credentials, Transport};
 pub use loop_::{run, AgentConfig, AgentError, AgentRequest, AgentResult, ChatTurn, Event};
 pub use loudness::{
     clip_loudness, gain_for, normalize_clip, normalize_sequence, sequence_loudness,

@@ -61,6 +61,8 @@ fn editor() -> H {
     // never read the developer's own preferences: an empty place for the whole test run
     static PREFS: std::sync::Once = std::sync::Once::new();
     PREFS.call_once(|| {
+        // tests must never reach a real Claude
+        std::env::set_var("CAPTAINE_NO_CLAUDE_CLI", "1");
         std::env::set_var(
             "CAPTAINE_PREFS",
             std::env::temp_dir().join(format!("captaine-no-prefs-{}.json", std::process::id())),

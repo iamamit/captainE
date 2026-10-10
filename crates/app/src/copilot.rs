@@ -51,6 +51,8 @@ pub struct State {
     history: Vec<captaine_agent::ChatTurn>,
     /// Whether an API key is available (checked at start and when it changes)
     key: Option<Option<String>>,
+    /// Whether Claude Code is installed here (checked once)
+    cli: Option<bool>,
     pub key_input: String,
     /// The branch Copilot last saved a suggestion on, kept so it can be opened for review
     pub last_branch: Option<String>,
@@ -75,7 +77,8 @@ pub fn show(app: &mut App, ctx: &Context) {
     }
     if !app.copilot.greeted {
         app.copilot.greeted = true;
-        let connected = api_key(app).is_some() || app.copilot.transport.is_some();
+        let connected =
+            api_key(app).is_some() || app.copilot.transport.is_some() || claude_cli_ready(app);
         app.copilot.messages.push(Msg {
             user: false,
             text: if connected { GREETING_CLAUDE } else { GREETING }.into(),
@@ -115,7 +118,8 @@ pub fn show(app: &mut App, ctx: &Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
     }
-    let has_key = api_key(app).is_some() || app.copilot.transport.is_some();
+    let has_key =
+        api_key(app).is_some() || app.copilot.transport.is_some() || claude_cli_ready(app);
     let mut connect: Option<String> = None;
     let mut disconnect = false;
     let width = 300.0;
@@ -131,7 +135,9 @@ pub fn show(app: &mut App, ctx: &Context) {
     let mut preview_it = false;
     let mut discard = false;
     egui::Area::new(egui::Id::new("copilot"))
-        .fixed_pos(pos)
+        .default_pos(pos)
+        .movable(true)
+        .constrain(true)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -526,6 +532,14 @@ fn frames_before(text: &str, word: &str) -> Option<i64> {
 }
 
 /// The key for Claude, if there is one (looked up once and again after it changes).
+/// Claude Code on this Mac, signed in already: used when there is no API key.
+fn claude_cli_ready(app: &mut App) -> bool {
+    if app.copilot.cli.is_none() {
+        app.copilot.cli = Some(captaine_agent::ClaudeCli::find().is_some());
+    }
+    app.copilot.cli == Some(true)
+}
+
 fn api_key(app: &mut App) -> Option<String> {
     if app.copilot.key.is_none() {
         app.copilot.key = Some(captaine_agent::Credentials::load());
@@ -540,6 +554,7 @@ pub fn ask(app: &mut App, text: String) {
     }
     match api_key(app) {
         Some(key) => ask_claude(app, text, key),
+        None if claude_cli_ready(app) => ask_claude(app, text, String::new()),
         None => ask_local(app, text),
     }
 }
@@ -747,6 +762,10 @@ fn ask_claude(app: &mut App, text: String, key: String) {
     std::thread::spawn(move || {
         let transport: Box<dyn captaine_agent::Transport> = match factory {
             Some(f) => f(),
+            None if key.is_empty() => match captaine_agent::ClaudeCli::find() {
+                Some(c) => Box::new(c),
+                None => Box::new(captaine_agent::AnthropicTransport::new(key)),
+            },
             None => Box::new(captaine_agent::AnthropicTransport::new(key)),
         };
         let cfg = captaine_agent::AgentConfig::default();

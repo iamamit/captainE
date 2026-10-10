@@ -638,3 +638,105 @@ fn animate_title_applies_presets_and_the_title_style_can_be_dressed() {
         (TitleTemplate::Quote, Some("builtin:mono"))
     );
 }
+
+#[cfg(unix)]
+mod cli {
+    use super::*;
+    use captaine_agent::{ClaudeCli, Transport};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_conversation_becomes_a_prompt_and_the_answer_is_read_back() {
+        let body = json!({
+            "system": "You edit video.",
+            "tools": [{"name": "split", "description": "cut a clip", "input_schema": {"type": "object"}}],
+            "messages": [
+                {"role": "user", "content": "cut it in half"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "split", "input": {"at": 2}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}
+            ]
+        });
+        let p = ClaudeCli::prompt(&body);
+        for must in [
+            "split",
+            "cut a clip",
+            "cut it in half",
+            "tool split (id t1)",
+            "[tool result for id t1] ok",
+            "end_turn",
+        ] {
+            assert!(p.contains(must), "missing {must:?} in {p}");
+        }
+        // answers come back wrapped in chatter or a code fence
+        let wrapped = "Sure!\n```json\n{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"split\",\"input\":{\"at\":3}}]}\n```";
+        let v = ClaudeCli::parse_reply(wrapped).unwrap();
+        assert_eq!(v["stop_reason"], "tool_use", "inferred from the tool call");
+        assert_eq!(v["content"][0]["input"]["at"], 3);
+        let v = ClaudeCli::parse_reply(
+            "{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}",
+        )
+        .unwrap();
+        assert_eq!(v["content"][0]["text"], "done");
+        assert!(ClaudeCli::parse_reply("I cannot do that").is_err());
+        assert!(ClaudeCli::parse_reply("{\"nope\":1}").is_err());
+    }
+
+    #[test]
+    fn a_stand_in_claude_program_answers_a_request() {
+        let dir = std::env::temp_dir().join(format!("captaine-fake-claude-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("claude");
+        // reads the prompt on stdin, answers in the format `claude -p --output-format json` uses
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+cat > /dev/null
+echo '{"is_error":false,"result":"{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"hello from the stand-in\"}]}"}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CAPTAINE_CLAUDE_BIN", &bin);
+        let c = ClaudeCli::find().expect("found through the variable");
+        let r = c
+            .send(&json!({"messages": [{"role": "user", "content": "hi"}]}))
+            .unwrap();
+        assert_eq!(r["content"][0]["text"], "hello from the stand-in");
+        assert_eq!(r["stop_reason"], "end_turn");
+        // a failing program is reported, not swallowed
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\ncat > /dev/null\necho '{\"is_error\":true,\"result\":\"Not logged in\"}'\n",
+        )
+        .unwrap();
+        let e = c.send(&json!({"messages": []})).unwrap_err();
+        assert!(
+            e.contains("Not logged in") && e.contains("signed in"),
+            "{e}"
+        );
+        std::env::remove_var("CAPTAINE_CLAUDE_BIN");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+#[ignore = "calls the real Claude Code, signed in on this Mac"]
+fn live_claude_code_answers_and_calls_a_tool() {
+    use captaine_agent::{ClaudeCli, Transport};
+    let c = ClaudeCli::find().expect("Claude Code is installed");
+    let body = json!({
+        "system": "You are the assistant of a video editor.",
+        "tools": [{"name": "add_marker", "description": "Put a marker on the timeline at a time in seconds", "input_schema": {"type": "object", "properties": {"at_sec": {"type": "number"}}, "required": ["at_sec"]}}],
+        "messages": [{"role": "user", "content": "Put a marker at 12.5 seconds."}]
+    });
+    let r = c.send(&body).unwrap();
+    assert_eq!(r["stop_reason"], "tool_use", "{r}");
+    let call = r["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["type"] == "tool_use")
+        .expect("a tool call");
+    assert_eq!(call["name"], "add_marker");
+    assert_eq!(call["input"]["at_sec"], 12.5);
+}
