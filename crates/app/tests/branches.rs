@@ -291,6 +291,14 @@ fn compare_shows_both_versions_and_what_differs() {
     h.get_by_label("Close").click();
     settle(&mut h);
     assert!(app(&h).compare.is_none());
+    // the editor's own picture comes back from the render thread, which a slow machine may take a while over
+    for _ in 0..300 {
+        if app(&h).program.is_some() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
     assert!(app(&h).program.is_some(), "the normal editor is back");
 }
 
