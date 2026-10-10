@@ -2598,10 +2598,10 @@ fn the_scopes_window_can_be_moved_and_resized() {
     }
     let mut h = editor();
     app_mut(&mut h).scopes_open = true;
-    app_mut(&mut h).scope_pos = Some(pos2(500.0, 200.0));
+    app_mut(&mut h).scope_pos = Some(pos2(500.0, 100.0));
     settle(&mut h);
     let start = app(&h).scope_pos.unwrap();
-    drag(&mut h, pos2(520.0, 320.0), pos2(580.0, 350.0));
+    drag(&mut h, pos2(520.0, 220.0), pos2(580.0, 250.0));
     let moved = app(&h).scope_pos.unwrap();
     assert!(
         (moved.x - start.x - 60.0).abs() < 4.0 && (moved.y - start.y - 30.0).abs() < 4.0,

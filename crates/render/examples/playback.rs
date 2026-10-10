@@ -1,5 +1,6 @@
 //! How fast does a 4K timeline render? `cargo run --release -p captaine-render --example playback -- clip.mp4`
-#![allow(clippy::field_reassign_with_default)]use std::sync::Arc;
+#![allow(clippy::field_reassign_with_default)]
+use std::sync::Arc;
 use std::time::Instant;
 
 use captaine_media::media_ref;
