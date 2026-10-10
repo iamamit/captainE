@@ -209,6 +209,7 @@ impl ToolBox {
                 if c.audio.fade_out > 0 {
                     o.insert("fade_out_sec".into(), json!(self.secs(c.audio.fade_out)));
                 }
+                effects_summary(o, &c.effects);
             }
             Item::Title(t) => {
                 o.insert("type".into(), json!("title"));
@@ -229,6 +230,7 @@ impl ToolBox {
                 if t.fade_out > 0 {
                     o.insert("fade_out_sec".into(), json!(self.secs(t.fade_out)));
                 }
+                effects_summary(o, &t.effects);
             }
         }
         v
@@ -312,6 +314,8 @@ impl ToolBox {
             "get_timeline" => Ok(self.timeline_json()?.to_string()),
             "list_media" => self.list_media(),
             "organize_media" => self.organize_media(input),
+            "find_audio_plugins" => self.find_plugins(),
+            "add_audio_plugin" => self.add_plugin(input),
             "find_silences" => self.find_silences(input),
             "split" => self.split(input),
             "delete_item" => self.delete_item(input),
@@ -369,6 +373,65 @@ impl ToolBox {
             })
             .collect();
         Ok(Value::Array(v).to_string())
+    }
+
+    fn find_plugins(&self) -> R {
+        let found = captaine_plugins::scan(&[]);
+        let v: Vec<Value> = found
+            .iter()
+            .map(|p| json!({"id": p.id, "name": p.name, "vendor": p.vendor}))
+            .collect();
+        Ok(json!({"plugins": v}).to_string())
+    }
+
+    /// Put a CLAP plugin on a clip's sound; `settings` maps control names to values.
+    fn add_plugin(&mut self, input: &Value) -> R {
+        let (clip, ..) = self.clip_with_media(req_text(input, "item_id")?)?;
+        let want = req_text(input, "plugin")?.to_lowercase();
+        let found = captaine_plugins::scan(&[]);
+        let info = found
+            .iter()
+            .find(|p| p.id.to_lowercase() == want || p.name.to_lowercase() == want)
+            .or_else(|| found.iter().find(|p| p.name.to_lowercase().contains(&want)))
+            .ok_or_else(|| format!("no plugin '{want}'; call find_audio_plugins"))?;
+        let mut r = captaine_plugins::PluginRef {
+            id: info.id.clone(),
+            path: info.path.clone(),
+            params: vec![],
+        };
+        if let Some(obj) = input.get("settings").and_then(Value::as_object) {
+            let controls = captaine_plugins::params(&r)?;
+            for (name, v) in obj {
+                let c = controls
+                    .iter()
+                    .find(|c| c.name.to_lowercase() == name.to_lowercase())
+                    .ok_or_else(|| {
+                        format!(
+                            "{} has no control '{name}'; it has {}",
+                            info.name,
+                            controls
+                                .iter()
+                                .map(|c| c.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                let v = v.as_f64().ok_or("settings are numbers")?;
+                r = r.with_value(c.id, v.clamp(c.min, c.max));
+            }
+        }
+        let mut fx = Effect::new(EffectKind::Plugin);
+        fx.text = r.to_text();
+        if let Some(m) = num(input, "mix_percent") {
+            fx.params[0] = m.clamp(0.0, 100.0);
+        }
+        let mut effects = clip.effects.clone();
+        effects.push(fx);
+        self.commit(Op::SetEffects {
+            item: clip.id,
+            effects,
+        })?;
+        self.describe(clip.id)
     }
 
     fn organize_media(&mut self, input: &Value) -> R {
@@ -1497,6 +1560,8 @@ pub fn tool_definitions() -> Value {
     let track = json!({"type": "string", "description": "track name such as V1 or A2"});
     json!([
         {"name": "get_timeline", "description": "The whole timeline: tracks, every clip/title/gap with its id, start and duration in seconds, and non-default properties. Call this before editing.", "input_schema": obj(json!({}), &[])},
+        {"name": "find_audio_plugins", "description": "List the CLAP audio plugins installed on this computer (id, name, vendor). Read-only.", "input_schema": obj(json!({}), &[])},
+        {"name": "add_audio_plugin", "description": "Put an installed CLAP audio plugin on a clip's sound. plugin is its id or name (from find_audio_plugins). settings maps the plugin's control names to values, mix_percent blends the plugin's sound with the original (default 100).", "input_schema": obj(json!({"item_id": item, "plugin": {"type": "string"}, "settings": {"type": "object"}, "mix_percent": {"type": "number"}}), &["item_id", "plugin"])},
         {"name": "organize_media", "description": "File a media item in a bin of the media pool (a folder the user sees), give it tags and a note. Omitted fields stay as they are; bin \"\" takes it out of its bin; tags replaces the whole tag list. Returns the media list.", "input_schema": obj(json!({"media": {"type": "string"}, "bin": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}, "input_color": {"type": "string", "enum": ["auto", "rec709", "rec2020", "hlg", "pq"], "description": "how the footage is encoded; HDR (hlg, pq) and wide-gamut (rec2020) footage is converted to Rec.709 for editing and export. auto reads it from the file."}}), &["media"])},
         {"name": "list_media", "description": "The media pool: ids, names, lengths, whether each has picture and sound.", "input_schema": obj(json!({}), &[])},
         {"name": "find_silences", "description": "Analyse a clip's audio and list quiet stretches (timeline seconds). Read-only.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number", "description": "level below which audio counts as silent; default -42"}, "min_seconds": {"type": "number", "description": "shortest silence to report; default 0.45"}}), &["item_id"])},
@@ -1538,4 +1603,25 @@ pub fn tool_definitions() -> Value {
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},
         {"name": "set_track", "description": "Hide/mute a track or change its volume.", "input_schema": obj(json!({"track": track, "enabled": {"type": "boolean"}, "volume_db": {"type": "number"}}), &["track"])},
     ])
+}
+
+/// The effects on an item, briefly: which kinds, and which are switched off.
+fn effects_summary(o: &mut serde_json::Map<String, Value>, effects: &[Effect]) {
+    if effects.is_empty() {
+        return;
+    }
+    let list: Vec<Value> = effects
+        .iter()
+        .map(|e| {
+            let mut v = json!({"kind": e.kind.key()});
+            if !e.enabled {
+                v["enabled"] = json!(false);
+            }
+            if let Some(p) = captaine_plugins::PluginRef::parse(&e.text) {
+                v["plugin"] = json!(p.id);
+            }
+            v
+        })
+        .collect();
+    o.insert("effects".into(), Value::Array(list));
 }

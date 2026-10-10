@@ -2312,6 +2312,28 @@ pub fn effects_stack(
                 });
                 &[]
             }
+            EffectKind::Plugin => {
+                if let Some(mut r) = captaine_plugins::PluginRef::parse(&e.text) {
+                    let name = app
+                        .plugin_list
+                        .as_ref()
+                        .and_then(|l| l.iter().find(|p| p.id == r.id && p.path == r.path))
+                        .map_or(r.id.clone(), |p| p.name.clone());
+                    ui.label(RichText::new(name).size(11.5).color(theme::MUTED));
+                    for c in app.plugin_controls(&r) {
+                        let mut v = r.value(c.id).unwrap_or(c.default);
+                        let out =
+                            slider_row(ui, &c.name, &mut v, c.min..=c.max, c.default, 2, "", true);
+                        if out.changed {
+                            r = r.clone().with_value(c.id, v);
+                            e.text = r.to_text();
+                            changed = true;
+                        }
+                        done |= out.done;
+                    }
+                }
+                &[]
+            }
             EffectKind::Mask => {
                 ui.horizontal(|ui| {
                     for (k, name) in ["Rectangle", "Ellipse", "Draw"].into_iter().enumerate() {
@@ -2381,15 +2403,65 @@ pub fn effects_stack(
         fx.insert(i + 1, copy);
         structural = true;
     }
+    app.poll_plugin_scan();
     ui.horizontal_wrapped(|ui| {
         for kind in EffectKind::ALL {
-            if kind.is_audio() && !has_audio || !kind.is_audio() && !has_video {
+            if kind == EffectKind::Plugin
+                || kind.is_audio() && !has_audio
+                || !kind.is_audio() && !has_video
+            {
                 continue;
             }
             if chip(ui, &format!("+ {}", kind.label()), false, fx.len() < 16).clicked() {
                 fx.push(Effect::new(kind));
                 structural = true;
             }
+        }
+        if has_audio {
+            ui.menu_button("+ Audio plugin ▾", |ui| {
+                app.ensure_plugin_scan(false);
+                match app.plugin_list.clone() {
+                    None => {
+                        ui.label(RichText::new("Looking for plugins…").color(theme::MUTED));
+                    }
+                    Some(list) if list.is_empty() => {
+                        ui.label(RichText::new("No CLAP plugins found").color(theme::MUTED));
+                        ui.label(
+                            RichText::new("Put .clap files in /Library/Audio/Plug-Ins/CLAP")
+                                .size(10.5)
+                                .color(theme::FAINT),
+                        );
+                    }
+                    Some(list) => {
+                        for p in list {
+                            let label = if p.vendor.is_empty() {
+                                p.name.clone()
+                            } else {
+                                format!("{}  ·  {}", p.name, p.vendor)
+                            };
+                            if ui
+                                .add_enabled(fx.len() < 16, egui::Button::new(label))
+                                .clicked()
+                            {
+                                let mut e = Effect::new(EffectKind::Plugin);
+                                e.text = captaine_plugins::PluginRef {
+                                    id: p.id.clone(),
+                                    path: p.path.clone(),
+                                    params: vec![],
+                                }
+                                .to_text();
+                                fx.push(e);
+                                structural = true;
+                                ui.close();
+                            }
+                        }
+                    }
+                }
+                ui.separator();
+                if ui.button("Look again").clicked() {
+                    app.ensure_plugin_scan(true);
+                }
+            });
         }
     });
     if structural {

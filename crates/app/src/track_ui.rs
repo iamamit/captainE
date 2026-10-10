@@ -31,6 +31,46 @@ pub const PALETTE: [(&str, [u8; 3]); 8] = [
 ];
 
 impl App {
+    /// Look for plugins in the background the first time they are wanted.
+    pub fn ensure_plugin_scan(&mut self, force: bool) {
+        if force {
+            self.plugin_list = None;
+        }
+        if self.plugin_list.is_some() || self.plugin_scan.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(captaine_plugins::scan(&[]));
+            ctx.request_repaint();
+        });
+        self.plugin_scan = Some(rx);
+    }
+
+    /// Pick up the result of a finished look.
+    pub fn poll_plugin_scan(&mut self) {
+        if let Some(rx) = &self.plugin_scan {
+            if let Ok(list) = rx.try_recv() {
+                self.plugin_list = Some(list);
+                self.plugin_scan = None;
+            }
+        }
+    }
+
+    /// The controls of a plugin, asked of it once.
+    pub fn plugin_controls(
+        &mut self,
+        plugin: &captaine_plugins::PluginRef,
+    ) -> Vec<captaine_plugins::PluginParam> {
+        let key = format!("{}@{}", plugin.id, plugin.path);
+        if !self.plugin_params.contains_key(&key) {
+            let found = captaine_plugins::params(plugin).unwrap_or_default();
+            self.plugin_params.insert(key.clone(), found);
+        }
+        self.plugin_params[&key].clone()
+    }
+
     fn track(&self, id: Id) -> Option<Track> {
         self.timeline()?
             .tracks

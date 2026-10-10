@@ -2630,3 +2630,76 @@ fn the_scopes_window_can_be_moved_and_resized() {
     }
     assert!(app(&h).scope_side <= 560.0);
 }
+
+#[test]
+fn an_audio_plugin_is_added_from_the_inspector_and_its_controls_are_sliders() {
+    use clack_host::prelude::PluginEntry;
+    use clack_plugin::entry::SinglePluginEntry;
+    use clack_plugin_gain::GainPlugin;
+    if !have_ffmpeg() {
+        return;
+    }
+    captaine_plugins::register_entry(
+        "builtin:gain",
+        PluginEntry::load_from_clack::<SinglePluginEntry<GainPlugin>>(c"").unwrap(),
+    );
+    let mut h = editor();
+    let id = match &v1(app(&h)).items[0] {
+        Item::Clip(c) => c.id,
+        _ => panic!("a clip"),
+    };
+    app_mut(&mut h).selected_clip = Some(id);
+    settle(&mut h);
+    h.get_by_label_contains("Audio plugin").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label_contains("Audio plugin").click();
+    settle(&mut h);
+    // the look for plugins runs in the background
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.step();
+        if h.query_by_label_contains("Clack Gain Example").is_some() {
+            break;
+        }
+    }
+    h.get_by_label_contains("Clack Gain Example").click();
+    settle(&mut h);
+    let effects = |a: &App| a.clip_by_id(id).unwrap().0.effects;
+    let e = effects(app(&h))
+        .into_iter()
+        .find(|e| e.kind == EffectKind::Plugin)
+        .expect("the plugin was added");
+    let r = captaine_plugins::PluginRef::parse(&e.text).unwrap();
+    assert_eq!(r.id, "org.rust-audio.clack.gain");
+    // its own control shows as a slider; dragging it stores a value in the effect
+    let control = captaine_plugins::params(&r).unwrap()[0].clone();
+    // the clip has a "Volume" of its own too: the plugin's control is the last one listed
+    h.get_all_by_label_contains(&control.name)
+        .last()
+        .unwrap()
+        .scroll_to_me();
+    settle(&mut h);
+    let q = h
+        .get_all_by_label_contains(&control.name)
+        .last()
+        .unwrap()
+        .rect();
+    drag(
+        &mut h,
+        pos2(q.right() + 30.0, q.center().y),
+        pos2(q.right() + 100.0, q.center().y),
+    );
+    let e = effects(app(&h))
+        .into_iter()
+        .find(|e| e.kind == EffectKind::Plugin)
+        .unwrap();
+    let r2 = captaine_plugins::PluginRef::parse(&e.text).unwrap();
+    assert!(
+        r2.value(control.id).is_some(),
+        "the setting was stored: {}",
+        e.text
+    );
+    // and it undoes
+    app_mut(&mut h).undo();
+    settle(&mut h);
+}

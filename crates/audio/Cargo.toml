@@ -12,8 +12,12 @@ name = "captaine_audio"
 [dependencies]
 captaine-time.workspace = true
 captaine-model.workspace = true
+captaine-plugins = { path = "../plugins" }
 ebur128.workspace = true
 
 [dev-dependencies]
 captaine-media.workspace = true
 captaine-ops.workspace = true
+clack-host = { git = "https://github.com/prokopyl/clack", features = ["clack-plugin"] }
+clack-plugin = { git = "https://github.com/prokopyl/clack" }
+clack-plugin-gain = { git = "https://github.com/prokopyl/clack" }

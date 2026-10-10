@@ -32,6 +32,8 @@ pub enum EffectKind {
     DeEsser,
     NoiseReduction,
     Ducking,
+    /// A CLAP plugin; which one and its settings are in `Effect::text`
+    Plugin,
 }
 
 pub struct ParamDef {
@@ -53,7 +55,7 @@ const fn p(name: &'static str, min: f64, max: f64, default: f64, decimals: usize
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 25] = [
+    pub const ALL: [EffectKind; 26] = [
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::Vignette,
@@ -79,6 +81,7 @@ impl EffectKind {
         EffectKind::DeEsser,
         EffectKind::NoiseReduction,
         EffectKind::Ducking,
+        EffectKind::Plugin,
     ];
 
     /// Works on a clip's sound rather than its picture.
@@ -91,6 +94,7 @@ impl EffectKind {
                 | EffectKind::DeEsser
                 | EffectKind::NoiseReduction
                 | EffectKind::Ducking
+                | EffectKind::Plugin
         )
     }
 
@@ -121,6 +125,7 @@ impl EffectKind {
             EffectKind::DeEsser => "De-esser",
             EffectKind::NoiseReduction => "Noise reduction",
             EffectKind::Ducking => "Auto duck",
+            EffectKind::Plugin => "Audio plugin",
         }
     }
 
@@ -152,6 +157,7 @@ impl EffectKind {
             EffectKind::DeEsser => "de_esser",
             EffectKind::NoiseReduction => "noise_reduction",
             EffectKind::Ducking => "ducking",
+            EffectKind::Plugin => "plugin",
         }
     }
 
@@ -186,6 +192,7 @@ impl EffectKind {
             EffectKind::DeEsser => &DEESSER,
             EffectKind::NoiseReduction => &NOISE,
             EffectKind::Ducking => &DUCKING,
+            EffectKind::Plugin => &PLUGIN,
         }
     }
 }
@@ -362,6 +369,8 @@ static DUCKING: [ParamDef; 4] = [
     p("Attack ms", 1.0, 500.0, 40.0, 0),
     p("Release ms", 10.0, 3000.0, 450.0, 0),
 ];
+// how much of the plugin's sound is heard; the plugin and its settings are `Effect::text`
+static PLUGIN: [ParamDef; 1] = [p("Mix", 0.0, 100.0, 100.0, 0)];
 // the .cube file is `Effect::text`
 static LUT: [ParamDef; 1] = [p("Strength", 0.0, 100.0, 100.0, 0)];
 
@@ -434,6 +443,9 @@ impl Effect {
             && parse_polygon(&self.text).is_none()
         {
             return Err("a drawn mask needs 3 to 64 points, as 'x,y x,y x,y' in percent");
+        }
+        if self.kind == EffectKind::Plugin && !self.text.starts_with("clap:") {
+            return Err("an audio plugin effect needs a plugin");
         }
         if self.kind == EffectKind::Crop
             && (self.params[0] + self.params[2] >= 100.0

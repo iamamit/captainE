@@ -1,0 +1,18 @@
+[package]
+name = "captaine-plugins"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "captaine_plugins"
+
+[dependencies]
+clack-host = { git = "https://github.com/prokopyl/clack" }
+clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["clack-host", "audio-ports", "params"] }
+clack-finder = { git = "https://github.com/prokopyl/clack" }
+
+[dev-dependencies]
+clack-host = { git = "https://github.com/prokopyl/clack", features = ["clack-plugin"] }
+clack-plugin = { git = "https://github.com/prokopyl/clack" }
+clack-plugin-gain = { git = "https://github.com/prokopyl/clack" }

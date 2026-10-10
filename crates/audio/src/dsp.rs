@@ -32,8 +32,24 @@ pub fn apply_audio_effects(buf: &mut [f32], sr: u32, effects: &[Effect]) {
             }
             // needs the rest of the mix, so the mixer applies it
             EffectKind::Ducking => {}
+            EffectKind::Plugin => plugin_effect(buf, sr, &e.text, p[0] / 100.0),
             _ => {}
         }
+    }
+}
+
+/// Run the sound through a CLAP plugin and blend it with the original by `mix`. If the plugin cannot run
+/// the sound passes unchanged.
+fn plugin_effect(buf: &mut [f32], sr: u32, text: &str, mix: f64) {
+    let Some(plugin) = captaine_plugins::PluginRef::parse(text) else {
+        return;
+    };
+    let Ok(wet) = captaine_plugins::process(&plugin, sr as f64, buf) else {
+        return;
+    };
+    let m = mix.clamp(0.0, 1.0) as f32;
+    for (d, w) in buf.iter_mut().zip(&wet) {
+        *d = *d * (1.0 - m) + *w * m;
     }
 }
 

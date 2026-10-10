@@ -221,6 +221,11 @@ pub struct App {
     /// How tall each track's row is drawn
     pub row_sizes: std::collections::HashMap<Id, crate::track_ui::RowSize>,
     pub track_rename: Option<(Id, String)>,
+    /// Audio plugins found on this computer (None until the first look) and the look in progress
+    pub plugin_list: Option<Vec<captaine_plugins::PluginInfo>>,
+    pub plugin_scan: Option<std::sync::mpsc::Receiver<Vec<captaine_plugins::PluginInfo>>>,
+    /// Controls of plugins already asked about, by `id@path`
+    pub plugin_params: std::collections::HashMap<String, Vec<captaine_plugins::PluginParam>>,
     /// Tracks switched out of auto-select: splits and range edits leave them alone
     pub untargeted: std::collections::HashSet<Id>,
     /// The colour new markers get (index into `Marker::COLORS`)
@@ -359,6 +364,9 @@ impl App {
             lut_folder: None,
             row_sizes: Default::default(),
             track_rename: None,
+            plugin_list: None,
+            plugin_scan: None,
+            plugin_params: Default::default(),
             untargeted: Default::default(),
             marker_color: 0,
             add_tracks_dialog: None,

@@ -108,7 +108,7 @@ fn read_tools_describe_the_project() {
         .call("nonsense", &json!({}))
         .unwrap_err()
         .contains("unknown tool"));
-    assert_eq!(tool_definitions().as_array().unwrap().len(), 37);
+    assert_eq!(tool_definitions().as_array().unwrap().len(), 39);
     for d in tool_definitions().as_array().unwrap() {
         assert!(
             d["name"].is_string()
@@ -526,4 +526,51 @@ fn copilot_can_set_how_footage_is_colour_encoded() {
             &json!({"media": "phone.mov", "input_color": "sepia"})
         )
         .is_err());
+}
+
+#[test]
+fn copilot_can_find_a_plugin_and_put_it_on_a_clip() {
+    use clack_host::prelude::PluginEntry;
+    use clack_plugin::entry::SinglePluginEntry;
+    use clack_plugin_gain::GainPlugin;
+    captaine_plugins::register_entry(
+        "builtin:gain",
+        PluginEntry::load_from_clack::<SinglePluginEntry<GainPlugin>>(c"").unwrap(),
+    );
+    let (p, clip, _) = project("/nowhere.mp4");
+    let mut tb = ToolBox::new(&p, &[], Some(clip), 0.0).unwrap();
+    let found = json_of(tb.call("find_audio_plugins", &json!({})));
+    assert!(found["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x["name"] == "Clack Gain Example"));
+    let first = captaine_plugins::params(&captaine_plugins::PluginRef {
+        id: "org.rust-audio.clack.gain".into(),
+        path: "builtin:gain".into(),
+        params: vec![],
+    })
+    .unwrap();
+    let control = first[0].name.clone();
+    // by (part of) its name, with a setting for one of its controls
+    let out = json_of(tb.call(
+        "add_audio_plugin",
+        &json!({"item_id": clip.to_string(), "plugin": "clack gain", "settings": {control.clone(): 0.5}, "mix_percent": 80}),
+    ));
+    let effects = out["effects"]
+        .as_array()
+        .expect("the clip lists its effects");
+    assert_eq!(effects[0]["kind"], "plugin", "{out}");
+    // a made-up control or plugin says what exists
+    let e = tb
+        .call("add_audio_plugin", &json!({"item_id": clip.to_string(), "plugin": "clack gain", "settings": {"nonsense": 1}}))
+        .unwrap_err();
+    assert!(e.contains(&control), "{e}");
+    assert!(tb
+        .call(
+            "add_audio_plugin",
+            &json!({"item_id": clip.to_string(), "plugin": "no such plugin"})
+        )
+        .unwrap_err()
+        .contains("find_audio_plugins"));
 }
