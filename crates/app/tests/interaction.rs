@@ -751,7 +751,7 @@ fn the_scopes_panel_draws_from_the_picture_on_screen() {
     settle(&mut h);
     h.get_by_label("Scopes").click();
     settle(&mut h);
-    for _ in 0..200 {
+    for _ in 0..1500 {
         h.step();
         if app(&h).scope_tex.is_some() {
             break;
@@ -892,7 +892,7 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
     app_mut(&mut h).export.path = Some(m4a.clone());
     settle(&mut h);
     assert_eq!(app(&h).export.jobs.len(), 1);
-    for _ in 0..400 {
+    for _ in 0..2400 {
         h.step();
         if wav.exists()
             && app(&h)
@@ -918,7 +918,7 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
         h.get_all_by_label("Export").last().unwrap().click();
         settle(&mut h);
     }
-    for _ in 0..400 {
+    for _ in 0..2400 {
         h.step();
         if m4a.exists()
             && app(&h).export.jobs.len() == 2

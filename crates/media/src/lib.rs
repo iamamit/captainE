@@ -219,12 +219,24 @@ pub fn detect_space(path: &str) -> InputSpace {
     space
 }
 
-/// A file path written the way an FFmpeg filter option wants it: forward slashes and the drive colon escaped
-/// (`C:\Users\me\a.trf` becomes `C\:/Users/me/a.trf`).
+/// A file path written the way an FFmpeg filter option wants it: forward slashes, and the drive colon escaped
+/// twice, once for the filter graph and once for the option (`C:\Users\me\a.trf` becomes `C\\:/Users/me/a.trf`).
 pub fn filter_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
-        .replace(':', "\\:")
+        .replace(':', "\\\\:")
+}
+
+#[cfg(test)]
+mod filter_path_tests {
+    use super::*;
+
+    #[test]
+    fn a_windows_path_becomes_one_ffmpeg_accepts() {
+        let p = filter_path(Path::new("C:\\Users\\me\\a b.trf"));
+        assert_eq!(p, "C\\\\:/Users/me/a b.trf");
+        assert_eq!(filter_path(Path::new("/tmp/x.trf")), "/tmp/x.trf");
+    }
 }
 
 /// Does this FFmpeg have the named filter? Asked once; some builds leave out `zscale` (needs libzimg) or
