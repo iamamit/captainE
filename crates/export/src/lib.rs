@@ -411,6 +411,11 @@ pub fn export(
     opts: &ExportOptions,
     progress: &mut dyn FnMut(i64, i64),
 ) -> Result<(), ExportError> {
+    if opts.hdr && opts.codec == Codec::Hevc && !captaine_media::ffmpeg_has_filter("zscale") {
+        return Err(ExportError::Ffmpeg(
+            "HDR export needs an FFmpeg built with zscale (libzimg); this one is not".into(),
+        ));
+    }
     let tl = project
         .timeline(timeline)
         .ok_or(ExportError::NoTimeline(timeline))?;

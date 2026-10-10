@@ -681,7 +681,7 @@ fn colour_tags(path: &Path) -> String {
 
 #[test]
 fn hevc_can_be_written_as_hdr_and_the_tags_say_so() {
-    if !have_ffmpeg() {
+    if !have_ffmpeg() || !captaine_media::ffmpeg_has_filter("zscale") {
         return;
     }
     let (a, b) = (scratch("hdr_a.mp4"), scratch("hdr_b.mp4"));

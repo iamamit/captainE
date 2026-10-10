@@ -14,7 +14,7 @@ captaine-time.workspace = true
 captaine-model.workspace = true
 captaine-render.workspace = true
 captaine-audio.workspace = true
+captaine-media.workspace = true
 
 [dev-dependencies]
-captaine-media.workspace = true
 captaine-ops.workspace = true

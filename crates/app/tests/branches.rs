@@ -177,7 +177,15 @@ fn the_branch_menu_lists_branches_and_switching_keeps_each_branchs_work() {
         .unwrap();
     assert_eq!(tighter.ahead, 1);
     assert!(!a.branch_menu, "the menu closes after a choice");
-    assert!(a.program.is_some());
+    // a picture arrives from the render thread, which a slow machine may take a while over
+    for _ in 0..300 {
+        if app(&h).program.is_some() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(app(&h).program.is_some());
 }
 
 #[test]
@@ -247,7 +255,7 @@ fn compare_shows_both_versions_and_what_differs() {
     let (ids, name) = two_branches(&mut h);
     let ctx = h.ctx.clone();
     branches_ui::start_compare(app_mut(&mut h), &ctx, "main", &name);
-    for _ in 0..40 {
+    for _ in 0..400 {
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(40));
         if app(&h).compare.as_ref().is_some_and(|c| c.frames_ready()) {

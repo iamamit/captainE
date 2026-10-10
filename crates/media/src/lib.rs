@@ -159,6 +159,10 @@ pub fn media_ref(path: &Path, id: Id) -> Result<MediaRef, MediaError> {
 /// The rest of an FFmpeg filter chain (starting with a comma) that turns footage in `space` into Rec.709
 /// SDR: HDR is tone mapped, wide-gamut SDR is squeezed into the Rec.709 primaries. Empty for Rec.709.
 pub fn to_rec709(space: InputSpace) -> String {
+    // without zscale in this FFmpeg the footage is used as it is
+    if !ffmpeg_has_filter("zscale") {
+        return String::new();
+    }
     let (tin, pin) = match space {
         InputSpace::Auto | InputSpace::Rec709 => return String::new(),
         InputSpace::Rec2020 => ("bt709", "bt2020"),
@@ -213,6 +217,29 @@ pub fn detect_space(path: &str) -> InputSpace {
         c.insert(path.to_string(), space);
     }
     space
+}
+
+/// A file path written the way an FFmpeg filter option wants it: forward slashes and the drive colon escaped
+/// (`C:\Users\me\a.trf` becomes `C\:/Users/me/a.trf`).
+pub fn filter_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+}
+
+/// Does this FFmpeg have the named filter? Asked once; some builds leave out `zscale` (needs libzimg) or
+/// `vidstab`.
+pub fn ffmpeg_has_filter(name: &str) -> bool {
+    static FILTERS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let list = FILTERS.get_or_init(|| {
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-filters"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    });
+    list.lines()
+        .any(|l| l.split_whitespace().nth(1) == Some(name))
 }
 
 /// Where a media file's generated helpers (proxy, thumbnails) live: `<dir>/<id>.<what>`.

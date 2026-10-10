@@ -76,7 +76,7 @@ pub fn stabilize(clip: &Clip, media: &MediaRef, smoothing: u32) -> Result<Vec<Op
             "-vf".into(),
             format!(
                 "vidstabdetect=shakiness=6:accuracy=15:result={}",
-                trf.display()
+                captaine_media::filter_path(&trf)
             ),
             "-f".into(),
             "null".into(),
@@ -88,7 +88,7 @@ pub fn stabilize(clip: &Clip, media: &MediaRef, smoothing: u32) -> Result<Vec<Op
             "-vf".into(),
             format!(
                 "vidstabtransform=smoothing={smoothing}:input={}:optzoom=1:zoom=0,unsharp=5:5:0.6:3:3:0.3",
-                trf.display()
+                captaine_media::filter_path(&trf)
             ),
             "-frames:v".into(),
             frames.to_string(),

@@ -615,7 +615,7 @@ fn tagged_video(path: &Path, primaries: &str, trc: &str, matrix: &str) {
 
 #[test]
 fn hdr_footage_is_tone_mapped_into_rec709_unless_told_otherwise() {
-    if !have_ffmpeg() {
+    if !have_ffmpeg() || !captaine_media::ffmpeg_has_filter("zscale") {
         return;
     }
     let (hlg, pq, sdr) = (
