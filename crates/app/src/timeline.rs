@@ -26,9 +26,8 @@ pub fn fit(app: &mut App) {
 pub fn panel(app: &mut App, root: &mut egui::Ui) {
     let ctx = root.ctx().clone();
     let shown = egui::Panel::bottom("timeline")
-        .resizable(true)
-        .default_size(app.prefs.timeline_h)
-        .min_size(180.0)
+        .resizable(false)
+        .exact_size(app.prefs.timeline_h)
         .frame(
             egui::Frame::new()
                 .fill(theme::PANEL_DARK)
@@ -38,10 +37,10 @@ pub fn panel(app: &mut App, root: &mut egui::Ui) {
             toolbar(app, ui);
             body(app, ui);
         });
-    ui::note_panel(
+    ui::drag_edge(
         app,
-        &ctx,
-        shown.response.rect.height(),
+        root,
+        shown.response.rect,
         crate::keymap::PanelKind::Timeline,
     );
     drag_ghost(app, &ctx);

@@ -175,7 +175,7 @@ impl Default for Keymap {
 }
 
 /// Which panel's size to remember.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PanelKind {
     Pool,
     Inspector,

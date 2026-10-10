@@ -1376,9 +1376,8 @@ pub struct LayerDrag(pub Option<ShapeKind>);
 
 pub fn media_pool(app: &mut App, root: &mut Ui) {
     let shown = egui::Panel::left("media_pool")
-        .default_size(app.prefs.pool_w)
-        .size_range(240.0..=560.0)
-        .resizable(true)
+        .exact_size(app.prefs.pool_w)
+        .resizable(false)
         .frame(
             egui::Frame::new()
                 .fill(theme::PANEL)
@@ -1447,12 +1446,7 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                     grid(app, ui);
                 });
         });
-    note_panel(
-        app,
-        root.ctx(),
-        shown.response.rect.width(),
-        PanelKind::Pool,
-    );
+    drag_edge(app, root, shown.response.rect, PanelKind::Pool);
 }
 
 /// The project's sequences: insert one into the current sequence, or step into it.
@@ -1752,9 +1746,8 @@ fn extension(name: &str) -> String {
 
 pub fn inspector(app: &mut App, root: &mut Ui) {
     let shown = egui::Panel::right("inspector")
-        .default_size(app.prefs.inspector_w)
-        .size_range(240.0..=520.0)
-        .resizable(true)
+        .exact_size(app.prefs.inspector_w)
+        .resizable(false)
         .frame(
             egui::Frame::new()
                 .fill(theme::PANEL)
@@ -1795,20 +1788,45 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                         });
                 });
         });
-    note_panel(
-        app,
-        root.ctx(),
-        shown.response.rect.width(),
-        PanelKind::Inspector,
-    );
+    drag_edge(app, root, shown.response.rect, PanelKind::Inspector);
 }
 
-/// Remember where the user dragged a panel to, once the mouse is let go.
-pub fn note_panel(app: &mut App, ctx: &Context, size: f32, which: PanelKind) {
-    if ctx.input(|i| i.pointer.any_down()) {
-        return;
+/// The grab strip on the inner edge of a side panel. The width lives in the preferences, so it cannot
+/// drift with the content, and it is saved once the mouse is let go.
+pub fn drag_edge(app: &mut App, ui: &mut Ui, panel: Rect, which: PanelKind) {
+    // inside the panel, so what is next to it never competes for the pointer
+    let strip = match which {
+        PanelKind::Pool => {
+            Rect::from_min_max(pos2(panel.right() - 7.0, panel.top()), panel.right_bottom())
+        }
+        PanelKind::Inspector => {
+            Rect::from_min_max(panel.left_top(), pos2(panel.left() + 7.0, panel.bottom()))
+        }
+        PanelKind::Timeline => {
+            Rect::from_min_max(panel.left_top(), pos2(panel.right(), panel.top() + 6.0))
+        }
+    };
+    let id = egui::Id::new(("panel-edge", which as u8));
+    let r = ui.interact(strip, id, Sense::drag());
+    let vertical = matches!(which, PanelKind::Timeline);
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(if vertical {
+            egui::CursorIcon::ResizeVertical
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        });
     }
-    if app.prefs.note_panel(which, size) {
+    if r.dragged() {
+        if let Some(p) = r.interact_pointer_pos() {
+            match which {
+                PanelKind::Pool => app.prefs.pool_w = p.x - panel.left(),
+                PanelKind::Inspector => app.prefs.inspector_w = panel.right() - p.x,
+                PanelKind::Timeline => app.prefs.timeline_h = panel.bottom() - p.y,
+            }
+            app.prefs = app.prefs.clone().sane();
+        }
+    }
+    if r.drag_stopped() {
         save_prefs(app);
     }
 }

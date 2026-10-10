@@ -2560,3 +2560,32 @@ fn panel_sizes_are_remembered_between_runs() {
             .unwrap();
     assert_eq!(old.pool_w, 330.0);
 }
+
+#[test]
+fn a_dragged_panel_keeps_its_width_while_the_pointer_moves_about() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let width = |h: &H| h.get_by_label("+").rect().right();
+    drag(&mut h, pos2(335.0, 300.0), pos2(455.0, 300.0));
+    let set = width(&h);
+    assert!(set > 400.0, "it was widened: {set}");
+    // hovering around repaints the window many times; the width must not creep back
+    for i in 0..60 {
+        h.hover_at(pos2(200.0 + i as f32 * 12.0, 200.0 + (i % 7) as f32 * 40.0));
+        h.step();
+    }
+    assert!((width(&h) - set).abs() < 1.0, "{set} -> {}", width(&h));
+    // the timeline and the inspector hold their sizes too
+    let top = |h: &H| h.get_by_label("Select").rect().top();
+    let t0 = top(&h);
+    drag(&mut h, pos2(700.0, t0 - 5.0), pos2(700.0, t0 - 85.0));
+    let t1 = top(&h);
+    assert!(t1 < t0 - 60.0, "the timeline grew: {t0} -> {t1}");
+    for i in 0..40 {
+        h.hover_at(pos2(100.0 + i as f32 * 30.0, 100.0 + (i % 9) as f32 * 80.0));
+        h.step();
+    }
+    assert!((top(&h) - t1).abs() < 1.0, "{t1} -> {}", top(&h));
+}
