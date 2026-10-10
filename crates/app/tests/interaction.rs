@@ -2535,3 +2535,28 @@ fn auto_select_marker_colours_and_the_captions_track() {
         .count();
     assert_eq!(count, 1, "only one");
 }
+
+#[test]
+fn panel_sizes_are_remembered_between_runs() {
+    use captaine_app::keymap::*;
+    let mut p = Prefs::default();
+    assert!(
+        !p.note_panel(PanelKind::Pool, 330.5),
+        "a pixel of noise is not a change"
+    );
+    assert!(p.note_panel(PanelKind::Pool, 480.0));
+    assert!(
+        p.note_panel(PanelKind::Inspector, 9999.0),
+        "kept inside the allowed range"
+    );
+    assert_eq!((p.pool_w, p.inspector_w), (480.0, 520.0));
+    assert!(p.note_panel(PanelKind::Timeline, 400.0));
+    let text = serde_json::to_string(&p).unwrap();
+    let back: Prefs = serde_json::from_str(&text).unwrap();
+    assert_eq!((back.pool_w, back.timeline_h), (480.0, 400.0));
+    // a preferences file from before these existed still loads
+    let old: Prefs =
+        serde_json::from_str(r#"{"ui_scale":1.0,"snapshot_minutes":5,"proxy_height":540}"#)
+            .unwrap();
+    assert_eq!(old.pool_w, 330.0);
+}

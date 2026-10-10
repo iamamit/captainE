@@ -206,11 +206,14 @@ fn transport(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter();
     p.rect_filled(rect, 0.0, Color32::from_rgb(0x11, 0x11, 0x14));
     p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, theme::BORDER));
+    // the timecode shrinks to fit the room to the left of the buttons
+    let room = rect.center().x - 108.0 - 22.0 - (rect.left() + 16.0);
+    let size = (room / (11.0 * 0.62)).clamp(11.0, 26.0);
     p.text(
         pos2(rect.left() + 16.0, rect.center().y),
         Align2::LEFT_CENTER,
         app.tc(app.playhead),
-        mono(26.0),
+        mono(size),
         Color32::WHITE,
     );
     let c = rect.center();

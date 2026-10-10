@@ -174,6 +174,32 @@ impl Default for Keymap {
     }
 }
 
+/// Which panel's size to remember.
+#[derive(Clone, Copy)]
+pub enum PanelKind {
+    Pool,
+    Inspector,
+    Timeline,
+}
+
+impl Prefs {
+    /// Note the size a panel ended up at; true when it changed enough to be worth saving.
+    pub fn note_panel(&mut self, which: PanelKind, size: f32) -> bool {
+        let slot = match which {
+            PanelKind::Pool => &mut self.pool_w,
+            PanelKind::Inspector => &mut self.inspector_w,
+            PanelKind::Timeline => &mut self.timeline_h,
+        };
+        if (*slot - size).abs() < 1.5 || !size.is_finite() {
+            return false;
+        }
+        *slot = size;
+        let kept = self.clone().sane();
+        *self = kept;
+        true
+    }
+}
+
 impl Keymap {
     pub fn chord(&self, a: Action) -> Chord {
         self.map[&a]
@@ -260,6 +286,23 @@ pub struct Prefs {
     pub proxy_height: u32,
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
+    /// Panel sizes the user dragged them to, kept between runs
+    #[serde(default = "default_pool_w")]
+    pub pool_w: f32,
+    #[serde(default = "default_inspector_w")]
+    pub inspector_w: f32,
+    #[serde(default = "default_timeline_h")]
+    pub timeline_h: f32,
+}
+
+fn default_pool_w() -> f32 {
+    330.0
+}
+fn default_inspector_w() -> f32 {
+    300.0
+}
+fn default_timeline_h() -> f32 {
+    300.0
 }
 
 impl Default for Prefs {
@@ -269,6 +312,9 @@ impl Default for Prefs {
             snapshot_minutes: 5,
             proxy_height: 540,
             keys: BTreeMap::new(),
+            pool_w: default_pool_w(),
+            inspector_w: default_inspector_w(),
+            timeline_h: default_timeline_h(),
         }
     }
 }
@@ -314,6 +360,9 @@ impl Prefs {
         };
         self.snapshot_minutes = self.snapshot_minutes.min(120);
         self.proxy_height = self.proxy_height.clamp(120, 1080);
+        self.pool_w = self.pool_w.clamp(240.0, 560.0);
+        self.inspector_w = self.inspector_w.clamp(240.0, 520.0);
+        self.timeline_h = self.timeline_h.clamp(180.0, 900.0);
         self
     }
 }

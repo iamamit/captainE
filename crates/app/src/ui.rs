@@ -12,7 +12,7 @@ use egui::{
 };
 
 use crate::app::*;
-use crate::keymap::Action;
+use crate::keymap::{Action, PanelKind};
 use crate::theme::{self, mono, ui_font};
 
 // ---- small widgets -----------------------------------------------------------------------------
@@ -1375,8 +1375,8 @@ pub struct TitleDrag(pub TitleTemplate);
 pub struct LayerDrag(pub Option<ShapeKind>);
 
 pub fn media_pool(app: &mut App, root: &mut Ui) {
-    egui::Panel::left("media_pool")
-        .default_size(330.0)
+    let shown = egui::Panel::left("media_pool")
+        .default_size(app.prefs.pool_w)
         .size_range(240.0..=560.0)
         .resizable(true)
         .frame(
@@ -1447,6 +1447,12 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                     grid(app, ui);
                 });
         });
+    note_panel(
+        app,
+        root.ctx(),
+        shown.response.rect.width(),
+        PanelKind::Pool,
+    );
 }
 
 /// The project's sequences: insert one into the current sequence, or step into it.
@@ -1745,8 +1751,8 @@ fn extension(name: &str) -> String {
 // ---- inspector -----------------------------------------------------------------------------------
 
 pub fn inspector(app: &mut App, root: &mut Ui) {
-    egui::Panel::right("inspector")
-        .default_size(300.0)
+    let shown = egui::Panel::right("inspector")
+        .default_size(app.prefs.inspector_w)
         .size_range(240.0..=520.0)
         .resizable(true)
         .frame(
@@ -1789,6 +1795,22 @@ pub fn inspector(app: &mut App, root: &mut Ui) {
                         });
                 });
         });
+    note_panel(
+        app,
+        root.ctx(),
+        shown.response.rect.width(),
+        PanelKind::Inspector,
+    );
+}
+
+/// Remember where the user dragged a panel to, once the mouse is let go.
+pub fn note_panel(app: &mut App, ctx: &Context, size: f32, which: PanelKind) {
+    if ctx.input(|i| i.pointer.any_down()) {
+        return;
+    }
+    if app.prefs.note_panel(which, size) {
+        save_prefs(app);
+    }
 }
 
 fn section(ui: &mut Ui, title: &str) {
