@@ -60,5 +60,5 @@ d06	Delivery	Color management and HDR	3	0.75	footage colour space read from the 
 d07	Delivery	Format and codec breadth on import	4	0.75	via FFmpeg
 u01	Platform	Polished workspace, preferences, custom shortcuts	3	0.75	preferences window (Settings > Preferences): interface size, snapshot interval, proxy height, 22 rebindable shortcuts with conflict check and reset, saved in ~/.captaine/prefs.json; menus show the live bindings; no saved workspace layouts, no themes
 u02	Platform	Stability and crash recovery	4	0.75	atomic autosave after every edit, .bak of the last good file, timed snapshots (every 5 min, newest 20), automatic fallback to them when a file is damaged, unclean-exit notice, crash log; no in-app snapshot browser, no per-process watchdog
-u03	Platform	Installable app (.app bundle), Windows, Linux	3	0.5	macOS .app bundle (tools/bundle.sh; tools/test_bundle.sh checks plist, signature and a start with a bare PATH); no Windows/Linux, not notarized
+u03	Platform	Installable app (.app bundle), Windows, Linux	3	0.75	macOS .app bundle (tools/bundle.sh); the whole build and test suite passes on macOS, Linux and Windows in GitHub Actions on every push; no Windows installer or Linux package yet, app not notarized, Windows/Linux builds not yet used by hand
 u04	Platform	Collaboration: branches, compare, merge	2	1	ahead of Adobe here
