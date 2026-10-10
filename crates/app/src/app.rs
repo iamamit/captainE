@@ -287,6 +287,9 @@ pub struct App {
     pub scope_tex: Option<TextureHandle>,
     pub scope_src: Option<egui::ColorImage>,
     pub scope_dirty: bool,
+    /// Where the scopes window sits (top-left) and how big it is, once the user has moved or resized it
+    pub scope_pos: Option<egui::Pos2>,
+    pub scope_side: f32,
     pub thumbs: HashMap<Id, TextureHandle>,
     pub waves: HashMap<Id, Arc<Vec<Peak>>>,
     queued_media: std::collections::HashSet<Id>,
@@ -399,6 +402,8 @@ impl App {
             scope_tex: None,
             scope_src: None,
             scope_dirty: true,
+            scope_pos: None,
+            scope_side: 256.0,
             thumbs: HashMap::new(),
             waves: HashMap::new(),
             queued_media: Default::default(),

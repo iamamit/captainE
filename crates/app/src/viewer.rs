@@ -286,16 +286,52 @@ fn transport(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
 
 /// The scopes panel, floating at the top right of the picture.
 fn scopes_panel(app: &mut App, ui: &mut egui::Ui, pic: Rect) {
-    let size = vec2(270.0, 270.0 + 34.0);
-    let r = Rect::from_min_size(pic.right_top() + vec2(-size.x - 12.0, 12.0), size);
+    use crate::scopes::{stats, vector_pos, ScopeKind};
+    let side = app.scope_side.clamp(200.0, 560.0);
+    let size = vec2(side + 14.0, side + 14.0 + 34.0 + 22.0);
+    let default = pic.right_top() + vec2(-size.x - 12.0, 12.0);
+    let mut pos = app.scope_pos.unwrap_or(default);
+    // keep it inside the picture area
+    let area = pic.expand(40.0);
+    pos.x = pos
+        .x
+        .clamp(area.left(), (area.right() - size.x).max(area.left()));
+    pos.y = pos
+        .y
+        .clamp(area.top(), (area.bottom() - size.y).max(area.top()));
+    let r = Rect::from_min_size(pos, size);
     ui.painter()
         .rect_filled(r, 6.0, Color32::from_rgba_unmultiplied(14, 14, 18, 235));
+    // drag the window by its background; the corner resizes it
+    let grab = ui.interact(r, egui::Id::new("scopes-move"), Sense::drag());
+    if grab.dragged() {
+        app.scope_pos = Some(pos + grab.drag_delta());
+    }
+    let corner = Rect::from_min_size(r.right_bottom() - vec2(16.0, 16.0), vec2(16.0, 16.0));
+    let rz = ui.interact(corner, egui::Id::new("scopes-size"), Sense::drag());
+    if rz.hovered() || rz.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+    if rz.dragged() {
+        let d = rz.drag_delta();
+        app.scope_side = (app.scope_side + (d.x + d.y) / 2.0).clamp(200.0, 560.0);
+    }
+    for k in 0..3 {
+        let o = 4.0 + k as f32 * 4.0;
+        ui.painter().line_segment(
+            [
+                r.right_bottom() - vec2(o, 3.0),
+                r.right_bottom() - vec2(3.0, o),
+            ],
+            Stroke::new(1.0, theme::FAINT),
+        );
+    }
     let tabs = Rect::from_min_size(r.min + vec2(6.0, 4.0), vec2(r.width() - 12.0, 26.0));
     let mut picked = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tabs));
     child.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for k in crate::scopes::ScopeKind::ALL {
+        for k in ScopeKind::ALL {
             if chip(ui, k.label(), app.scope_kind == k, true).clicked() {
                 picked = Some(k);
             }
@@ -305,13 +341,111 @@ fn scopes_panel(app: &mut App, ui: &mut egui::Ui, pic: Rect) {
         app.scope_kind = k;
         app.scope_dirty = true;
     }
-    let img = Rect::from_min_size(r.min + vec2(7.0, 34.0), vec2(256.0, 256.0));
+    let img = Rect::from_min_size(r.min + vec2(7.0, 34.0), vec2(side, side));
     if let Some(t) = &app.scope_tex {
         ui.painter().image(
             t.id(),
             img,
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE,
+        );
+    }
+    // the scale, drawn sharp at any size
+    let p = ui.painter().with_clip_rect(r);
+    let faint = Color32::from_white_alpha(110);
+    match app.scope_kind {
+        ScopeKind::Waveform | ScopeKind::Parade => {
+            for (i, label) in ["100", "75", "50", "25", "0"].into_iter().enumerate() {
+                let y = img.top() + img.height() * i as f32 / 4.0;
+                p.text(
+                    pos2(img.left() + 3.0, (y + 1.0).min(img.bottom() - 7.0)),
+                    Align2::LEFT_CENTER,
+                    label,
+                    mono(9.0),
+                    faint,
+                );
+            }
+        }
+        ScopeKind::Histogram => {
+            for (i, label) in ["0", "64", "128", "192", "255"].into_iter().enumerate() {
+                let x = img.left() + img.width() * i as f32 / 4.0;
+                p.text(
+                    pos2(
+                        x.clamp(img.left() + 8.0, img.right() - 10.0),
+                        img.bottom() - 6.0,
+                    ),
+                    Align2::CENTER_CENTER,
+                    label,
+                    mono(9.0),
+                    faint,
+                );
+            }
+        }
+        ScopeKind::Vectorscope => {
+            let c = img.center();
+            let rad = img.width() / 2.0;
+            for f in [0.5f32, 1.0] {
+                p.circle_stroke(
+                    c,
+                    rad * f * 0.98,
+                    Stroke::new(1.0, Color32::from_white_alpha(35)),
+                );
+            }
+            // skin tones sit along one line out from the middle
+            let (sx, sy) = vector_pos(1.0, 0.72, 0.58);
+            let end = pos2(
+                img.left() + (c.x - img.left()) + (sx - 0.5) * img.width() * 2.2,
+                img.top() + (c.y - img.top()) + (sy - 0.5) * img.height() * 2.2,
+            );
+            p.line_segment(
+                [c, end],
+                Stroke::new(1.0, Color32::from_rgb(0xd9, 0xa7, 0x7e)),
+            );
+            // the six colour bars at 75 % saturation
+            for (name, (r, g, b)) in [
+                ("R", (0.75, 0.0, 0.0)),
+                ("Y", (0.75, 0.75, 0.0)),
+                ("G", (0.0, 0.75, 0.0)),
+                ("C", (0.0, 0.75, 0.75)),
+                ("B", (0.0, 0.0, 0.75)),
+                ("M", (0.75, 0.0, 0.75)),
+            ] {
+                let (x, y) = vector_pos(r, g, b);
+                let at = pos2(img.left() + x * img.width(), img.top() + y * img.height());
+                p.rect_stroke(
+                    Rect::from_center_size(at, vec2(14.0, 14.0)),
+                    2.0,
+                    Stroke::new(1.0, Color32::from_white_alpha(120)),
+                    egui::StrokeKind::Middle,
+                );
+                p.text(
+                    at,
+                    Align2::CENTER_CENTER,
+                    name,
+                    mono(8.5),
+                    Color32::from_white_alpha(150),
+                );
+            }
+        }
+    }
+    // numbers under the picture: how much is blown out or crushed
+    if let Some(src) = &app.scope_src {
+        let s = stats(src);
+        let line = format!(
+            "highlights clipped {:.1}%   blacks crushed {:.1}%   average {:.0}%",
+            s.clipped_high, s.clipped_low, s.mean_luma
+        );
+        let warn = s.clipped_high > 1.0 || s.clipped_low > 5.0;
+        p.text(
+            pos2(r.left() + 8.0, r.bottom() - 11.0),
+            Align2::LEFT_CENTER,
+            line,
+            mono(9.5),
+            if warn {
+                Color32::from_rgb(0xf0, 0x8c, 0x3a)
+            } else {
+                theme::MUTED
+            },
         );
     }
 }

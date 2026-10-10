@@ -31,6 +31,50 @@ impl ScopeKind {
     }
 }
 
+/// What the picture does at the extremes, in percent of its pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stats {
+    /// Any channel at or near full (blown highlights)
+    pub clipped_high: f32,
+    /// Every channel at or near zero (crushed blacks)
+    pub clipped_low: f32,
+    /// Average brightness, 0 to 100
+    pub mean_luma: f32,
+}
+
+pub fn stats(src: &ColorImage) -> Stats {
+    let n = src.pixels.len();
+    if n == 0 {
+        return Stats::default();
+    }
+    let step = (n / 60_000).max(1);
+    let (mut hi, mut lo, mut sum, mut count) = (0u32, 0u32, 0.0f64, 0u32);
+    for p in src.pixels.iter().step_by(step) {
+        let (r, g, b) = (p.r(), p.g(), p.b());
+        if r >= 253 || g >= 253 || b >= 253 {
+            hi += 1;
+        }
+        if r <= 2 && g <= 2 && b <= 2 {
+            lo += 1;
+        }
+        sum += 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64;
+        count += 1;
+    }
+    let c = count.max(1) as f32;
+    Stats {
+        clipped_high: hi as f32 * 100.0 / c,
+        clipped_low: lo as f32 * 100.0 / c,
+        mean_luma: (sum / count.max(1) as f64 / 255.0 * 100.0) as f32,
+    }
+}
+
+/// Where a colour lands on the vectorscope, as fractions of its width and height (0,0 top left).
+pub fn vector_pos(r: f32, g: f32, b: f32) -> (f32, f32) {
+    let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
+    let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
+    (cb + 0.5, 0.5 - cr)
+}
+
 pub fn render(kind: ScopeKind, src: &ColorImage) -> ColorImage {
     let acc = match kind {
         ScopeKind::Waveform => waveform(src, false),
@@ -245,6 +289,30 @@ mod tests {
             mid_green_bottom |= p.pixels[(SIZE - 1) * SIZE + x].g() > 100;
         }
         assert!(mid_green_bottom);
+    }
+
+    #[test]
+    fn clipping_and_brightness_are_reported() {
+        let blown = stats(&solid(32, 32, Color32::from_rgb(255, 255, 255)));
+        assert_eq!((blown.clipped_high, blown.clipped_low), (100.0, 0.0));
+        assert!((blown.mean_luma - 100.0).abs() < 0.5);
+        let black = stats(&solid(32, 32, Color32::BLACK));
+        assert_eq!((black.clipped_high, black.clipped_low), (0.0, 100.0));
+        // half the picture white, half mid grey
+        let mut img = solid(32, 32, Color32::from_gray(128));
+        for p in img.pixels.iter_mut().take(32 * 16) {
+            *p = Color32::WHITE;
+        }
+        let half = stats(&img);
+        assert!((half.clipped_high - 50.0).abs() < 1.0, "{half:?}");
+        assert_eq!(stats(&ColorImage::new([0, 0], vec![])), Stats::default());
+        // the primaries sit on the vectorscope where the graticule boxes are drawn
+        let (rx, ry) = vector_pos(1.0, 0.0, 0.0);
+        assert!(rx < 0.5 && ry < 0.5);
+        let (bx, by) = vector_pos(0.0, 0.0, 1.0);
+        assert!(bx > 0.5 && by > 0.5);
+        let (gx, gy) = vector_pos(0.5, 0.5, 0.5);
+        assert!((gx - 0.5).abs() < 1e-3 && (gy - 0.5).abs() < 1e-3);
     }
 
     #[test]

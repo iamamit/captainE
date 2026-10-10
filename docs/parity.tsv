@@ -34,7 +34,7 @@ v12	Video	Crop, flip, rotate, scale to fill, auto-reframe	3	0.75	crop, flip H/V,
 v13	Video	AI background removal / rotoscoping	3	0.75	AI subject cut-out via Apple Vision (people, animals, objects; person mode): matte video cached, Subject matte effect with feather/choke/invert, background job, Copilot remove_background; macOS only, no manual refine strokes
 c01	Color	Basic correction (exposure, contrast, saturation, temperature, tint, highlights, shadows)	4	0.75	exposure, contrast, saturation, temperature, tint, highlights, shadows, vibrance (all keyframeable) plus Auto color
 c02	Color	Wheels, curves, HSL	4	0.75	draggable lift/gamma/gain colour wheels, drag-point curve editor for master/R/G/B, 6-band HSL; no qualifiers/secondaries
-c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.5	waveform, RGB parade, vectorscope, histogram over the viewer; fixed size
+c03	Color	Scopes (waveform, vectorscope, histogram)	3	0.75	waveform, RGB parade, vectorscope (colour-bar boxes, skin-tone line, rings), histogram with drawn scales; movable and resizable window; clipped-highlight, crushed-black and average-brightness readout; no HDR scopes, no luma-only or CIE views
 c04	Color	LUTs	3	0.75	.cube 3D and 1D LUTs with strength per clip, folder browser in the inspector; no LUT library management
 c05	Color	Auto color and shot matching	2	0.75	auto colour from measured frames (exposure, contrast, cast, saturation) and shot matching to a reference clip; Copilot tools; no per-shot histogram match or skin-tone protection
 a01	Audio	Gain, pan, fades, mute, waveforms	4	1	

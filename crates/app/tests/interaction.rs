@@ -2590,3 +2590,43 @@ fn a_dragged_panel_keeps_its_width_while_the_pointer_moves_about() {
     }
     assert!((top(&h) - t1).abs() < 1.0, "{t1} -> {}", top(&h));
 }
+
+#[test]
+fn the_scopes_window_can_be_moved_and_resized() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    app_mut(&mut h).scopes_open = true;
+    app_mut(&mut h).scope_pos = Some(pos2(500.0, 200.0));
+    settle(&mut h);
+    let start = app(&h).scope_pos.unwrap();
+    drag(&mut h, pos2(520.0, 320.0), pos2(580.0, 350.0));
+    let moved = app(&h).scope_pos.unwrap();
+    assert!(
+        (moved.x - start.x - 60.0).abs() < 4.0 && (moved.y - start.y - 30.0).abs() < 4.0,
+        "{start:?} -> {moved:?}"
+    );
+    // the corner makes it bigger, up to a limit
+    let side = app(&h).scope_side;
+    let corner = pos2(
+        moved.x + side + 14.0 - 8.0,
+        moved.y + side + 14.0 + 34.0 + 22.0 - 8.0,
+    );
+    drag(&mut h, corner, pos2(corner.x + 60.0, corner.y + 60.0));
+    assert!(
+        app(&h).scope_side > side + 40.0,
+        "{} -> {}",
+        side,
+        app(&h).scope_side
+    );
+    for _ in 0..3 {
+        let c = {
+            let p = app(&h).scope_pos.unwrap();
+            let s = app(&h).scope_side;
+            pos2(p.x + s + 6.0, p.y + s + 62.0)
+        };
+        drag(&mut h, c, pos2(c.x + 300.0, c.y + 300.0));
+    }
+    assert!(app(&h).scope_side <= 560.0);
+}
