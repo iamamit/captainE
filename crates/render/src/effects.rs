@@ -1,6 +1,7 @@
 //! Picture effects on a decoded frame (straight-alpha RGBA8), run before the layer is transformed.
 
 use captaine_model::{Effect, EffectKind};
+use rayon::prelude::*;
 
 use crate::Frame8;
 
@@ -93,66 +94,129 @@ pub fn apply_effects_at(
 
 /// Premultiplied floats, 4 per pixel.
 fn to_premul(f: &Frame8) -> Vec<f32> {
-    let mut v = Vec::with_capacity(f.rgba.len());
-    for px in f.rgba.chunks_exact(4) {
-        let a = px[3] as f32 / 255.0;
-        v.extend([
-            px[0] as f32 * a,
-            px[1] as f32 * a,
-            px[2] as f32 * a,
-            px[3] as f32,
-        ]);
-    }
+    let mut v = vec![0.0f32; f.rgba.len()];
+    v.par_chunks_mut(4)
+        .zip(f.rgba.par_chunks(4))
+        .for_each(|(o, px)| {
+            let a = px[3] as f32 / 255.0;
+            o[0] = px[0] as f32 * a;
+            o[1] = px[1] as f32 * a;
+            o[2] = px[2] as f32 * a;
+            o[3] = px[3] as f32;
+        });
     v
 }
 
 fn from_premul(f: &mut Frame8, v: &[f32]) {
-    for (px, s) in f.rgba.chunks_exact_mut(4).zip(v.chunks_exact(4)) {
-        let a = s[3] / 255.0;
-        if a <= 0.0 {
-            px.copy_from_slice(&[0, 0, 0, 0]);
-            continue;
-        }
-        for c in 0..3 {
-            px[c] = (s[c] / a).round().clamp(0.0, 255.0) as u8;
-        }
-        px[3] = s[3].round().clamp(0.0, 255.0) as u8;
-    }
+    f.rgba
+        .par_chunks_mut(4)
+        .zip(v.par_chunks(4))
+        .for_each(|(px, s)| {
+            let a = s[3] / 255.0;
+            if a <= 0.0 {
+                px.copy_from_slice(&[0, 0, 0, 0]);
+                return;
+            }
+            for c in 0..3 {
+                px[c] = (s[c] / a).round().clamp(0.0, 255.0) as u8;
+            }
+            px[3] = s[3].round().clamp(0.0, 255.0) as u8;
+        });
 }
 
 /// One horizontal box-blur pass of half-width `r` (edges repeat), over `ch` interleaved channels.
 fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
     let n = (2 * r + 1) as f32;
-    for y in 0..h {
-        let row = &src[y * w * 4..(y + 1) * w * 4];
-        let out = &mut dst[y * w * 4..(y + 1) * w * 4];
-        for c in 0..4 {
-            let at = |x: isize| row[(x.clamp(0, w as isize - 1) as usize) * 4 + c];
-            let mut sum = 0.0;
+    let _ = h;
+    let last = w - 1;
+    dst.par_chunks_mut(w * 4)
+        .zip(src.par_chunks(w * 4))
+        .for_each(|(out, row)| {
+            let px = |x: isize| -> &[f32] {
+                let i = x.clamp(0, last as isize) as usize * 4;
+                &row[i..i + 4]
+            };
+            // all four channels at once, so each pixel is read once per step
+            let mut sum = [0.0f32; 4];
             for x in -(r as isize)..=(r as isize) {
-                sum += at(x);
+                let p = px(x);
+                for c in 0..4 {
+                    sum[c] += p[c];
+                }
             }
             for x in 0..w {
-                out[x * 4 + c] = sum / n;
-                sum += at(x as isize + r as isize + 1) - at(x as isize - r as isize);
+                for c in 0..4 {
+                    out[x * 4 + c] = sum[c] / n;
+                }
+                let (add, sub) = (px(x as isize + r as isize + 1), px(x as isize - r as isize));
+                for c in 0..4 {
+                    sum[c] += add[c] - sub[c];
+                }
             }
-        }
-    }
+        });
 }
 
 fn transpose(src: &[f32], w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0.0; src.len()];
-    for y in 0..h {
-        for x in 0..w {
-            let (i, j) = ((y * w + x) * 4, (x * h + y) * 4);
-            out[j..j + 4].copy_from_slice(&src[i..i + 4]);
+    // output row x is input column x
+    out.par_chunks_mut(h * 4).enumerate().for_each(|(x, col)| {
+        for y in 0..h {
+            let i = (y * w + x) * 4;
+            col[y * 4..y * 4 + 4].copy_from_slice(&src[i..i + 4]);
         }
-    }
+    });
+    out
+}
+
+/// Half the size in each direction, averaging 2x2 blocks (the last row and column repeat).
+fn halve(v: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
+    let (dw, dh) = (w.div_ceil(2), h.div_ceil(2));
+    let mut out = vec![0.0f32; dw * dh * 4];
+    out.par_chunks_mut(dw * 4).enumerate().for_each(|(y, row)| {
+        let (y0, y1) = (2 * y, (2 * y + 1).min(h - 1));
+        for x in 0..dw {
+            let (x0, x1) = (2 * x, (2 * x + 1).min(w - 1));
+            for c in 0..4 {
+                row[x * 4 + c] = 0.25
+                    * (v[(y0 * w + x0) * 4 + c]
+                        + v[(y0 * w + x1) * 4 + c]
+                        + v[(y1 * w + x0) * 4 + c]
+                        + v[(y1 * w + x1) * 4 + c]);
+            }
+        }
+    });
+    (out, dw, dh)
+}
+
+/// Back up to `w` x `h` from half size, smoothly (bilinear).
+fn double(v: &[f32], dw: usize, dh: usize, w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h * 4];
+    out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        let sy = ((y as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, dh as f32 - 1.0);
+        let (y0, fy) = (sy.floor() as usize, sy.fract());
+        let y1 = (y0 + 1).min(dh - 1);
+        for x in 0..w {
+            let sx = ((x as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, dw as f32 - 1.0);
+            let (x0, fx) = (sx.floor() as usize, sx.fract());
+            let x1 = (x0 + 1).min(dw - 1);
+            for c in 0..4 {
+                let top = v[(y0 * dw + x0) * 4 + c] * (1.0 - fx) + v[(y0 * dw + x1) * 4 + c] * fx;
+                let bot = v[(y1 * dw + x0) * 4 + c] * (1.0 - fx) + v[(y1 * dw + x1) * 4 + c] * fx;
+                row[x * 4 + c] = top * (1.0 - fy) + bot * fy;
+            }
+        }
+    });
     out
 }
 
 /// Gaussian-like blur (three box passes each way) of standard deviation `sigma` pixels, on premultiplied data.
+/// A wide blur of a big picture is done at half size and scaled back up: it is a smooth result anyway.
 fn blur_premul(v: Vec<f32>, w: usize, h: usize, sigma: f64) -> Vec<f32> {
+    if sigma >= 8.0 && w >= 64 && h >= 64 {
+        let (small, dw, dh) = halve(&v, w, h);
+        let soft = blur_premul(small, dw, dh, sigma / 2.0);
+        return double(&soft, dw, dh, w, h);
+    }
     let r = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0).round() as usize;
     if r == 0 {
         return v;
@@ -186,34 +250,36 @@ fn sharpen(f: &mut Frame8, amount: f64, sigma: f64) {
     let src = to_premul(f);
     let soft = blur_premul(src.clone(), w, h, sigma);
     let mut out = src.clone();
-    for ((o, s), b) in out
-        .chunks_exact_mut(4)
-        .zip(src.chunks_exact(4))
-        .zip(soft.chunks_exact(4))
-    {
-        for c in 0..3 {
-            o[c] = (s[c] + amount as f32 * (s[c] - b[c])).clamp(0.0, s[3]);
-        }
-    }
+    out.par_chunks_mut(4)
+        .zip(src.par_chunks(4))
+        .zip(soft.par_chunks(4))
+        .for_each(|((o, s), b)| {
+            for c in 0..3 {
+                o[c] = (s[c] + amount as f32 * (s[c] - b[c])).clamp(0.0, s[3]);
+            }
+        });
     from_premul(f, &out);
 }
 
 fn vignette(f: &mut Frame8, amount: f64, softness: f64) {
     let (w, h) = (f.width as f64, f.height as f64);
+    let width = f.width as usize;
     let inner = 0.9 * (1.0 - softness);
-    for y in 0..f.height as usize {
-        for x in 0..f.width as usize {
-            let (dx, dy) = ((x as f64 + 0.5) / w - 0.5, (y as f64 + 0.5) / h - 0.5);
-            let d = (dx * dx + dy * dy).sqrt() / 0.5f64.hypot(0.5);
-            let t = ((d - inner) / (1.0 - inner).max(1e-6)).clamp(0.0, 1.0);
-            let s = t * t * (3.0 - 2.0 * t);
-            let g = (1.0 - amount * s) as f32;
-            let i = (y * f.width as usize + x) * 4;
-            for c in 0..3 {
-                f.rgba[i + c] = (f.rgba[i + c] as f32 * g).round() as u8;
+    f.rgba
+        .par_chunks_mut(width * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..width {
+                let (dx, dy) = ((x as f64 + 0.5) / w - 0.5, (y as f64 + 0.5) / h - 0.5);
+                let d = (dx * dx + dy * dy).sqrt() / 0.5f64.hypot(0.5);
+                let t = ((d - inner) / (1.0 - inner).max(1e-6)).clamp(0.0, 1.0);
+                let s = t * t * (3.0 - 2.0 * t);
+                let g = (1.0 - amount * s) as f32;
+                for c in 0..3 {
+                    row[x * 4 + c] = (row[x * 4 + c] as f32 * g).round() as u8;
+                }
             }
-        }
-    }
+        });
 }
 
 fn mirror(f: &mut Frame8, vertical: bool) {
@@ -391,31 +457,35 @@ fn hash(mut x: u64) -> u64 {
 
 /// Film grain: noise in blocks of `size` pixels that is different every frame (`phase`).
 fn grain(f: &mut Frame8, amount: f64, size: f64, colour: f64, phase: u64) {
-    let (w, h) = (f.width as usize, f.height as usize);
+    let w = f.width as usize;
     let cell = size.max(1.0);
-    for y in 0..h {
-        for x in 0..w {
-            let (cx, cy) = ((x as f64 / cell) as u64, (y as f64 / cell) as u64);
-            let n = hash(
-                cx.wrapping_mul(73856093)
-                    ^ cy.wrapping_mul(19349663)
-                    ^ phase.wrapping_mul(83492791),
-            );
-            let base = ((n & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
-            let i = (y * w + x) * 4;
-            // a little of it per channel when colour grain is asked for
-            let lum = f.rgba[i..i + 3].iter().map(|v| *v as f64).sum::<f64>() / 3.0 / 255.0;
-            // grain is strongest in the mid-tones
-            let weight = 1.0 - (lum * 2.0 - 1.0).abs() * 0.6;
-            for c in 0..3 {
-                let tint =
-                    ((hash(n ^ ((c as u64 + 1) * 0x9e37)) & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
-                let v = base * (1.0 - colour) + tint * colour;
-                let d = v * amount * 0.35 * weight * 255.0;
-                f.rgba[i + c] = (f.rgba[i + c] as f64 + d).round().clamp(0.0, 255.0) as u8;
+    f.rgba
+        .par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..w {
+                let (cx, cy) = ((x as f64 / cell) as u64, (y as f64 / cell) as u64);
+                let n = hash(
+                    cx.wrapping_mul(73856093)
+                        ^ cy.wrapping_mul(19349663)
+                        ^ phase.wrapping_mul(83492791),
+                );
+                let base = ((n & 0xffff) as f64 / 65535.0 - 0.5) * 2.0;
+                let i = x * 4;
+                // a little of it per channel when colour grain is asked for
+                let lum = row[i..i + 3].iter().map(|v| *v as f64).sum::<f64>() / 3.0 / 255.0;
+                // grain is strongest in the mid-tones
+                let weight = 1.0 - (lum * 2.0 - 1.0).abs() * 0.6;
+                for c in 0..3 {
+                    let tint = ((hash(n ^ ((c as u64 + 1) * 0x9e37)) & 0xffff) as f64 / 65535.0
+                        - 0.5)
+                        * 2.0;
+                    let v = base * (1.0 - colour) + tint * colour;
+                    let d = v * amount * 0.35 * weight * 255.0;
+                    row[i + c] = (row[i + c] as f64 + d).round().clamp(0.0, 255.0) as u8;
+                }
             }
-        }
-    }
+        });
 }
 
 /// Red pulled toward the edges, blue pushed in: the colour fringes of a cheap lens.
@@ -1272,6 +1342,43 @@ mod tests {
         shift.params[0] = 60.0; // red hue +60 degrees -> yellow
         let y = px(&apply_effects(&f, &[shift]).unwrap(), 0, 0);
         assert!(y[0] > 200 && y[1] > 200 && y[2] < 30, "{y:?}");
+    }
+
+    #[test]
+    fn a_wide_blur_done_at_half_size_matches_the_full_size_one() {
+        // a smooth picture: a gradient with a bright disc
+        let (w, h) = (256usize, 160usize);
+        let mut f = Frame8::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for y in 0..h {
+            for x in 0..w {
+                let d = ((x as f32 - 128.0).powi(2) + (y as f32 - 80.0).powi(2)).sqrt();
+                let v = if d < 40.0 { 230 } else { (x * 100 / w) as u8 };
+                let i = (y * w + x) * 4;
+                f.rgba[i..i + 3].fill(v);
+            }
+        }
+        let sigma = 12.0;
+        let fast = blur_premul(to_premul(&f), w, h, sigma);
+        // the same blur without the shortcut: ask for it just under the threshold twice as wide
+        let r = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0).round() as usize;
+        let (mut a, mut b) = (to_premul(&f), vec![0.0; w * h * 4]);
+        for _ in 0..3 {
+            box_pass(&a, &mut b, w, h, r);
+            std::mem::swap(&mut a, &mut b);
+        }
+        let mut t = transpose(&a, w, h);
+        let mut tb = vec![0.0; t.len()];
+        for _ in 0..3 {
+            box_pass(&t, &mut tb, h, w, r);
+            std::mem::swap(&mut t, &mut tb);
+        }
+        let full = transpose(&t, h, w);
+        let worst = fast
+            .iter()
+            .zip(&full)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 6.0, "worst difference {worst} of 255");
     }
 
     #[test]

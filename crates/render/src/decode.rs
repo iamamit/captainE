@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -16,7 +16,8 @@ use crate::Frame8;
 /// jumping far or backwards restarts the process at the new position.
 pub struct VideoReader {
     child: Child,
-    out: ChildStdout,
+    /// Frames the reading thread has already pulled out of FFmpeg, in order
+    frames: std::sync::mpsc::Receiver<Vec<u8>>,
     width: u32,
     height: u32,
     fps: Rational,
@@ -96,10 +97,24 @@ impl VideoReader {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("cannot run ffmpeg (is FFmpeg installed?): {e}"))?;
-        let out = child.stdout.take().expect("piped");
+        let mut out: ChildStdout = child.stdout.take().expect("piped");
+        // Frames are read ahead on their own thread, so decoding overlaps with compositing instead of
+        // waiting for it (FFmpeg would otherwise stall on a full pipe after every frame).
+        let bytes = width as usize * height as usize * 4;
+        let ahead = (96_000_000 / bytes.max(1)).clamp(2, 12);
+        let (tx, frames) = std::sync::mpsc::sync_channel::<Vec<u8>>(ahead);
+        std::thread::Builder::new()
+            .name("frame-reader".into())
+            .spawn(move || loop {
+                let mut buf = vec![0u8; bytes];
+                if out.read_exact(&mut buf).is_err() || tx.send(buf).is_err() {
+                    break;
+                }
+            })
+            .map_err(|e| e.to_string())?;
         Ok(VideoReader {
             child,
-            out,
+            frames,
             width,
             height,
             fps,
@@ -112,17 +127,9 @@ impl VideoReader {
         })
     }
 
-    fn frame_bytes(&self) -> usize {
-        self.width as usize * self.height as usize * 4
-    }
-
-    /// Read one frame into `buf`; false at end of stream.
-    fn read_into(&mut self, buf: &mut [u8]) -> Result<bool, String> {
-        match self.out.read_exact(buf) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
-            Err(e) => Err(format!("reading {}: {e}", self.path)),
-        }
+    /// The next frame's bytes; None at the end of the stream.
+    fn next_bytes(&mut self) -> Option<Vec<u8>> {
+        self.frames.recv().ok()
     }
 
     /// Frame `index` of the source. Past the end of the file the last frame is held.
@@ -146,8 +153,7 @@ impl VideoReader {
         }
         let mut scratch = Vec::new();
         while self.next <= index && !self.eof {
-            let mut buf = vec![0u8; self.frame_bytes()];
-            if self.read_into(&mut buf)? {
+            if let Some(buf) = self.next_bytes() {
                 let wanted = self.next == index;
                 self.next += 1;
                 if wanted || self.last.is_none() || self.next > index {

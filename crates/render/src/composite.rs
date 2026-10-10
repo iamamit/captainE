@@ -1,4 +1,5 @@
 use captaine_model::{BlendMode, ColorProps, VideoProps};
+use rayon::prelude::*;
 
 use crate::color::to_linear;
 use crate::{Canvas, Frame8};
@@ -187,48 +188,51 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
         .map(|m| [m[0] * cw, m[1] * ch, m[2] * cw, m[3] * ch]);
     let iris = fx.iris.map(|f| f * (cw * cw + ch * ch).sqrt() / 2.0);
     let graded_neutral = props.color.is_neutral();
-    for y in y0..y1 {
-        for x in x0..x1 {
-            if let Some(m) = mask {
-                let (mx, my) = (x as f64 + 0.5, y as f64 + 0.5);
-                if mx < m[0] || mx >= m[2] || my < m[1] || my >= m[3] {
+    let width = canvas.width as usize;
+    // each row of the canvas is independent: spread them over every core
+    canvas
+        .data
+        .par_chunks_mut(width * 4)
+        .enumerate()
+        .filter(|(y, _)| (*y as u32) >= y0 && (*y as u32) < y1)
+        .for_each(|(y, row)| {
+            let y = y as u32;
+            for x in x0..x1 {
+                if let Some(m) = mask {
+                    let (mx, my) = (x as f64 + 0.5, y as f64 + 0.5);
+                    if mx < m[0] || mx >= m[2] || my < m[1] || my >= m[3] {
+                        continue;
+                    }
+                }
+                if let Some(r) = iris {
+                    let (ix, iy) = (x as f64 + 0.5 - cw / 2.0, y as f64 + 0.5 - ch / 2.0);
+                    if ix * ix + iy * iy > r * r {
+                        continue;
+                    }
+                }
+                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                // inverse of (scale, then clockwise rotation): rotate back, then unscale
+                let (ux, uy) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+                let (px, py) = (ux / sx + fw / 2.0, uy / sy + fh / 2.0);
+                // how much of this canvas pixel the picture covers (distance to the nearest edge, in canvas pixels)
+                let ex = (px.min(fw - px) * sx.abs() + 0.5).clamp(0.0, 1.0);
+                let ey = (py.min(fh - py) * sy.abs() + 0.5).clamp(0.0, 1.0);
+                let k = (ex * ey) as f32 * opacity;
+                if k <= 0.0 {
                     continue;
                 }
-            }
-            if let Some(r) = iris {
-                let (ix, iy) = (x as f64 + 0.5 - cw / 2.0, y as f64 + 0.5 - ch / 2.0);
-                if ix * ix + iy * iy > r * r {
-                    continue;
+                let mut s = sample(frame, px, py);
+                if !graded_neutral && s[3] > 0.0 {
+                    let a = s[3];
+                    let g = grade([s[0] / a, s[1] / a, s[2] / a], &props.color);
+                    s = [g[0] * a, g[1] * a, g[2] * a, a];
                 }
+                let s = [s[0] * k, s[1] * k, s[2] * k, s[3] * k];
+                let i = x as usize * 4;
+                let d = [row[i], row[i + 1], row[i + 2], row[i + 3]];
+                row[i..i + 4].copy_from_slice(&blend(props.blend, s, d));
             }
-            let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-            // inverse of (scale, then clockwise rotation): rotate back, then unscale
-            let (ux, uy) = (dx * cos + dy * sin, -dx * sin + dy * cos);
-            let (px, py) = (ux / sx + fw / 2.0, uy / sy + fh / 2.0);
-            // how much of this canvas pixel the picture covers (distance to the nearest edge, in canvas pixels)
-            let ex = (px.min(fw - px) * sx.abs() + 0.5).clamp(0.0, 1.0);
-            let ey = (py.min(fh - py) * sy.abs() + 0.5).clamp(0.0, 1.0);
-            let k = (ex * ey) as f32 * opacity;
-            if k <= 0.0 {
-                continue;
-            }
-            let mut s = sample(frame, px, py);
-            if !graded_neutral && s[3] > 0.0 {
-                let a = s[3];
-                let g = grade([s[0] / a, s[1] / a, s[2] / a], &props.color);
-                s = [g[0] * a, g[1] * a, g[2] * a, a];
-            }
-            let s = [s[0] * k, s[1] * k, s[2] * k, s[3] * k];
-            let i = ((y * canvas.width + x) * 4) as usize;
-            let d = [
-                canvas.data[i],
-                canvas.data[i + 1],
-                canvas.data[i + 2],
-                canvas.data[i + 3],
-            ];
-            canvas.data[i..i + 4].copy_from_slice(&blend(props.blend, s, d));
-        }
-    }
+        });
 }
 
 #[cfg(test)]

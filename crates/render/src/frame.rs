@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
@@ -67,10 +68,14 @@ impl Canvas {
     }
 
     pub fn to_rgba8(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.data.len());
-        for p in self.data.chunks_exact(4) {
-            out.extend([to_srgb8(p[0]), to_srgb8(p[1]), to_srgb8(p[2]), 255]);
-        }
+        let mut out = vec![255u8; self.data.len()];
+        out.par_chunks_mut(4)
+            .zip(self.data.par_chunks(4))
+            .for_each(|(o, p)| {
+                o[0] = to_srgb8(p[0]);
+                o[1] = to_srgb8(p[1]);
+                o[2] = to_srgb8(p[2]);
+            });
         out
     }
 

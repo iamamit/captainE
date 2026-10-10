@@ -103,8 +103,11 @@ fn run(rx: Receiver<Req>, tx: Sender<Frame>, ctx: egui::Context) {
                 _ => false,
             };
             if !reused {
+                // pictures are decoded at the size they will be shown, on the video chip where there is one
                 let opts = RenderOptions {
                     use_proxy: true,
+                    decode_scale: scale,
+                    hw_decode: true,
                     ..RenderOptions::default()
                 };
                 renderer = Renderer::new(&scaled, tl, opts).ok();
