@@ -365,20 +365,20 @@ pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
         app.toggle_track_enabled(track);
     }
     let targeted = !app.untargeted.contains(&track);
+    let tip = if targeted {
+        "Edits at the playhead reach this track (click to leave it alone)"
+    } else {
+        "This track is left alone by splits and range edits (click to include it)"
+    };
     if button(
         ui,
         Glyph::Target,
         targeted,
         &format!("Auto-select {name}"),
-        if targeted {
-            "Edits at the playhead reach this track (click to leave it alone)"
-        } else {
-            "This track is left alone by splits and range edits (click to include it)"
-        },
-    ) {
-        if !app.untargeted.remove(&track) {
-            app.untargeted.insert(track);
-        }
+        tip,
+    ) && !app.untargeted.remove(&track)
+    {
+        app.untargeted.insert(track);
     }
     if t.kind == TrackKind::Audio {
         let r = Rect::from_center_size(pos2(x, y), vec2(18.0, 18.0));
@@ -411,7 +411,7 @@ pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
     }
     // the whole header answers a right click
     let hr = ui.interact(
-        Rect::from_min_max(head.min, pos2(head.right() - 70.0, head.bottom())),
+        Rect::from_min_max(head.min, pos2(head.right() - 92.0, head.bottom())),
         egui::Id::new(("track_head", track)),
         Sense::click(),
     );
