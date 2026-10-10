@@ -860,7 +860,11 @@ pub fn split_at_playhead(app: &mut App) {
     let at = app.playhead;
     let selected = app.selection_tracks();
     let tracks: Vec<Id> = if selected.is_empty() {
-        tl.tracks.iter().map(|t| t.id).collect()
+        tl.tracks
+            .iter()
+            .map(|t| t.id)
+            .filter(|t| !app.untargeted.contains(t))
+            .collect()
     } else {
         selected
     };
@@ -896,7 +900,8 @@ pub fn lift_selection(app: &mut App) {
         if app.selected_clip.is_none() {
             let Some(tl) = app.timeline_id() else { return };
             let (s, e) = (app.time(a.min(b)), app.time(a.max(b)));
-            app.do_plan(|p| edit::lift_range(p, tl, s, e));
+            let skip: Vec<Id> = app.untargeted.iter().copied().collect();
+            app.do_plan(|p| edit::lift_range_except(p, tl, s, e, &skip));
             return;
         }
     }
@@ -916,7 +921,8 @@ pub fn extract_selection(app: &mut App) {
         if app.selected_clip.is_none() {
             let Some(tl) = app.timeline_id() else { return };
             let (s, e) = (app.time(a.min(b)), app.time(a.max(b)));
-            app.do_plan(|p| edit::extract_range(p, tl, s, e));
+            let skip: Vec<Id> = app.untargeted.iter().copied().collect();
+            app.do_plan(|p| edit::extract_range_except(p, tl, s, e, &skip));
             return;
         }
     }

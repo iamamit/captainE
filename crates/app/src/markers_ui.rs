@@ -27,6 +27,8 @@ impl App {
             tick,
             name.unwrap_or_else(|| format!("Marker {n}")),
         );
+        let mut m = m;
+        m.color = self.marker_color;
         let id = m.id;
         self.do_op(Op::AddMarker {
             timeline: tl,

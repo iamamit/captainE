@@ -337,12 +337,23 @@ pub fn clean_gaps(project: &Project, track: Id) -> Result<Option<Op>> {
 }
 
 /// Items of every track of `timeline` that lie inside `[start, end)` after cutting at both ends.
-fn range_items(pl: &mut Planner, timeline: Id, start: i64, end: i64) -> Result<Vec<Id>> {
+fn range_items(
+    pl: &mut Planner,
+    timeline: Id,
+    start: i64,
+    end: i64,
+    skip: &[Id],
+) -> Result<Vec<Id>> {
     let tl = pl
         .project
         .timeline(timeline)
         .ok_or(OpError::NotFound("timeline", timeline))?;
-    let tracks: Vec<Id> = tl.tracks.iter().map(|t| t.id).collect();
+    let tracks: Vec<Id> = tl
+        .tracks
+        .iter()
+        .map(|t| t.id)
+        .filter(|t| !skip.contains(t))
+        .collect();
     let mut inside = Vec::new();
     for track in tracks {
         pl.ensure_cut(track, start)?;
@@ -383,9 +394,20 @@ pub fn extract_range(
     start: RationalTime,
     end: RationalTime,
 ) -> Result<Op> {
+    extract_range_except(project, timeline, start, end, &[])
+}
+
+/// Like [`extract_range`], leaving the tracks in `skip` untouched.
+pub fn extract_range_except(
+    project: &Project,
+    timeline: Id,
+    start: RationalTime,
+    end: RationalTime,
+    skip: &[Id],
+) -> Result<Op> {
     let (s, e) = check_range(project, timeline, start, end)?;
     let mut pl = Planner::new(project);
-    for item in range_items(&mut pl, timeline, s, e)? {
+    for item in range_items(&mut pl, timeline, s, e, skip)? {
         pl.push(Op::RemoveItem { item })?;
     }
     if pl.ops.is_empty() {
@@ -401,9 +423,20 @@ pub fn lift_range(
     start: RationalTime,
     end: RationalTime,
 ) -> Result<Op> {
+    lift_range_except(project, timeline, start, end, &[])
+}
+
+/// Like [`lift_range`], leaving the tracks in `skip` untouched.
+pub fn lift_range_except(
+    project: &Project,
+    timeline: Id,
+    start: RationalTime,
+    end: RationalTime,
+    skip: &[Id],
+) -> Result<Op> {
     let (s, e) = check_range(project, timeline, start, end)?;
     let mut pl = Planner::new(project);
-    for item in range_items(&mut pl, timeline, s, e)? {
+    for item in range_items(&mut pl, timeline, s, e, skip)? {
         let loc = locate(&pl.project, item)?;
         if let Some(c) = pl.project.item(loc).filter(|i| i.is_content()) {
             let with = Item::Gap(Gap {

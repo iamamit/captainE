@@ -34,6 +34,8 @@ pub enum Glyph {
     Film,
     Wave,
     List,
+    Target,
+    Chevron,
 }
 
 /// Draw `g` inside `rect` (a square works best) in `ink`.
@@ -323,6 +325,22 @@ pub fn draw(p: &Painter, rect: Rect, g: Glyph, ink: Color32) {
             }
             line(pt(9.5, 5.0), pt(9.5, 19.0));
             line(pt(14.5, 5.0), pt(14.5, 19.0));
+        }
+        Glyph::Target => {
+            outline(vec![
+                pt(4.0, 4.0),
+                pt(20.0, 4.0),
+                pt(20.0, 20.0),
+                pt(4.0, 20.0),
+            ]);
+            poly(
+                vec![pt(8.5, 8.5), pt(15.5, 8.5), pt(15.5, 15.5), pt(8.5, 15.5)],
+                ink,
+            );
+        }
+        Glyph::Chevron => {
+            line(pt(6.0, 9.0), pt(12.0, 15.0));
+            line(pt(18.0, 9.0), pt(12.0, 15.0));
         }
         Glyph::List => {
             for y in [7.0f32, 12.0, 17.0] {

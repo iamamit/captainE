@@ -221,6 +221,10 @@ pub struct App {
     /// How tall each track's row is drawn
     pub row_sizes: std::collections::HashMap<Id, crate::track_ui::RowSize>,
     pub track_rename: Option<(Id, String)>,
+    /// Tracks switched out of auto-select: splits and range edits leave them alone
+    pub untargeted: std::collections::HashSet<Id>,
+    /// The colour new markers get (index into `Marker::COLORS`)
+    pub marker_color: u8,
     pub add_tracks_dialog: Option<(captaine_model::TrackKind, u32)>,
     pub prefs: crate::keymap::Prefs,
     /// Where preferences are saved (the user's file unless a test says otherwise)
@@ -352,6 +356,8 @@ impl App {
             lut_folder: None,
             row_sizes: Default::default(),
             track_rename: None,
+            untargeted: Default::default(),
+            marker_color: 0,
             add_tracks_dialog: None,
             keymap: crate::keymap::Keymap::from_overrides(&prefs.keys),
             prefs,

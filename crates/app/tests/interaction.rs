@@ -2472,3 +2472,66 @@ fn a_track_can_be_renamed_and_several_added_at_once() {
         .count();
     assert_eq!(audio, 2, "all three go in one undo step");
 }
+
+#[test]
+fn auto_select_marker_colours_and_the_captions_track() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    // switching V1 out of auto-select makes a split at the playhead leave it alone
+    app_mut(&mut h).set_playhead(40);
+    h.get_by_label("Auto-select V1").click();
+    settle(&mut h);
+    assert!(!app(&h).untargeted.is_empty());
+    let before = layout(app(&h));
+    app_mut(&mut h).selected_clip = None;
+    captaine_app::ui::split_at_playhead(app_mut(&mut h));
+    settle(&mut h);
+    assert_eq!(layout(app(&h)), before, "V1 was not cut");
+    h.get_by_label("Auto-select V1").click();
+    settle(&mut h);
+    captaine_app::ui::split_at_playhead(app_mut(&mut h));
+    settle(&mut h);
+    assert_eq!(layout(app(&h)).len(), before.len() + 1, "now it is");
+    // a marked range lifted with V1 left out removes nothing
+    let v1_id = v1(app(&h)).id;
+    app_mut(&mut h).untargeted.insert(v1_id);
+    app_mut(&mut h).mark_in = Some(10);
+    app_mut(&mut h).mark_out = Some(30);
+    app_mut(&mut h).selected_clip = None;
+    let n = layout(app(&h)).len();
+    captaine_app::ui::lift_selection(app_mut(&mut h));
+    assert_eq!(layout(app(&h)).len(), n);
+    app_mut(&mut h).untargeted.clear();
+    captaine_app::ui::lift_selection(app_mut(&mut h));
+    assert_ne!(layout(app(&h)), before);
+    // new markers take the chosen colour
+    app_mut(&mut h).marker_color = 3;
+    let id = app_mut(&mut h).add_marker(Some(5), None).unwrap();
+    let m = app(&h).markers().into_iter().find(|m| m.id == id).unwrap();
+    assert_eq!(m.color, 3);
+    // the Captions track
+    let right = app(&h).timeline().unwrap().tracks[0].id;
+    let g = app(&h).timeline_layout.clone().unwrap();
+    right_click(&mut h, pos2(40.0, g.row_center(right).unwrap()));
+    h.get_by_label("Add Subtitle Track").click();
+    settle(&mut h);
+    let cap = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .find(|t| t.name == "Captions")
+        .map(|t| (t.kind, t.color));
+    assert_eq!(cap, Some((TrackKind::Video, Some([0xe8, 0xc5, 0x3a]))));
+    app_mut(&mut h).add_subtitle_track();
+    let count = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .filter(|t| t.name == "Captions")
+        .count();
+    assert_eq!(count, 1, "only one");
+}

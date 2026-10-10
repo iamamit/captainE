@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::glyphs::{self, Glyph};
 use crate::theme::{self, ui_font};
 
-pub const HEADER_W: f32 = 132.0;
+pub const HEADER_W: f32 = 152.0;
 
 /// How tall a track's row is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,6 +132,32 @@ impl App {
         } else {
             at > 0
         }
+    }
+
+    /// The track captions are written to (a video track named "Captions"), made if it is not there.
+    pub fn add_subtitle_track(&mut self) {
+        let Some(tl) = self.timeline().cloned() else {
+            return;
+        };
+        if tl
+            .tracks
+            .iter()
+            .any(|t| t.name == "Captions" && t.kind == TrackKind::Video)
+        {
+            return self.toast("There is a Captions track already", false);
+        }
+        let index = tl
+            .tracks
+            .iter()
+            .rposition(|t| t.kind == TrackKind::Video)
+            .map_or(0, |i| i + 1);
+        let mut t = Track::new(Id::new(), "Captions", TrackKind::Video);
+        t.color = Some([0xe8, 0xc5, 0x3a]);
+        self.do_op(Op::AddTrack {
+            timeline: tl.id,
+            index,
+            track: t,
+        });
     }
 
     pub fn delete_track(&mut self, id: Id) {
@@ -338,6 +364,22 @@ pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
     ) {
         app.toggle_track_enabled(track);
     }
+    let targeted = !app.untargeted.contains(&track);
+    if button(
+        ui,
+        Glyph::Target,
+        targeted,
+        &format!("Auto-select {name}"),
+        if targeted {
+            "Edits at the playhead reach this track (click to leave it alone)"
+        } else {
+            "This track is left alone by splits and range edits (click to include it)"
+        },
+    ) {
+        if !app.untargeted.remove(&track) {
+            app.untargeted.insert(track);
+        }
+    }
     if t.kind == TrackKind::Audio {
         let r = Rect::from_center_size(pos2(x, y), vec2(18.0, 18.0));
         let resp = ui
@@ -388,6 +430,10 @@ pub fn menu(app: &mut App, ui: &mut Ui, track: Id) {
     }
     if ui.button("Add Tracks…").clicked() {
         app.add_tracks_dialog = Some((t.kind, 2));
+        ui.close();
+    }
+    if ui.button("Add Subtitle Track").clicked() {
+        app.add_subtitle_track();
         ui.close();
     }
     ui.separator();
@@ -482,6 +528,20 @@ pub fn menu(app: &mut App, ui: &mut Ui, track: Id) {
             .clicked()
     {
         app.toggle_track_solo(track);
+        ui.close();
+    }
+    let targeted = !app.untargeted.contains(&track);
+    if ui
+        .button(if targeted {
+            "Leave Track Out of Auto-select"
+        } else {
+            "Include Track in Auto-select"
+        })
+        .clicked()
+    {
+        if !app.untargeted.remove(&track) {
+            app.untargeted.insert(track);
+        }
         ui.close();
     }
     if ui.button("Select All Clips on Track").clicked() {
