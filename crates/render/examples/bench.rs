@@ -21,7 +21,7 @@ fn main() {
         let ms = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
         println!("{name:<28} {ms:7.1} ms  ({:.0} fps)", 1000.0 / ms);
     };
-    let (f1, p1) = (frame.clone(), props.clone());
+    let (f1, p1) = (frame.clone(), props);
     time(
         "one layer, 4K",
         5,
@@ -30,7 +30,7 @@ fn main() {
             draw_layer(&mut c, &f1, &p1);
         }),
     );
-    let (f2, mut p2) = (frame.clone(), props.clone());
+    let (f2, mut p2) = (frame.clone(), props);
     p2.transform.rotation_deg = 4.0;
     p2.opacity = 0.6;
     time(
@@ -60,7 +60,7 @@ fn main() {
         );
     }
     let f4 = frame.clone();
-    let mut graded = props.clone();
+    let mut graded = props;
     graded.color.exposure = 0.3;
     graded.color.saturation = 1.2;
     time(
