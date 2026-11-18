@@ -18,14 +18,18 @@ See [CHANGELOG.md](CHANGELOG.md) for what is in it and [docs/STATUS.md](docs/STA
 
 ## Install and run
 
-Needs [Rust](https://rustup.rs) (stable) and FFmpeg (`ffmpeg` and `ffprobe` on PATH, e.g. `brew install ffmpeg`).
+One command. The first run installs what is missing (Rust, FFmpeg, and on Linux the window and audio libraries),
+builds captainE and opens it; after that it just starts.
 
 ```
 git clone https://github.com/iamamit/captainE.git && cd captainE
-cargo run --release -p captaine-app            # the editor window
-sh tools/bundle.sh                              # macOS: build dist/captainE.app
-cargo run --release -p captaine-cli -- --help   # the command line
+./run.sh                 # or: make
+./run.sh my-project.json # open a project
+./run.sh cli --help      # the command line
 ```
+
+Prefer a ready app? Download the macOS zip from [Releases](https://github.com/iamamit/captainE/releases).
+`make bundle` builds `dist/captainE.app` yourself; `make test` runs the tests.
 
 CoCaptain needs either Claude Code signed in on the machine or `ANTHROPIC_API_KEY` set
 (or a key in `~/.captaine/anthropic_key`).
