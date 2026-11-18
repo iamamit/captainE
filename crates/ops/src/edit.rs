@@ -252,7 +252,7 @@ pub fn append(project: &Project, track: Id, clip: Clip) -> Op {
     }
 }
 
-/// Drag a clip to `at` on `to_track` (overwrite semantics, like dragging in Premiere/Resolve).
+/// Drag a clip to `at` on `to_track` (overwrite semantics, as editors usually drag).
 pub fn move_item(project: &Project, item: Id, to_track: Id, at: RationalTime) -> Result<Op> {
     let loc = locate(project, item)?;
     let moving = project.item(loc).expect("located").clone();

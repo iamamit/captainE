@@ -1,5 +1,5 @@
 //! Final Cut Pro XML (version 1.9), export only: one spine from the first video track, further tracks as
-//! connected clips on lanes. Enough to open the cut in Final Cut Pro, DaVinci Resolve or Premiere.
+//! connected clips on lanes. Enough to open the cut in other editors that read FCPXML.
 
 use captaine_model::{Id, Item, Project, TrackKind};
 use captaine_time::RationalTime;
