@@ -41,7 +41,20 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
       - name: Test
+        if: runner.os != 'macOS'
         timeout-minutes: 25
         run: cargo test --workspace --no-fail-fast -- --test-threads=4
+      # The hosted Mac runner (3 cores, 7 GB) stopped responding during the parallel run: one crate at a
+      # time, one test at a time, so a stall names its crate in the log.
+      - name: Test (macOS, crate by crate)
+        if: runner.os == 'macOS'
+        timeout-minutes: 30
+        run: |
+          for c in $(ls crates); do
+            echo "::group::captaine-$c"; date
+            cargo test -p captaine-$c --no-fail-fast -- --test-threads=1 || echo "FAILED captaine-$c" >> failed.txt
+            echo "::endgroup::"
+          done
+          if [ -f failed.txt ]; then cat failed.txt; exit 1; fi
       - name: Clippy
         run: cargo clippy --workspace --all-targets
