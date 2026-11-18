@@ -77,3 +77,5 @@ every build.
 
 captainE is written from scratch and distributed free (ad-supported). Read [CONTRIBUTING.md](CONTRIBUTING.md) before
 changing anything: it covers what may and may not go into the code. [LICENSING.md](LICENSING.md) lists every tool used and its license.
+
+Copyright © 2026 Amit Gautam. All rights reserved; see [LICENSE](LICENSE). Free to download and use.
