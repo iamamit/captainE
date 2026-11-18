@@ -15,10 +15,12 @@ fn have_ffmpeg() -> bool {
     Command::new("ffmpeg").arg("-version").output().is_ok()
 }
 
-/// 2 s of FFmpeg's test pattern, 320x180 at 30 fps.
+/// 2 s of FFmpeg's test pattern, 320x180 at 30 fps. Made once per test run: the tests run in parallel, and one
+/// must not read the file while another is still writing it.
 fn pattern_video() -> PathBuf {
-    let p = std::env::temp_dir().join(format!("captaine-look-{}.mp4", std::process::id()));
-    if !p.exists() {
+    static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("captaine-look-{}.mp4", std::process::id()));
         let ok = Command::new("ffmpeg")
             .args([
                 "-y",
@@ -35,8 +37,9 @@ fn pattern_video() -> PathBuf {
             .unwrap()
             .success();
         assert!(ok);
-    }
-    p
+        p
+    })
+    .clone()
 }
 
 /// A 1280x720 project with the pattern on V1 for its whole 2 s; returns it and the clip id.
