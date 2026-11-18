@@ -595,7 +595,9 @@ impl ToolBox {
         let mut added = Vec::new();
         for p in &paths {
             let path = std::path::Path::new(p);
-            let canon = path.canonicalize().map_err(|e| format!("{p}: {e}"))?;
+            // the pool keeps plain paths (no Windows `\\?\` prefix), so compare like with like
+            let canon =
+                captaine_media::plain_path(path.canonicalize().map_err(|e| format!("{p}: {e}"))?);
             if let Some(m) = self
                 .project()
                 .media
