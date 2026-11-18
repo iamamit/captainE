@@ -263,10 +263,33 @@ pub enum TransitionKind {
     Iris,
     /// The next picture grows from the middle while it fades in
     ZoomIn,
+    /// A fast camera whip: both pictures swish sideways with motion blur (left: the move goes to the left)
+    WhipLeft,
+    WhipRight,
+    /// Both pictures blur as one dissolves into the other
+    BlurDissolve,
+    /// Fades to white, then in from white
+    DipToWhite,
+    /// A quick bright flash hides the cut
+    Flash,
+    /// Zooms fast into the last picture and out of the next, with zoom blur
+    CrossZoom,
+    /// Spins out of the last picture and into the next, with spin blur
+    Spin,
+    /// The next picture sweeps in like a clock hand
+    ClockWipe,
+    /// The next picture opens from the middle outwards
+    BarnDoors,
+    /// Digital break-up around the cut
+    Glitch,
+    /// A warm wash of light over a dissolve
+    LightLeak,
+    /// The next picture appears brightest parts first
+    LumaFade,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 12] = [
+    pub const ALL: [TransitionKind; 24] = [
         TransitionKind::Dissolve,
         TransitionKind::Dip,
         TransitionKind::WipeRight,
@@ -279,6 +302,18 @@ impl TransitionKind {
         TransitionKind::SlideRight,
         TransitionKind::Iris,
         TransitionKind::ZoomIn,
+        TransitionKind::WhipLeft,
+        TransitionKind::WhipRight,
+        TransitionKind::BlurDissolve,
+        TransitionKind::DipToWhite,
+        TransitionKind::Flash,
+        TransitionKind::CrossZoom,
+        TransitionKind::Spin,
+        TransitionKind::ClockWipe,
+        TransitionKind::BarnDoors,
+        TransitionKind::Glitch,
+        TransitionKind::LightLeak,
+        TransitionKind::LumaFade,
     ];
 
     pub fn label(self) -> &'static str {
@@ -295,6 +330,86 @@ impl TransitionKind {
             TransitionKind::SlideRight => "Slide right",
             TransitionKind::Iris => "Iris",
             TransitionKind::ZoomIn => "Zoom in",
+            TransitionKind::WhipLeft => "Whip left",
+            TransitionKind::WhipRight => "Whip right",
+            TransitionKind::BlurDissolve => "Blur dissolve",
+            TransitionKind::DipToWhite => "Dip to white",
+            TransitionKind::Flash => "Flash",
+            TransitionKind::CrossZoom => "Cross zoom",
+            TransitionKind::Spin => "Spin",
+            TransitionKind::ClockWipe => "Clock wipe",
+            TransitionKind::BarnDoors => "Barn doors",
+            TransitionKind::Glitch => "Glitch",
+            TransitionKind::LightLeak => "Light leak",
+            TransitionKind::LumaFade => "Luma fade",
+        }
+    }
+
+    /// Stable lowercase name for tools and files.
+    pub fn key(self) -> &'static str {
+        match self {
+            TransitionKind::Dissolve => "dissolve",
+            TransitionKind::Dip => "dip",
+            TransitionKind::WipeRight => "wipe_right",
+            TransitionKind::WipeLeft => "wipe_left",
+            TransitionKind::PushLeft => "push_left",
+            TransitionKind::PushRight => "push_right",
+            TransitionKind::WipeDown => "wipe_down",
+            TransitionKind::WipeUp => "wipe_up",
+            TransitionKind::SlideLeft => "slide_left",
+            TransitionKind::SlideRight => "slide_right",
+            TransitionKind::Iris => "iris",
+            TransitionKind::ZoomIn => "zoom_in",
+            TransitionKind::WhipLeft => "whip_left",
+            TransitionKind::WhipRight => "whip_right",
+            TransitionKind::BlurDissolve => "blur_dissolve",
+            TransitionKind::DipToWhite => "dip_to_white",
+            TransitionKind::Flash => "flash",
+            TransitionKind::CrossZoom => "cross_zoom",
+            TransitionKind::Spin => "spin",
+            TransitionKind::ClockWipe => "clock_wipe",
+            TransitionKind::BarnDoors => "barn_doors",
+            TransitionKind::Glitch => "glitch",
+            TransitionKind::LightLeak => "light_leak",
+            TransitionKind::LumaFade => "luma_fade",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<TransitionKind> {
+        TransitionKind::ALL.into_iter().find(|t| t.key() == k)
+    }
+
+    /// One line on what it looks like.
+    pub fn about(self) -> &'static str {
+        match self {
+            TransitionKind::Dissolve => "The next picture fades in over the last",
+            TransitionKind::Dip => "Fades to black, then in from black",
+            TransitionKind::WipeRight => "A hard edge sweeps left to right",
+            TransitionKind::WipeLeft => "A hard edge sweeps right to left",
+            TransitionKind::PushLeft => "The next picture pushes the last out to the left",
+            TransitionKind::PushRight => "The next picture pushes the last out to the right",
+            TransitionKind::WipeDown => "A hard edge sweeps down",
+            TransitionKind::WipeUp => "A hard edge sweeps up",
+            TransitionKind::SlideLeft => "The next picture slides in from the right over the last",
+            TransitionKind::SlideRight => "The next picture slides in from the left over the last",
+            TransitionKind::Iris => "A circle opens from the middle",
+            TransitionKind::ZoomIn => "The next picture grows from the middle while fading in",
+            TransitionKind::WhipLeft => "A fast camera whip to the left with motion blur",
+            TransitionKind::WhipRight => "A fast camera whip to the right with motion blur",
+            TransitionKind::BlurDissolve => "Both pictures blur as one dissolves into the other",
+            TransitionKind::DipToWhite => "Fades to white, then in from white",
+            TransitionKind::Flash => "A quick bright flash hides the cut",
+            TransitionKind::CrossZoom => {
+                "Zooms fast into the last picture and out of the next, with zoom blur"
+            }
+            TransitionKind::Spin => {
+                "Spins out of the last picture and into the next, with spin blur"
+            }
+            TransitionKind::ClockWipe => "The next picture sweeps in like a clock hand",
+            TransitionKind::BarnDoors => "The next picture opens from the middle outwards",
+            TransitionKind::Glitch => "Digital break-up around the cut",
+            TransitionKind::LightLeak => "A warm wash of light over a dissolve",
+            TransitionKind::LumaFade => "The next picture appears brightest parts first",
         }
     }
 }
@@ -594,6 +709,10 @@ pub struct TitleStyle {
     /// Drop shadow distance, pixels on a 1080-pixel-tall canvas (0 = none)
     #[serde(default)]
     pub shadow: f64,
+    /// Soft dark halo centred behind the letters, blur in pixels on a 1080-pixel-tall canvas (0 = none).
+    /// Keeps text readable over bright or busy pictures without an offset drop shadow.
+    #[serde(default)]
+    pub glow: f64,
     /// Extra space between letters, pixels on a 1080-pixel-tall canvas
     #[serde(default)]
     pub tracking: f64,
@@ -616,6 +735,7 @@ impl TitleStyle {
             outline: 0.0,
             outline_color: [0, 0, 0],
             shadow: 0.0,
+            glow: 0.0,
             tracking: 0.0,
             align: TextAlign::Center,
         }
@@ -984,11 +1104,20 @@ impl Clip {
     pub fn audio_at(&self, local: i64) -> AudioProps {
         audio_with_anim(&self.audio, &self.anim, local)
     }
+
+    /// Effects at `local` ticks into the clip, with keyframed settings applied.
+    pub fn effects_at(&self, local: i64) -> std::borrow::Cow<'_, [crate::Effect]> {
+        crate::effects_at(&self.effects, &self.anim, local)
+    }
 }
 
 impl Title {
     pub fn video_at(&self, local: i64) -> VideoProps {
         video_with_anim(&self.video, &self.anim, local)
+    }
+
+    pub fn effects_at(&self, local: i64) -> std::borrow::Cow<'_, [crate::Effect]> {
+        crate::effects_at(&self.effects, &self.anim, local)
     }
 }
 

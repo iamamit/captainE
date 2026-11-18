@@ -17,7 +17,7 @@ pub enum Action {
     Transition,
     Import,
     Export,
-    Copilot,
+    CoCaptain,
     Duplicate,
     SelectAll,
     Snap,
@@ -139,7 +139,7 @@ pub const ACTIONS: [(Action, &str, Chord); 22] = [
     (Action::Transition, "Add / remove transition", cmd(Key::T)),
     (Action::Import, "Import media", cmd(Key::I)),
     (Action::Export, "Export", cmd(Key::E)),
-    (Action::Copilot, "Copilot", cmd(Key::J)),
+    (Action::CoCaptain, "CoCaptain", cmd(Key::J)),
     (Action::Duplicate, "Duplicate", cmd(Key::D)),
     (Action::SelectAll, "Select all", cmd(Key::A)),
     (Action::Snap, "Snapping on / off", plain(Key::S)),
@@ -180,6 +180,7 @@ pub enum PanelKind {
     Pool,
     Inspector,
     Timeline,
+    CoCaptain,
 }
 
 impl Prefs {
@@ -189,6 +190,7 @@ impl Prefs {
             PanelKind::Pool => &mut self.pool_w,
             PanelKind::Inspector => &mut self.inspector_w,
             PanelKind::Timeline => &mut self.timeline_h,
+            PanelKind::CoCaptain => &mut self.cocaptain_w,
         };
         if (*slot - size).abs() < 1.5 || !size.is_finite() {
             return false;
@@ -284,6 +286,16 @@ pub struct Prefs {
     pub snapshot_minutes: u32,
     /// Height of proxy files, in pixels
     pub proxy_height: u32,
+    /// Make proxies on their own, in the background, for footage bigger than HD (4K camera files scrub and
+    /// play far more smoothly from a proxy)
+    #[serde(default)]
+    pub auto_proxies: bool,
+    /// How sharp the viewer is while playing (when stopped it always shows the original at full quality)
+    #[serde(default)]
+    pub playback_quality: PlaybackQuality,
+    /// Play from proxy files instead of the originals (where proxies exist)
+    #[serde(default)]
+    pub use_proxies: bool,
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
     /// Panel sizes the user dragged them to, kept between runs
@@ -293,6 +305,61 @@ pub struct Prefs {
     pub inspector_w: f32,
     #[serde(default = "default_timeline_h")]
     pub timeline_h: f32,
+    /// Effects and transitions starred in the effects library, by key ("glow", "t:flash")
+    #[serde(default)]
+    pub favourites: Vec<String>,
+    /// CoCaptain may show Claude small frames of the timeline and footage when it needs to look (off until the
+    /// user turns it on in the panel)
+    #[serde(default)]
+    pub cocaptain_frames: bool,
+    /// Width of the docked CoCaptain chat
+    #[serde(default = "default_cocaptain_w")]
+    pub cocaptain_w: f32,
+}
+
+/// Viewer resolution while playing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaybackQuality {
+    /// As many pixels as the viewer shows (up to 1920 wide): sharp on screen and smooth
+    #[default]
+    Auto,
+    /// The timeline's own size (4K for a 4K timeline)
+    Full,
+    Half,
+    Quarter,
+}
+
+impl PlaybackQuality {
+    pub const ALL: [PlaybackQuality; 4] = [
+        PlaybackQuality::Auto,
+        PlaybackQuality::Full,
+        PlaybackQuality::Half,
+        PlaybackQuality::Quarter,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PlaybackQuality::Auto => "Auto",
+            PlaybackQuality::Full => "Full",
+            PlaybackQuality::Half => "1/2",
+            PlaybackQuality::Quarter => "1/4",
+        }
+    }
+
+    /// Picture width while playing, for a viewer `viewer_px` physical pixels wide and a canvas `canvas` wide.
+    /// Half and quarter are of what Auto shows, so they are always lighter than Auto (a half of a 4K timeline would
+    /// still be more pixels than a small viewer can show, and look and play no differently).
+    pub fn width(self, viewer_px: u32, canvas: u32) -> u32 {
+        let canvas = canvas.max(1);
+        let auto = viewer_px.min(1920).min(canvas);
+        let w = match self {
+            PlaybackQuality::Auto => auto,
+            PlaybackQuality::Full => canvas,
+            PlaybackQuality::Half => auto / 2,
+            PlaybackQuality::Quarter => auto / 4,
+        };
+        w.clamp(160.min(canvas), canvas)
+    }
 }
 
 fn default_pool_w() -> f32 {
@@ -300,6 +367,9 @@ fn default_pool_w() -> f32 {
 }
 fn default_inspector_w() -> f32 {
     340.0
+}
+fn default_cocaptain_w() -> f32 {
+    400.0
 }
 fn default_timeline_h() -> f32 {
     300.0
@@ -311,10 +381,16 @@ impl Default for Prefs {
             ui_scale: 1.0,
             snapshot_minutes: 5,
             proxy_height: 540,
+            auto_proxies: false,
+            playback_quality: PlaybackQuality::Auto,
+            use_proxies: false,
             keys: BTreeMap::new(),
             pool_w: default_pool_w(),
+            favourites: Vec::new(),
             inspector_w: default_inspector_w(),
             timeline_h: default_timeline_h(),
+            cocaptain_frames: false,
+            cocaptain_w: default_cocaptain_w(),
         }
     }
 }
@@ -364,6 +440,28 @@ impl Prefs {
         self.pool_w = self.pool_w.clamp(340.0, 640.0);
         self.inspector_w = self.inspector_w.clamp(340.0, 600.0);
         self.timeline_h = self.timeline_h.clamp(180.0, 900.0);
+        self.cocaptain_w = if self.cocaptain_w.is_finite() {
+            self.cocaptain_w.clamp(320.0, 720.0)
+        } else {
+            default_cocaptain_w()
+        };
         self
+    }
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::PlaybackQuality as Q;
+
+    #[test]
+    fn lower_settings_are_always_fewer_pixels() {
+        // a 2160-wide vertical reel in a small viewer, a 4K timeline in a big one, an HD timeline
+        for (viewer, canvas) in [(640, 2160), (1600, 3840), (1300, 1920), (2400, 1280)] {
+            let w = |q: Q| q.width(viewer, canvas);
+            assert!(w(Q::Full) >= w(Q::Auto), "{viewer} {canvas}");
+            assert!(w(Q::Auto) > w(Q::Half), "{viewer} {canvas}");
+            assert!(w(Q::Half) > w(Q::Quarter), "{viewer} {canvas}");
+            assert_eq!(w(Q::Full), canvas);
+        }
     }
 }

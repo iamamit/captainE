@@ -3,6 +3,7 @@
 //! with marks on the timeline as well it is a four-point edit and the clip is re-timed to fit.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use captaine_model::{Clip, Id, Item, MediaRef, Retime, TrackKind};
 use captaine_ops::edit;
@@ -46,12 +47,15 @@ impl SourceMonitor {
         std::thread::Builder::new()
             .name("source-monitor".into())
             .spawn(move || {
+                // the decoder stays open between requests: stepping or playing through a file reads on
+                // instead of starting a new decoder for every frame
+                let mut open: Option<(Id, VideoReader)> = None;
                 while let Ok(mut req) = jobs.recv() {
                     // only the latest request matters while scrubbing
                     while let Ok(newer) = jobs.try_recv() {
                         req = newer;
                     }
-                    if let Some(image) = decode(&req.media, req.frame) {
+                    if let Some(image) = decode(&mut open, &req.media, req.frame) {
                         let _ = done_tx.send(Shown {
                             media: req.media.id,
                             frame: req.frame,
@@ -100,14 +104,48 @@ impl SourceMonitor {
     }
 }
 
-fn decode(m: &MediaRef, frame: i64) -> Option<egui::ColorImage> {
+/// How wide the source monitor's picture is decoded: about what the panel shows.
+const SOURCE_WIDTH: u32 = 960;
+
+fn decode(
+    open: &mut Option<(Id, VideoReader)>,
+    m: &MediaRef,
+    frame: i64,
+) -> Option<egui::ColorImage> {
     if !m.has_video {
         return None;
     }
     let len = m.duration?;
     let frame = frame.clamp(0, (len.value - 1).max(0));
-    let mut r = VideoReader::open(&m.path, m.width, m.height, len.rate, frame).ok()?;
-    let f = r.frame(frame).ok()?.thumbnail(960);
+    if !open.as_ref().is_some_and(|(id, _)| *id == m.id) {
+        // decode at the size shown: from the proxy when there is one (small, every frame a keyframe, quickest
+        // in software), else from the original on the video chip
+        let w = m.width.clamp(2, SOURCE_WIDTH) & !1;
+        let h = ((m.height as u64 * w as u64 / m.width.max(1) as u64) as u32).max(2) & !1;
+        let (path, hw, space) = match &m.proxy {
+            Some(p) if std::path::Path::new(p).exists() => {
+                (p.clone(), false, captaine_model::InputSpace::Rec709)
+            }
+            _ => (m.path.clone(), true, captaine_media::detect_space(&m.path)),
+        };
+        let r = VideoReader::open_in(&path, w, h, len.rate, frame, hw, space)
+            .or_else(|_| VideoReader::open_in(&path, w, h, len.rate, frame, false, space))
+            .ok()?;
+        *open = Some((m.id, r));
+    }
+    let (_, r) = open.as_mut()?;
+    let f = match r.frame(frame) {
+        Ok(f) => f,
+        Err(_) => {
+            *open = None;
+            return None;
+        }
+    };
+    let f = if f.width > SOURCE_WIDTH {
+        Arc::new(f.thumbnail(SOURCE_WIDTH))
+    } else {
+        f
+    };
     Some(egui::ColorImage::from_rgba_unmultiplied(
         [f.width as usize, f.height as usize],
         &f.rgba,

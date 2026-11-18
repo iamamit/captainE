@@ -321,7 +321,7 @@ fn kind_name(k: ChangeKind) -> &'static str {
 
 fn pump(side: &mut Side, ctx: &Context, name: &str, tick: i64) {
     if side.requested != Some(tick) && side.worker.in_flight < 2 {
-        side.worker.request(tick);
+        side.worker.request(tick, true);
         side.requested = Some(tick);
     }
     while let Some(f) = side.worker.poll() {

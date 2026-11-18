@@ -574,3 +574,125 @@ fn multicam_cuts_switch_between_angles_and_undo_as_one_step() {
     }
     assert_eq!(ed.project(), &before);
 }
+
+fn gap_at(ed: &Editor, track: u128, start: i64) -> Id {
+    let (tl, ti) = ed.project().find_track(id(track)).unwrap();
+    let tr = &ed.project().timeline(tl).unwrap().tracks[ti];
+    tr.items
+        .iter()
+        .zip(tr.item_starts())
+        .find(|(it, s)| *s == start && !it.is_content())
+        .map(|(it, _)| it.id())
+        .unwrap_or_else(|| panic!("no gap at {start}"))
+}
+
+#[test]
+fn deleting_a_gap_closes_it_on_every_track() {
+    let mut ed = editor();
+    for (n, s) in [(10, 0), (11, 100), (12, 200)] {
+        put(&mut ed, V1, clip(n, s, 30));
+    }
+    run(&mut ed, |p| edit::lift(p, id(11))); // V1: clip 0..30, gap 30..60, clip 60..90
+    put(&mut ed, V2, clip(13, 300, 20)); // V2: clip 0..20
+    run(&mut ed, |p| {
+        edit::overwrite(p, id(V2), t(70), clip(14, 400, 20))
+    }); // gap 20..70, clip 70..90
+    let before = ed.snapshot();
+
+    let gap = gap_at(&ed, V1, 30);
+    run(&mut ed, |p| edit::close_gap(p, gap));
+    assert_eq!(spans(&ed, V1), [(0, 30, false), (30, 30, false)]);
+    // V2 was empty over 30..60 too, so it closes by the same amount and stays in sync
+    assert_eq!(
+        spans(&ed, V2),
+        [(0, 20, false), (20, 20, true), (40, 20, false)]
+    );
+    ed.undo();
+    assert_eq!(ed.project(), &before);
+
+    // something on another track inside the gap: refused, nothing changes
+    run(&mut ed, |p| {
+        edit::overwrite(p, id(V2), t(40), clip(15, 500, 10))
+    });
+    assert!(edit::close_gap(ed.project(), gap_at(&ed, V1, 30)).is_err());
+    // and a clip is not a gap
+    assert!(edit::close_gap(ed.project(), id(10)).is_err());
+}
+
+#[test]
+fn trim_in_place_leaves_the_rest_of_the_track_alone() {
+    // c10 [0,30) gap [30,40) c11 [40,70) gap [70,80) c12 [80,100)
+    let mut ed = editor();
+    put(&mut ed, V1, clip(10, 0, 30));
+    let at = |v| t(v);
+    run(&mut ed, |p| {
+        edit::overwrite(p, id(V1), at(40), clip(11, 100, 30))
+    });
+    run(&mut ed, |p| {
+        edit::overwrite(p, id(V1), at(80), clip(12, 200, 20))
+    });
+    let before = spans(&ed, V1);
+    // shorten the out edge: a gap opens, the next clip stays at 80
+    run(&mut ed, |p| {
+        edit::trim_in_place(p, id(11), Edge::Out, t(-10))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        vec![
+            (0, 30, false),
+            (30, 10, true),
+            (40, 20, false),
+            (60, 20, true),
+            (80, 20, false)
+        ]
+    );
+    // lengthen it back into the gap
+    run(&mut ed, |p| {
+        edit::trim_in_place(p, id(11), Edge::Out, t(15))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        vec![
+            (0, 30, false),
+            (30, 10, true),
+            (40, 35, false),
+            (75, 5, true),
+            (80, 20, false)
+        ]
+    );
+    // exactly filling the gap, then one frame more is refused
+    run(&mut ed, |p| edit::trim_in_place(p, id(11), Edge::Out, t(5)));
+    assert_eq!(spans(&ed, V1)[3], (80, 20, false));
+    assert!(edit::trim_in_place(ed.project(), id(11), Edge::Out, t(1)).is_err());
+    // in edge: shorten opens a gap before, the clip's end stays put
+    run(&mut ed, |p| edit::trim_in_place(p, id(11), Edge::In, t(10)));
+    assert_eq!(
+        spans(&ed, V1),
+        vec![
+            (0, 30, false),
+            (30, 20, true),
+            (50, 30, false),
+            (80, 20, false)
+        ]
+    );
+    assert_eq!(clip_at(&ed, V1, 50).source_start, t(110));
+    // in edge: lengthen into the gap before
+    run(&mut ed, |p| {
+        edit::trim_in_place(p, id(11), Edge::In, t(-20))
+    });
+    assert_eq!(
+        spans(&ed, V1),
+        vec![(0, 30, false), (30, 50, false), (80, 20, false)]
+    );
+    assert!(edit::trim_in_place(ed.project(), id(11), Edge::In, t(-1)).is_err());
+    // the last item can grow freely and shrink without leaving a trailing gap
+    run(&mut ed, |p| {
+        edit::trim_in_place(p, id(12), Edge::Out, t(-5))
+    });
+    assert_eq!(spans(&ed, V1).last(), Some(&(80, 15, false)));
+    // undo returns the original layout
+    for _ in 0..6 {
+        assert!(ed.undo());
+    }
+    assert_eq!(spans(&ed, V1), before);
+}

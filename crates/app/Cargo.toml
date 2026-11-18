@@ -20,6 +20,7 @@ captaine-ops.workspace = true
 captaine-project.workspace = true
 captaine-media.workspace = true
 captaine-render.workspace = true
+png.workspace = true
 captaine-audio.workspace = true
 captaine-export.workspace = true
 captaine-agent.workspace = true
@@ -32,6 +33,7 @@ captaine-vision.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
+arboard.workspace = true
 cpal.workspace = true
 
 [dev-dependencies]
@@ -40,3 +42,9 @@ serde_json.workspace = true
 clack-host = { git = "https://github.com/prokopyl/clack", features = ["clack-plugin"] }
 clack-plugin = { git = "https://github.com/prokopyl/clack" }
 clack-plugin-gain = { git = "https://github.com/prokopyl/clack" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+

@@ -3,7 +3,7 @@
 //! Each function *plans* against the current project and returns one [`Op`] (usually a
 //! transaction), so a gesture is a single undo step and an agent can call it like any other op.
 
-use captaine_model::{Clip, Gap, Id, Item, Project};
+use captaine_model::{Clip, Gap, Grade, Id, Item, Project, Timeline, Track, TrackKind};
 use captaine_time::RationalTime;
 
 use crate::{apply, Edge, Op, OpError};
@@ -298,6 +298,93 @@ pub fn roll(project: &Project, left: Id, right: Id, delta: RationalTime) -> Resu
     Ok(pl.finish("Roll"))
 }
 
+/// Trim one edge of an item without moving anything else on the track: shortening leaves a gap,
+/// lengthening uses up the gap next to it. Fails when lengthening would run into another item.
+/// (A plain [`Op::Trim`] is the ripple trim: everything after the item shifts.)
+pub fn trim_in_place(project: &Project, item: Id, edge: Edge, delta: RationalTime) -> Result<Op> {
+    let loc = locate(project, item)?;
+    let t = &project.timeline(loc.timeline).expect("located").tracks[loc.track];
+    let track = t.id;
+    let d = delta.value;
+    let rate = delta.rate;
+    let mut pl = Planner::new(project);
+    if d == 0 {
+        return Err(OpError::OutOfRange("nothing to trim"));
+    }
+    let gap = |len: i64| {
+        Item::Gap(Gap {
+            id: Id::new(),
+            duration: RationalTime::new(len, rate),
+        })
+    };
+    match edge {
+        Edge::Out => {
+            let next = t.items.get(loc.index + 1);
+            if d < 0 {
+                pl.push(Op::Trim { item, edge, delta })?;
+                if next.is_some() {
+                    pl.push(Op::InsertItem {
+                        track,
+                        index: loc.index + 1,
+                        item: gap(-d),
+                    })?;
+                }
+            } else {
+                match next {
+                    None => {}
+                    Some(Item::Gap(g)) if g.duration.value >= d => {
+                        if g.duration.value == d {
+                            pl.push(Op::RemoveItem { item: g.id })?;
+                        } else {
+                            pl.push(Op::Trim {
+                                item: g.id,
+                                edge: Edge::In,
+                                delta,
+                            })?;
+                        }
+                    }
+                    Some(_) => return Err(OpError::OutOfRange("another item is in the way")),
+                }
+                pl.push(Op::Trim { item, edge, delta })?;
+            }
+        }
+        Edge::In => {
+            if d > 0 {
+                pl.push(Op::Trim { item, edge, delta })?;
+                pl.push(Op::InsertItem {
+                    track,
+                    index: loc.index,
+                    item: gap(d),
+                })?;
+            } else {
+                let prev = loc.index.checked_sub(1).and_then(|i| t.items.get(i));
+                match prev {
+                    Some(Item::Gap(g)) if g.duration.value >= -d => {
+                        if g.duration.value == -d {
+                            pl.push(Op::RemoveItem { item: g.id })?;
+                        } else {
+                            pl.push(Op::Trim {
+                                item: g.id,
+                                edge: Edge::Out,
+                                delta,
+                            })?;
+                        }
+                    }
+                    None => {
+                        return Err(OpError::OutOfRange(
+                            "cannot place before the start of the timeline",
+                        ))
+                    }
+                    Some(_) => return Err(OpError::OutOfRange("another item is in the way")),
+                }
+                pl.push(Op::Trim { item, edge, delta })?;
+            }
+        }
+    }
+    pl.clean_gaps(track)?;
+    Ok(pl.finish("Trim"))
+}
+
 /// Move an item along the track by `delta`, taking time from one neighbour and giving it to the other.
 pub fn slide(project: &Project, item: Id, delta: RationalTime) -> Result<Op> {
     let loc = locate(project, item)?;
@@ -416,6 +503,47 @@ pub fn extract_range_except(
     Ok(pl.finish("Extract range"))
 }
 
+/// Close the gap `gap` (a ripple delete of the empty span): everything after it on every track moves left by
+/// the gap's length, so tracks stay in sync. Refused when another track has something inside that span, since
+/// closing it there would cut into it.
+pub fn close_gap(project: &Project, gap: Id) -> Result<Op> {
+    let loc = locate(project, gap)?;
+    if !matches!(project.item(loc), Some(Item::Gap(_))) {
+        return Err(OpError::OutOfRange("that is not a gap"));
+    }
+    let (tl_id, ti) = (loc.timeline, loc.track);
+    let tl = project.timeline(tl_id).expect("located");
+    let track = tl.tracks[ti].as_ref();
+    let (s, e) = track
+        .items
+        .iter()
+        .zip(track.item_starts())
+        .find(|(it, _)| it.id() == gap)
+        .map(|(it, st)| (st, st + it.duration().value))
+        .expect("located");
+    for t in &tl.tracks {
+        let busy = t
+            .items
+            .iter()
+            .zip(t.item_starts())
+            .any(|(it, st)| it.is_content() && st < e && st + it.duration().value > s);
+        if busy {
+            return Err(OpError::OutOfRange(
+                "another track has something in this gap; closing it would cut into it",
+            ));
+        }
+    }
+    let span = |v| RationalTime::new(v, tl.rate);
+    let tracks: Vec<Id> = tl.tracks.iter().map(|t| t.id).collect();
+    let mut pl = Planner::new(project);
+    pl.push(extract_range(project, tl_id, span(s), span(e))?)?;
+    // the cuts can leave two gap pieces side by side on the other tracks
+    for track in tracks {
+        pl.clean_gaps(track)?;
+    }
+    Ok(pl.finish("Delete gap"))
+}
+
 /// Replace the contents of `[start, end)` on every track with gaps (nothing moves).
 pub fn lift_range(
     project: &Project,
@@ -461,4 +589,170 @@ pub fn lift_range_except(
         pl.clean_gaps(track)?;
     }
     Ok(pl.finish("Lift range"))
+}
+
+/// Add `count` tracks of `kind` to a timeline, after the last track of that kind (for video: above it), as one
+/// transaction. Names follow the V1/V2.. A1/A2.. pattern, skipping names already taken, unless `name` is given
+/// (then the tracks are called `name`, `name 2`, ...).
+pub fn add_tracks(tl: &Timeline, kind: TrackKind, count: usize, name: Option<&str>) -> Result<Op> {
+    let count = count.clamp(1, 16);
+    let first = match kind {
+        TrackKind::Video => tl
+            .tracks
+            .iter()
+            .rposition(|t| t.kind == TrackKind::Video)
+            .map_or(0, |i| i + 1),
+        TrackKind::Audio => tl.tracks.len(),
+    };
+    let mut taken: Vec<String> = tl.tracks.iter().map(|t| t.name.to_lowercase()).collect();
+    let prefix = if kind == TrackKind::Video { "V" } else { "A" };
+    let mut n = tl.tracks.iter().filter(|t| t.kind == kind).count();
+    let mut ops = Vec::new();
+    for (k, index) in (first..first + count).enumerate() {
+        let wanted = match name.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(base) if k == 0 && !taken.contains(&base.to_lowercase()) => base.to_string(),
+            Some(base) => (2..)
+                .map(|i| format!("{base} {i}"))
+                .find(|c| !taken.contains(&c.to_lowercase()))
+                .expect("a free name"),
+            None => loop {
+                n += 1;
+                let c = format!("{prefix}{n}");
+                if !taken.contains(&c.to_lowercase()) {
+                    break c;
+                }
+            },
+        };
+        taken.push(wanted.to_lowercase());
+        ops.push(Op::AddTrack {
+            timeline: tl.id,
+            index,
+            track: Track::new(Id::new(), wanted, kind),
+        });
+    }
+    Ok(Op::Transaction {
+        description: format!(
+            "Add {count} {} track(s)",
+            if kind == TrackKind::Video {
+                "video"
+            } else {
+                "audio"
+            }
+        ),
+        ops,
+    })
+}
+
+/// The ops that give `clip` the grade `g` (its colour settings and colour effects; other effects stay). Colour
+/// keyframes are removed, as they would override the grade.
+pub fn set_grade(clip: &Clip, g: &Grade) -> Vec<Op> {
+    let (video, effects) = g.applied_to(clip);
+    let mut ops = Vec::new();
+    if video != clip.video {
+        ops.push(Op::SetVideo {
+            item: clip.id,
+            video,
+        });
+    }
+    if effects != clip.effects {
+        ops.push(Op::SetEffects {
+            item: clip.id,
+            effects,
+        });
+    }
+    for prop in captaine_model::COLOR_PROPERTIES {
+        if clip.anim.0.contains_key(*prop) {
+            ops.push(Op::SetAnimTrack {
+                item: clip.id,
+                prop: prop.to_string(),
+                keys: Vec::new(),
+            });
+        }
+    }
+    ops
+}
+
+#[cfg(test)]
+mod add_tracks_tests {
+    use super::*;
+    use captaine_time::Rational;
+
+    fn tl() -> Timeline {
+        let mut t = Timeline::new(Id::new(), "T", Rational::FPS_30);
+        for (n, k) in [
+            ("V1", TrackKind::Video),
+            ("V2", TrackKind::Video),
+            ("A1", TrackKind::Audio),
+        ] {
+            t.tracks
+                .push(std::sync::Arc::new(Track::new(Id::new(), n, k)));
+        }
+        t
+    }
+
+    fn added(op: &Op) -> Vec<(usize, String)> {
+        let Op::Transaction { ops, .. } = op else {
+            panic!("transaction")
+        };
+        ops.iter()
+            .map(|o| match o {
+                Op::AddTrack { index, track, .. } => (*index, track.name.clone()),
+                _ => panic!("add track"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn video_goes_above_the_last_video_track_with_the_next_name() {
+        let op = add_tracks(&tl(), TrackKind::Video, 2, None).unwrap();
+        assert_eq!(added(&op), vec![(2, "V3".into()), (3, "V4".into())]);
+    }
+
+    #[test]
+    fn audio_goes_last_and_named_tracks_get_numbers_when_taken() {
+        assert_eq!(
+            added(&add_tracks(&tl(), TrackKind::Audio, 1, None).unwrap()),
+            vec![(3, "A2".into())]
+        );
+        assert_eq!(
+            added(&add_tracks(&tl(), TrackKind::Audio, 2, Some("SFX")).unwrap()),
+            vec![(3, "SFX".into()), (4, "SFX 2".into())]
+        );
+        assert_eq!(
+            added(&add_tracks(&tl(), TrackKind::Video, 1, Some("v1")).unwrap()),
+            vec![(2, "v1 2".into())]
+        );
+    }
+
+    #[test]
+    fn applies_and_undoes() {
+        let mut p = Project::new(captaine_model::ProjectSettings {
+            frame_rate: Rational::FPS_30,
+            width: 1920,
+            height: 1080,
+            sample_rate: 48_000,
+        });
+        let t = tl();
+        let id = t.id;
+        p = apply::apply(
+            &p,
+            &Op::AddTimeline {
+                timeline: t.clone(),
+            },
+        )
+        .unwrap()
+        .0;
+        let op = add_tracks(&t, TrackKind::Video, 1, Some("Titles")).unwrap();
+        let (q, undo) = apply::apply(&p, &op).unwrap();
+        let names: Vec<_> = q
+            .timeline(id)
+            .unwrap()
+            .tracks
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, ["V1", "V2", "Titles", "A1"]);
+        let back = apply::apply(&q, &undo).unwrap().0;
+        assert_eq!(back.timeline(id).unwrap().tracks.len(), 3);
+    }
 }

@@ -8,11 +8,16 @@
 mod anim;
 pub mod anim_presets;
 mod effects;
+mod grade;
 mod id;
 pub mod presets;
 mod project;
 
 pub use anim::{ease, is_property, value_at, Anim, Interp, Keyframe, PROPERTIES};
-pub use effects::{check_effects, parse_polygon, polygon_text, Effect, EffectKind, ParamDef};
+pub use effects::{
+    check_effects, effects_at, fx_property, param_key, parse_fx_property, parse_polygon,
+    polygon_text, Category, Effect, EffectKind, ParamDef,
+};
+pub use grade::{is_color_effect, Grade, COLOR_PROPERTIES};
 pub use id::Id;
 pub use project::*;

@@ -126,8 +126,9 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("reveal", "Reveal"),
 ];
 
+/// A built-in property, or an effect setting (`fx.<kind>.<setting>`, see [`crate::fx_property`]).
 pub fn is_property(name: &str) -> bool {
-    PROPERTIES.iter().any(|(k, _)| *k == name)
+    PROPERTIES.iter().any(|(k, _)| *k == name) || crate::parse_fx_property(name).is_some()
 }
 
 impl Anim {

@@ -34,7 +34,6 @@ pub enum Tool {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
-    Media,
     Cut,
     Edit,
     Color,
@@ -64,7 +63,6 @@ pub enum Bin {
     All,
     Footage,
     Audio,
-    Graphics,
     Stills,
 }
 
@@ -104,6 +102,12 @@ pub enum Drag {
         item: Id,
         edge: captaine_ops::Edge,
         delta: i64,
+    },
+    /// A selection box from `origin` (screen point) across empty timeline space: everything it touches is
+    /// selected, on top of `keep` (what was selected before, when shift was held).
+    Marquee {
+        origin: egui::Pos2,
+        keep: Vec<Id>,
     },
 }
 
@@ -153,7 +157,6 @@ pub struct ExportJob {
 }
 
 pub struct ExportDialog {
-    pub open: bool,
     pub codec: captaine_export::Codec,
     pub crf: u32,
     pub path: Option<PathBuf>,
@@ -169,6 +172,12 @@ pub struct App {
     pub session: Session,
     pub path: Option<PathBuf>,
     pub dirty_since: Option<Instant>,
+    /// What the project file looked like (modified time, length) when this window last read or wrote it;
+    /// a different stamp means another program (the CLI, a script) changed it.
+    pub disk_stamp: Option<(std::time::SystemTime, u64)>,
+    last_disk_check: Instant,
+    /// the file changed on disk while there were unsaved edits here; warned once
+    disk_conflict_warned: bool,
 
     // view state
     pub page: Page,
@@ -179,12 +188,16 @@ pub struct App {
     pub search: String,
     pub selected_media: Option<Id>,
     pub selected_clip: Option<Id>,
+    /// A gap picked on the timeline (click it, then delete to close it); only while no clip is selected
+    pub selected_gap: Option<Id>,
     /// Other items selected together with `selected_clip` (shift-click)
     pub extra_selected: Vec<Id>,
     pub clipboard: Vec<crate::clipboard::Copied>,
     pub snap: bool,
     pub pps: f32,
     pub scroll: f32,
+    /// How far the tracks are scrolled down, in points, when there are more than the timeline can show
+    pub track_scroll: f32,
     pub drag: Drag,
     pub mark_in: Option<i64>,
     pub mark_out: Option<i64>,
@@ -214,6 +227,9 @@ pub struct App {
     play_origin: Instant,
     play_origin_secs: f64,
     pub last_requested: Option<i64>,
+    /// whether the last picture asked for was a still (stopped) one
+    last_still: bool,
+    sent_quality: Option<crate::worker::Quality>,
     audio: Option<AudioEngine>,
     pub voiceover: Option<crate::voiceover::Recorder>,
     /// The folder the LUT browser lists
@@ -289,6 +305,11 @@ pub struct App {
     /// Smoothed peak levels: one per timeline track, then the master
     pub meters: Vec<f32>,
     pub scope_kind: crate::scopes::ScopeKind,
+    /// The Color page's own state (copied grade, before/after, its scopes)
+    pub color: crate::color_page::State,
+    pub effects: crate::effects_page::State,
+    /// Counts the pictures copied into `scope_src`, so anything made from it knows when it is stale
+    pub scope_serial: u64,
     pub scope_tex: Option<TextureHandle>,
     pub scope_src: Option<egui::ColorImage>,
     pub scope_dirty: bool,
@@ -304,6 +325,7 @@ pub struct App {
 
 impl App {
     pub fn new(ctx: &Context, session: Session, path: Option<PathBuf>) -> App {
+        let disk_stamp = path.as_deref().and_then(Self::stamp_of);
         theme::apply(ctx);
         let prefs = crate::keymap::Prefs::load();
         ctx.set_zoom_factor(prefs.ui_scale);
@@ -312,6 +334,9 @@ impl App {
             session,
             path,
             dirty_since: None,
+            disk_stamp,
+            last_disk_check: Instant::now(),
+            disk_conflict_warned: false,
             page: Page::Edit,
             tool: Tool::Select,
             pool_tab: PoolTab::Media,
@@ -320,11 +345,13 @@ impl App {
             search: String::new(),
             selected_media: None,
             selected_clip: None,
+            selected_gap: None,
             extra_selected: Vec::new(),
             clipboard: Vec::new(),
             snap: true,
             pps: 40.0,
             scroll: 0.0,
+            track_scroll: 0.0,
             drag: Drag::None,
             mark_in: None,
             mark_out: None,
@@ -332,7 +359,6 @@ impl App {
             show_shortcuts: false,
             new_project: None,
             export: ExportDialog {
-                open: false,
                 codec: captaine_export::Codec::H264,
                 crf: 18,
                 path: None,
@@ -359,6 +385,8 @@ impl App {
             play_origin: Instant::now(),
             play_origin_secs: 0.0,
             last_requested: None,
+            last_still: false,
+            sent_quality: None,
             audio: AudioEngine::new(),
             voiceover: None,
             lut_folder: None,
@@ -407,6 +435,9 @@ impl App {
             source: crate::source::SourceMonitor::new(ctx.clone()),
             meters: Vec::new(),
             scope_kind: crate::scopes::ScopeKind::Waveform,
+            color: crate::color_page::State::default(),
+            effects: crate::effects_page::State::default(),
+            scope_serial: 0,
             scope_tex: None,
             scope_src: None,
             scope_dirty: true,
@@ -424,7 +455,20 @@ impl App {
 
     // ---- project access -------------------------------------------------------------------
 
-    /// Show `project` in the viewer instead of the real one (Copilot previews); `None` goes back.
+    /// Switch page. Leaving the Color page ends its before/after view.
+    pub fn set_page(&mut self, page: Page) {
+        if self.page == Page::Color && page != Page::Color && self.color.before_after {
+            self.color.before_after = false;
+            self.set_preview(None);
+        }
+        if matches!(page, Page::Color | Page::Effects) {
+            // the scopes (and the effect previews) need a frame straight away
+            self.last_requested = None;
+        }
+        self.page = page;
+    }
+
+    /// Show `project` in the viewer instead of the real one (CoCaptain previews); `None` goes back.
     pub fn set_preview(&mut self, project: Option<Project>) {
         self.preview_override = project;
         self.sent_revision = None;
@@ -456,6 +500,8 @@ impl App {
 
     pub fn replace_session(&mut self, session: Session, path: Option<PathBuf>) {
         self.pause();
+        // edits from the last moments are not saved yet: keep them before the project goes away
+        self.autosave(true);
         self.session = session;
         self.active_timeline = None;
         self.ensure_active();
@@ -471,6 +517,66 @@ impl App {
         self.copilot.suggestion = None;
         self.queue_media_jobs();
         self.fit_on_start();
+        self.note_disk_stamp();
+    }
+
+    fn stamp_of(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+        let m = std::fs::metadata(path).ok()?;
+        Some((m.modified().ok()?, m.len()))
+    }
+
+    /// Remember the project file as it is now, so only changes made by others count as outside edits.
+    pub fn note_disk_stamp(&mut self) {
+        self.disk_stamp = self.path.as_deref().and_then(Self::stamp_of);
+        self.disk_conflict_warned = false;
+    }
+
+    /// Pick up edits another program made to the open project file (the CLI, a script, CoCaptain run headless):
+    /// reload it in place, keeping the playhead and the view. With unsaved edits here, warn instead of
+    /// throwing them away. Returns true when the project was reloaded.
+    pub fn check_disk(&mut self, force: bool) -> bool {
+        if !force && self.last_disk_check.elapsed() < Duration::from_millis(500) {
+            return false;
+        }
+        self.last_disk_check = Instant::now();
+        let Some(path) = self.path.clone() else {
+            return false;
+        };
+        let now = Self::stamp_of(&path);
+        if now.is_none() || now == self.disk_stamp {
+            return false;
+        }
+        if self.dirty_since.is_some() || self.compare.is_some() {
+            if !self.disk_conflict_warned {
+                self.disk_conflict_warned = true;
+                self.toast(
+                    "The project file was changed by another program; your unsaved edits here will replace it when saved".to_string(),
+                    true,
+                );
+            }
+            return false;
+        }
+        match Session::load(&path) {
+            Ok(s) => {
+                let (playhead, selected) = (self.playhead, self.selected_clip);
+                self.pause();
+                self.session = s;
+                self.session_changed();
+                self.queue_media_jobs();
+                self.playhead = playhead.clamp(0, self.duration_ticks().max(0));
+                if selected.is_some() && self.selected_span().is_none() {
+                    self.selected_clip = None;
+                }
+                self.note_disk_stamp();
+                self.toast(
+                    "Updated: the project was changed outside this window".to_string(),
+                    false,
+                );
+                true
+            }
+            // a writer may be half-way through; try again on the next check
+            Err(_) => false,
+        }
     }
 
     /// The whole project was swapped for another version (branch switch, merge): refresh everything that was derived from it.
@@ -551,6 +657,81 @@ impl App {
                     _ => None,
                 })
         })
+    }
+
+    /// Any item of the active sequence by id, with its track and start tick.
+    pub fn item_with_start(&self, id: Id) -> Option<(Item, Id, i64)> {
+        let tl = self.timeline()?;
+        tl.tracks.iter().find_map(|t| {
+            t.items
+                .iter()
+                .zip(t.item_starts())
+                .find(|(it, _)| it.id() == id)
+                .map(|(it, st)| (it.clone(), t.id, st))
+        })
+    }
+
+    /// Add an effect at the end of a clip's or title's stack; the toast-ready outcome.
+    pub fn add_effect(&mut self, id: Id, kind: EffectKind) -> Result<String, String> {
+        let (item, _, _) = self.item_with_start(id).ok_or("that item is gone")?;
+        let (name, mut effects, has_audio) = match &item {
+            Item::Clip(c) => {
+                let a = self
+                    .project()
+                    .media
+                    .get(&c.media)
+                    .is_some_and(|m| m.has_audio);
+                (c.name.clone(), c.effects.clone(), a)
+            }
+            Item::Title(t) => (t.name.clone(), t.effects.clone(), false),
+            Item::Gap(_) => return Err("drop effects on a clip or a title".into()),
+        };
+        if kind.is_audio() && !has_audio {
+            return Err(format!("{} works on sound; {name} has none", kind.label()));
+        }
+        if effects.len() >= 16 {
+            return Err("an item can hold 16 effects".into());
+        }
+        effects.push(Effect::new(kind));
+        self.end_merge();
+        self.session
+            .apply(Op::SetEffects { item: id, effects })
+            .map_err(|e| e.to_string())?;
+        self.dirty_since.get_or_insert_with(Instant::now);
+        Ok(format!("Added {} to {name}", kind.label()))
+    }
+
+    /// Put a transition of `kind` on the cut before clip `id`, one second long (or as long as the clips allow).
+    pub fn set_transition_kind(&mut self, id: Id, kind: TransitionKind) -> Result<String, String> {
+        let (item, track, _) = self.item_with_start(id).ok_or("that clip is gone")?;
+        let Item::Clip(clip) = item else {
+            return Err("transitions go between two clips".into());
+        };
+        let tl = self.timeline().ok_or("no sequence")?;
+        let tr = tl.tracks.iter().find(|t| t.id == track).ok_or("no track")?;
+        let at = tr
+            .items
+            .iter()
+            .position(|i| i.id() == id)
+            .ok_or("no clip")?;
+        let prev = at
+            .checked_sub(1)
+            .and_then(|i| tr.items[i].as_clip())
+            .ok_or("a transition needs a clip right before this one")?;
+        let len = (self.fps().round() as i64)
+            .min(2 * prev.duration.value.min(clip.duration.value))
+            .max(2);
+        let t = captaine_model::Transition {
+            kind,
+            duration: clip.transition.map_or(len, |t| t.duration),
+        };
+        captaine_ops::check_transition(self.project(), id, &t).map_err(|e| e.to_string())?;
+        self.end_merge();
+        self.do_op(Op::SetTransition {
+            item: id,
+            transition: Some(t),
+        });
+        Ok(format!("{} before {}", kind.label(), clip.name))
     }
 
     /// The selected title with its track and start tick, if the selection is a title.
@@ -748,9 +929,22 @@ impl App {
             .filter(|m| !self.queued_media.contains(&m.id) && m.nested_timeline().is_none())
             .cloned()
             .collect();
+        let mut heavy = Vec::new();
         for m in todo {
             self.queued_media.insert(m.id);
+            // big camera files (4K, often long-GOP HEVC) take ~0.3 s per jump when scrubbing; a proxy makes
+            // that ~0.07 s, so it is made in the background on its own unless turned off in Settings
+            if self.prefs.auto_proxies
+                && m.has_video
+                && m.proxy.is_none()
+                && (m.width > 1920 || m.height > 1080)
+            {
+                heavy.push(m.id);
+            }
             self.jobs.queue(m);
+        }
+        if !heavy.is_empty() && self.path.is_some() {
+            self.make_proxies(&heavy, self.prefs.proxy_height);
         }
     }
 
@@ -919,14 +1113,34 @@ impl App {
             }
             self.prune_selection();
         }
-        if self.playhead != self.program_tick || self.last_requested != Some(self.playhead) {
+        // viewer quality: pictures as wide as the viewer's real pixels (rounded so resizing the window does not
+        // rebuild the renderer all the time); stopped frames always from the originals at that size
+        let canvas_w = self.canvas().0.max(1);
+        let viewer_px =
+            ((self.central_rect.width() * ctx.pixels_per_point()) as u32 / 64 * 64).max(320);
+        let q = crate::worker::Quality {
+            play_width: self.prefs.playback_quality.width(viewer_px, canvas_w),
+            still_width: viewer_px.min(canvas_w),
+            proxies: self.prefs.use_proxies,
+        };
+        if self.sent_quality != Some(q) {
+            self.worker.set_quality(q);
+            self.sent_quality = Some(q);
+            self.last_requested = None;
+        }
+        let still = !self.playing;
+        if self.playhead != self.program_tick
+            || self.last_requested != Some(self.playhead)
+            || self.last_still != still
+        {
             let busy = self.worker.in_flight >= 2;
-            if self.last_requested != Some(self.playhead)
+            if (self.last_requested != Some(self.playhead) || self.last_still != still)
                 && !(self.playing && busy)
                 && self.timeline_id().is_some()
             {
-                self.worker.request(self.playhead);
+                self.worker.request(self.playhead, still);
                 self.last_requested = Some(self.playhead);
+                self.last_still = still;
             }
         }
         while let Some(f) = self.worker.poll() {
@@ -935,9 +1149,11 @@ impl App {
             }
             match f.image {
                 Ok(img) => {
-                    if self.scopes_open {
+                    if self.scopes_open || matches!(self.page, Page::Color | Page::Effects) {
                         self.scope_src = Some(img.clone());
+                        self.scope_serial += 1;
                         self.scope_dirty = true;
+                        self.color.dirty = true;
                     }
                     match &mut self.program {
                         Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -984,6 +1200,8 @@ impl App {
             match self.session.save(p) {
                 Ok(()) => {
                     self.dirty_since = None;
+                    self.disk_stamp = Self::stamp_of(p);
+                    self.disk_conflict_warned = false;
                     // a timed copy every five minutes of work, the newest twenty kept
                     if self.prefs.snapshot_minutes > 0 {
                         let _ =
@@ -1021,30 +1239,57 @@ impl App {
         self.poll_vision_jobs();
         self.update_meters(ctx);
         self.sync_worker(ctx);
+        // files dropped on the CoCaptain chat go with the next message; anywhere else they are imported
+        let at = ctx.input(|i| i.pointer.latest_pos());
+        let on_chat = self.show_copilot
+            && matches!((self.copilot.rect, at), (Some(r), Some(p)) if r.contains(p));
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            self.import(vec![f.path().to_path_buf()]);
+            let path = f.path().to_path_buf();
+            if on_chat {
+                copilot::attach_file(self, path);
+            } else {
+                self.import(vec![path]);
+            }
         }
         if self.compare.is_none() {
             ui::handle_shortcuts(self, ctx);
         }
         ui::top_bar(self, root);
+        if self.compare.is_none() {
+            // docked first, so it runs the full height on the right of every page
+            copilot::dock(self, root);
+        }
         if self.compare.is_some() {
             crate::compare::show(self, root);
         } else {
-            timeline::panel(self, root);
-            ui::media_pool(self, root);
-            ui::inspector(self, root);
-            viewer::central(self, root);
+            if self.page == Page::Color {
+                crate::color_page::show(self, root);
+            } else if self.page == Page::Effects {
+                crate::effects_page::show(self, root);
+            } else if self.page == Page::Deliver {
+                crate::deliver_page::show(self, root);
+            } else {
+                timeline::panel(self, root);
+                ui::media_pool(self, root);
+                ui::inspector(self, root);
+                viewer::central(self, root);
+            }
         }
-        copilot::show(self, ctx);
+        if ui::rendering(self) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         crate::branches_ui::popup(self, ctx, self.branch_pill);
         ui::dialogs(self, ctx);
         ui::toasts(self, ctx);
         self.toasts
             .retain(|t| t.born.elapsed() < Duration::from_secs(5));
         self.autosave(false);
+        self.check_disk(false);
         if self.playing || !self.toasts.is_empty() || self.dirty_since.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
+        } else {
+            // keep looking at the project file while idle
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
     }
 

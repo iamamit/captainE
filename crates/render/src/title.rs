@@ -32,6 +32,7 @@ pub fn render_title(t: &Title, width: u32, height: u32) -> Frame8 {
         outline: t.style.outline as f32 * k,
         outline_rgb: t.style.outline_color,
         shadow: t.style.shadow as f32 * k,
+        glow: t.style.glow as f32 * k,
     };
     with_look(look, || match t.style.template {
         TitleTemplate::LowerThird => lower_third(&mut f, t, w, h, s),
@@ -124,12 +125,22 @@ fn centered(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
     let has_sub = !t.subtitle.trim().is_empty();
     let sub_size = s * 0.42;
     let (asc, _) = ascent_descent(s);
-    let total = asc + if has_sub { s * 0.3 + sub_size } else { 0.0 };
-    let base = (h - total) / 2.0 + asc;
-    let x = aligned_x(t, w * 0.07, w * 0.93, text_width(&t.text, s, true));
+    // long text wraps inside the frame (a tall 9:16 frame is narrow)
+    let lines = wrap(&t.text, s, w * 0.86, true);
+    let step = s * 1.12;
+    let n = lines.len() as f32;
+    let total = asc + step * (n - 1.0) + if has_sub { s * 0.3 + sub_size } else { 0.0 };
+    let first = (h - total) / 2.0 + asc;
     let off = (s * 0.025).max(1.0);
-    draw_text(f, &t.text, x + off, base + off, s, [0, 0, 0], 0.5, true); // soft shadow
-    draw_text(f, &t.text, x, base, s, t.style.color, 1.0, true);
+    for (i, line) in lines.iter().enumerate() {
+        let base = first + step * i as f32;
+        let x = aligned_x(t, w * 0.07, w * 0.93, text_width(line, s, true));
+        if t.style.shadow <= 0.0 {
+            // the template's own light shadow; a title with a shadow set gets the blurred one from draw_text instead
+            draw_text(f, line, x + off, base + off, s, [0, 0, 0], 0.5, true);
+        }
+        draw_text(f, line, x, base, s, t.style.color, 1.0, true);
+    }
     if has_sub {
         let sx = aligned_x(
             t,
@@ -137,7 +148,7 @@ fn centered(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
             w * 0.93,
             text_width(&t.subtitle, sub_size, false),
         );
-        let sb = base + s * 0.3 + sub_size * 0.8;
+        let sb = first + step * (n - 1.0) + s * 0.3 + sub_size * 0.8;
         draw_text(
             f,
             &t.subtitle,
@@ -159,32 +170,42 @@ fn caption(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
         &t.text
     };
     let (asc, desc) = ascent_descent(s);
-    let tw = text_width(text, s, false);
     let (pad_x, pad_y) = (s * 0.6, s * 0.3);
-    let box_h = asc + desc + pad_y * 2.0;
+    // wrap so the pill stays inside the frame; it grows upwards from its bottom line
+    let lines = wrap(text, s, w * 0.9 - pad_x * 2.0, false);
+    let tw = lines
+        .iter()
+        .map(|l| text_width(l, s, false))
+        .fold(0.0, f32::max);
+    let step = (asc + desc) * 1.05;
+    let box_h = asc + desc + step * (lines.len() as f32 - 1.0) + pad_y * 2.0;
     let y1 = h * 0.91;
     let y0 = y1 - box_h;
     let x0 = (w - tw) / 2.0 - pad_x;
+    let radius = (asc + desc + pad_y * 2.0) / 2.0;
     fill_rounded_rect(
         f,
         x0,
         y0,
         x0 + tw + pad_x * 2.0,
         y1,
-        box_h / 2.0,
+        radius,
         [0, 0, 0],
         0.62,
     );
-    draw_text(
-        f,
-        text,
-        x0 + pad_x,
-        y0 + pad_y + asc,
-        s,
-        t.style.color,
-        1.0,
-        false,
-    );
+    for (i, line) in lines.iter().enumerate() {
+        let lx = (w - text_width(line, s, false)) / 2.0;
+        draw_text(
+            f,
+            line,
+            lx,
+            y0 + pad_y + asc + step * i as f32,
+            s,
+            t.style.color,
+            1.0,
+            false,
+        );
+    }
 }
 
 fn minimal(f: &mut Frame8, t: &Title, w: f32, h: f32, s: f32) {
@@ -581,6 +602,24 @@ mod tests {
         assert!(((x0 + x1) as f32 / 2.0 - 960.0).abs() < 6.0);
         assert!(y0 > 850 && y1 < 1010);
         assert!(x1 - x0 > 300);
+    }
+
+    #[test]
+    fn long_text_wraps_inside_a_tall_frame() {
+        let words = "Arre, woh ungli hai, bread nahi! Bhai thoda toh chhod de";
+        for template in [TitleTemplate::Caption, TitleTemplate::Centered] {
+            let mut t = title(template, words, "");
+            t.style.size = 90.0;
+            let (x0, y0, x1, y1) = bounds(&render_title(&t, 1080, 1920)).unwrap();
+            assert!(
+                x0 > 0 && x1 < 1079,
+                "{template:?} spills off the sides: {x0}..{x1}"
+            );
+            assert!(
+                y1 - y0 > 150,
+                "{template:?} should have wrapped onto several lines"
+            );
+        }
     }
 
     #[test]

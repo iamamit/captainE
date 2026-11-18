@@ -1,4 +1,4 @@
-//! The branch workflow through the window: switcher, history, compare, merge, and Copilot's review branches.
+//! The branch workflow through the window: switcher, history, compare, merge, and CoCaptain's review branches.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -490,7 +490,7 @@ fn copilot_can_put_its_edit_on_a_branch_that_you_then_review_and_merge() {
         a.session.log(&branch.name).unwrap()[0].author,
         captaine_ops::Author::Agent("copilot".into())
     );
-    // open the review from Copilot's button and merge it
+    // open the review from CoCaptain's button and merge it
     h.get_by_label_contains("Review agent/tighten").click();
     settle(&mut h);
     assert!(app(&h).compare.as_ref().is_some_and(|c| c.is_merge()));

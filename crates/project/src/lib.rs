@@ -2,7 +2,7 @@
 //!
 //! A project is a [`Repo`] (commits and branches) plus *working edits*: the operations made since the last
 //! commit, held in an [`Editor`] so undo and redo work. Committing turns them into a commit on the current branch;
-//! switching branch, merging and Copilot's branch edits commit them first, so nothing is ever lost.
+//! switching branch, merging and CoCaptain's branch edits commit them first, so nothing is ever lost.
 //!
 //! The file is JSON: the repo plus the working edits. Files from before branches (version 1) open as a project
 //! with one branch, `main`, whose working edits are the old log.
@@ -516,7 +516,7 @@ impl Session {
     }
 
     /// Put `ops` (built on the current working state) into a new branch of their own, without switching to it.
-    /// This is how Copilot's suggestions are kept for review. Returns the branch name.
+    /// This is how CoCaptain's suggestions are kept for review. Returns the branch name.
     pub fn commit_to_new_branch(
         &mut self,
         wanted: &str,
@@ -727,7 +727,7 @@ pub fn time_ago(secs: u64) -> String {
 pub fn author_label(a: &Author) -> String {
     match a {
         Author::User => "You".into(),
-        Author::Agent(n) if n == "copilot" => "Copilot".into(),
+        Author::Agent(n) if n == "copilot" => "CoCaptain".into(),
         Author::Agent(n) | Author::Script(n) => n.clone(),
         Author::Merge => "Merge".into(),
     }

@@ -668,6 +668,7 @@ pub fn controls(app: &mut App, ui: &mut Ui) {
         });
     }
     row(ui, "Shadow", &mut t.style.shadow, 0.0..=60.0, 0.0, 0, " px");
+    row(ui, "Glow", &mut t.style.glow, 0.0..=80.0, 0.0, 0, " px");
     row(
         ui,
         "Letter spacing",

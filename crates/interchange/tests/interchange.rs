@@ -333,6 +333,29 @@ fn edl_round_trip_keeps_cuts_and_speed() {
     let err = edl::import(&e2, tid2, &text).unwrap_err();
     assert!(err.contains("Alpha Clip.mp4"), "{err}");
     assert!(edl::import(&fresh, tid, "garbage").is_err());
+    // tracks are numbered within their kind, as other editors label them
+    assert!(text.contains("* TRACK: A1"), "{text}");
+    // reading the list back onto its own timeline keeps what a list cannot carry
+    let mut faded = p.clone();
+    let first = faded.timeline(tl_id(&p)).unwrap().tracks[0].items[0].id();
+    let op = Op::SetVideo {
+        item: first,
+        video: VideoProps {
+            opacity: 0.5,
+            ..Default::default()
+        },
+    };
+    faded = apply(&faded, &op).unwrap().0;
+    let back = apply_all(&faded, edl::import(&faded, tl_id(&p), &text).unwrap());
+    let c = back.timeline(tl_id(&p)).unwrap().tracks[0].items[0]
+        .as_clip()
+        .unwrap()
+        .clone();
+    assert_eq!(c.video.opacity, 0.5);
+}
+
+fn tl_id(p: &Project) -> Id {
+    *p.timelines.keys().next().unwrap()
 }
 
 #[test]

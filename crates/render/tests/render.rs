@@ -159,6 +159,33 @@ fn frames_are_exact_sequentially_and_after_seeks() {
 }
 
 #[test]
+fn a_media_file_replaced_on_disk_shows_its_new_picture_after_an_edit() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let path = scratch("replaced.mp4");
+    solid_video(&path, "red");
+    let mut f = fixture((96, 54));
+    let m = add_media(&mut f, &path);
+    f.ed.apply(
+        Author::User,
+        edit::append(f.ed.project(), f.v1, clip(&m, 0, 30)),
+    )
+    .unwrap();
+    let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+    assert!(r.render(0).unwrap().to_rgba8()[0] > 200, "red first");
+    // the file is replaced under the same name; the next edit hands the renderer the project again
+    solid_video(&path, "blue");
+    r.set_project(f.ed.project()).unwrap();
+    let px = r.render(0).unwrap().to_rgba8();
+    assert!(
+        px[0] < 60 && px[2] > 200,
+        "the new blue picture, not the cached red one: {:?}",
+        &px[..4]
+    );
+}
+
+#[test]
 fn holds_the_last_frame_past_the_end_of_the_file() {
     if !have_ffmpeg() {
         return;
@@ -581,7 +608,59 @@ fn the_other_transitions_reveal_the_new_picture_their_own_way() {
     set(&mut f, TransitionKind::ZoomIn);
     assert!(px(&f, 26, 2, 2)[0] > 250 && px(&f, 26, 2, 2)[2] < 20);
     assert!(px(&f, 35, 2, 2)[2] > 250);
-    assert_eq!(TransitionKind::ALL.len(), 12);
+    // whips: the old picture swings away filling the whole frame (wrapped, no black edge), then the new one
+    for kind in [TransitionKind::WhipLeft, TransitionKind::WhipRight] {
+        set(&mut f, kind);
+        for x in [1, 48, 94] {
+            assert!(
+                px(&f, 27, x, 27)[0] > 240,
+                "{kind:?}: still the old picture at x={x}"
+            );
+            assert!(
+                px(&f, 33, x, 27)[2] > 240,
+                "{kind:?}: the new picture at x={x}"
+            );
+        }
+    }
+    // the newer ones: all start on the old picture and end on the new one
+    for kind in TransitionKind::ALL.into_iter().skip(14) {
+        set(&mut f, kind);
+        assert!(px(&f, 24, 48, 27)[0] > 240, "{kind:?} starts red");
+        assert!(px(&f, 35, 48, 27)[2] > 240, "{kind:?} ends blue");
+    }
+    set(&mut f, TransitionKind::BlurDissolve);
+    let m = px(&f, 30, 48, 27);
+    assert!(m[0] > 90 && m[2] > 90, "a mix {m:?}");
+    set(&mut f, TransitionKind::DipToWhite);
+    assert!(
+        px(&f, 30, 48, 27).iter().all(|c| *c > 200),
+        "white at the cut"
+    );
+    set(&mut f, TransitionKind::Flash);
+    assert!(
+        px(&f, 30, 48, 27).iter().all(|c| *c > 150),
+        "a bright flash"
+    );
+    set(&mut f, TransitionKind::BarnDoors);
+    assert!(px(&f, 28, 48, 27)[2] > 240 && px(&f, 28, 2, 27)[0] > 240);
+    set(&mut f, TransitionKind::ClockWipe);
+    assert!(px(&f, 28, 70, 10)[2] > 240, "swept past one o'clock");
+    assert!(px(&f, 28, 20, 10)[0] > 240, "not yet at eleven");
+    for kind in [
+        TransitionKind::CrossZoom,
+        TransitionKind::Spin,
+        TransitionKind::Glitch,
+    ] {
+        set(&mut f, kind);
+        assert!(px(&f, 27, 48, 27)[0] > 200, "{kind:?}: old picture first");
+        assert!(px(&f, 33, 48, 27)[2] > 200, "{kind:?}: then the new");
+    }
+    // blue is dark, so a luma fade lets it in late
+    set(&mut f, TransitionKind::LumaFade);
+    assert!(px(&f, 31, 48, 27)[0] > 200);
+    set(&mut f, TransitionKind::LightLeak);
+    assert!(px(&f, 30, 48, 27)[1] > 25, "warm light added");
+    assert_eq!(TransitionKind::ALL.len(), 24);
 }
 
 /// A flat mid-grey clip tagged as the given HDR (or wide-gamut) encoding, 10-bit HEVC.
@@ -693,4 +772,156 @@ fn hdr_footage_is_tone_mapped_into_rec709_unless_told_otherwise() {
     f.ed.undo();
     f.ed.undo();
     assert_eq!(at(&f, 3), h_auto);
+}
+
+/// Frames that differ from one to the next (a moving test pattern), so an off-by-one source frame shows.
+fn moving_video(path: &Path) {
+    let ok = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=96x54:r=30:d=4",
+        ])
+        .args(["-c:v", "libx264", "-g", "30", "-pix_fmt", "yuv420p"])
+        .arg(path)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
+#[test]
+fn playing_through_cuts_shows_the_same_frames_as_seeking_to_each() {
+    // playback starts the next clip's decoder before the cut (read-ahead); every frame must still be exactly
+    // the one a fresh render of that moment gives
+    if !have_ffmpeg() {
+        return;
+    }
+    let src = scratch("moving.mp4");
+    moving_video(&src);
+    let mut f = fixture((96, 54));
+    let m = add_media(&mut f, &src);
+    for (from, dur) in [(10, 20), (70, 15), (40, 25)] {
+        f.ed.apply(
+            Author::User,
+            edit::append(f.ed.project(), f.v1, clip(&m, from, dur)),
+        )
+        .unwrap();
+    }
+    let mut playing = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+    for tick in 0..60 {
+        let played = playing.render(tick).unwrap();
+        let mut fresh = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        let sought = fresh.render(tick).unwrap();
+        assert!(
+            played.data == sought.data,
+            "frame {tick} differs between playing and seeking"
+        );
+        playing.recycle(played);
+    }
+}
+
+/// Library effects that act in the renderer rather than on the picture: keyframed settings, the low frame rate
+/// hold, and the drop shadow drawn under a scaled-down layer.
+#[test]
+fn keyframed_effect_settings_low_frame_rate_and_drop_shadow() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (count, red) = (scratch("fx-count.mp4"), scratch("fx-red.mp4"));
+    counter_video(&count, 60);
+    solid_video(&red, "0xff0000");
+    let render = |f: &Fixture, tick: i64| {
+        let mut r = Renderer::new(f.ed.project(), f.tl, RenderOptions::default()).unwrap();
+        r.render(tick).unwrap()
+    };
+
+    // keyframes on an effect setting: brightness goes from -100 to +100 over the clip
+    let mut f = fixture((96, 54));
+    let m = add_media(&mut f, &count);
+    let c = clip(&m, 20, 30);
+    let id = c.id;
+    f.ed.apply(Author::User, edit::append(f.ed.project(), f.v1, c))
+        .unwrap();
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: id,
+            effects: vec![Effect::new(EffectKind::BrightnessContrast)],
+        },
+    )
+    .unwrap();
+    let key = |t, v| Keyframe {
+        t,
+        v,
+        interp: Interp::Linear,
+    };
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "fx.brightness_contrast.brightness".into(),
+            keys: vec![key(0, -100.0), key(29, 100.0)],
+        },
+    )
+    .unwrap();
+    let (early, late) = (
+        grey_of(&render(&f, 0), 48, 27),
+        grey_of(&render(&f, 29), 48, 27),
+    );
+    assert!(early < 10, "darkened at the start: {early}");
+    assert!(late > 200, "brightened at the end: {late}");
+
+    // low frame rate 10 on a 30 fps timeline: each source frame is held for three timeline frames
+    f.ed.apply(
+        Author::User,
+        Op::SetAnimTrack {
+            item: id,
+            prop: "fx.brightness_contrast.brightness".into(),
+            keys: vec![],
+        },
+    )
+    .unwrap();
+    let mut low = Effect::new(EffectKind::LowFrameRate);
+    low.params[0] = 10.0;
+    f.ed.apply(
+        Author::User,
+        Op::SetEffects {
+            item: id,
+            effects: vec![low],
+        },
+    )
+    .unwrap();
+    let shown: Vec<i64> = (0..7)
+        .map(|t| frame_no(grey_of(&render(&f, t), 48, 27)))
+        .collect();
+    assert_eq!(shown, vec![20, 20, 20, 23, 23, 23, 26], "{shown:?}");
+
+    // drop shadow: a white shadow down and to the right of a red clip at half size on black
+    let mut g = fixture((96, 54));
+    let m = add_media(&mut g, &red);
+    let mut c = clip(&m, 0, 30);
+    c.video.transform.scale = (0.5, 0.5);
+    let mut shadow = Effect::new(EffectKind::DropShadow);
+    shadow.params = vec![200.0, 45.0, 0.0, 100.0, 255.0, 255.0, 255.0];
+    c.effects = vec![shadow];
+    g.ed.apply(Author::User, edit::append(g.ed.project(), g.v1, c))
+        .unwrap();
+    let pic = render(&g, 5);
+    let rgb = |x, y| rgb_of(&pic, x, y);
+    assert!(
+        rgb(48, 27)[0] > 240 && rgb(48, 27)[1] < 20,
+        "the clip itself on top"
+    );
+    // the clip covers x 24..72, y 13..40; 200 px at 1080 is 10 px here, along 45 degrees
+    assert!(
+        rgb(76, 44)[1] > 200,
+        "shadow below right: {:?}",
+        rgb(76, 44)
+    );
+    assert!(rgb(20, 10)[1] < 20, "nothing above left: {:?}", rgb(20, 10));
 }

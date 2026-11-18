@@ -108,7 +108,7 @@ fn read_tools_describe_the_project() {
         .call("nonsense", &json!({}))
         .unwrap_err()
         .contains("unknown tool"));
-    assert_eq!(tool_definitions().as_array().unwrap().len(), 39);
+    assert_eq!(tool_definitions().as_array().unwrap().len(), 49);
     for d in tool_definitions().as_array().unwrap() {
         assert!(
             d["name"].is_string()
@@ -180,6 +180,18 @@ fn edit_tools_make_the_edits_they_describe() {
         "delete_item",
         &json!({"item_id": added["id"], "ripple": false}),
     ));
+    // lifting the last item of a track leaves no gap behind to stretch the timeline
+    let a1 = tb
+        .project()
+        .timelines
+        .values()
+        .next()
+        .unwrap()
+        .tracks
+        .iter()
+        .find(|t| t.name == "A1")
+        .unwrap();
+    assert!(a1.items.is_empty(), "A1 keeps {:?}", a1.items);
 
     // everything it did replays onto the real project
     let mut after = p.clone();
@@ -573,4 +585,77 @@ fn copilot_can_find_a_plugin_and_put_it_on_a_clip() {
         )
         .unwrap_err()
         .contains("find_audio_plugins"));
+}
+
+#[test]
+fn tracks_title_colours_whips_and_letterbox() {
+    let (p, clip, _) = project("/nowhere.mp4");
+    let mut tb = ToolBox::new(&p, &[], None, 0.0).unwrap();
+    let tracks = |tb: &ToolBox| -> Vec<String> {
+        tb.project()
+            .timelines
+            .values()
+            .next()
+            .unwrap()
+            .tracks
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    };
+    // new tracks: video above the top video track, audio at the end; a wanted name is kept
+    let added = json_of(tb.call("add_track", &json!({"kind": "video", "count": 2})));
+    assert_eq!(added["added"], json!(["V3", "V4"]));
+    json_of(tb.call("add_track", &json!({"kind": "audio", "name": "SFX"})));
+    assert_eq!(tracks(&tb), ["V1", "V2", "V3", "V4", "A1", "SFX"]);
+    assert!(tb.call("add_track", &json!({"kind": "subtitle"})).is_err());
+
+    // a title's colours and a face of a font collection
+    let t = json_of(tb.call(
+        "add_title",
+        &json!({"text": "SLEDGE", "at_sec": 0, "track": "V3"}),
+    ));
+    let tid = t["id"].as_str().unwrap().to_string();
+    json_of(tb.call(
+        "edit_title",
+        &json!({"item_id": tid, "color": "#d90d12", "outline_color": "000000", "accent_color": "#ffcc00",
+                "font": "/System/Library/Fonts/Supplemental/Futura.ttc#Condensed ExtraBold"}),
+    ));
+    let title = tb.project().timelines.values().next().unwrap().tracks[2].items[0].clone();
+    let Item::Title(title) = title else {
+        panic!("a title")
+    };
+    assert_eq!(title.style.color, [0xd9, 0x0d, 0x12]);
+    assert_eq!(title.style.outline_color, [0, 0, 0]);
+    assert_eq!(title.style.accent, [0xff, 0xcc, 0x00]);
+    assert!(title.font.unwrap().ends_with("#Condensed ExtraBold"));
+    let bad = tb
+        .call("edit_title", &json!({"item_id": tid, "color": "red"}))
+        .unwrap_err();
+    assert!(bad.contains("hex"), "{bad}");
+
+    // a whip between two halves of the clip, and cinema bars
+    tb.call("split", &json!({"track": "V1", "at_sec": 3.5}))
+        .unwrap();
+    let second = tb.project().timelines.values().next().unwrap().tracks[0].items[1]
+        .id()
+        .to_string();
+    json_of(tb.call(
+        "set_transition",
+        &json!({"item_id": second, "kind": "whip_left", "duration_sec": 0.25}),
+    ));
+    let Item::Clip(c) = tb.project().timelines.values().next().unwrap().tracks[0].items[1].clone()
+    else {
+        panic!("a clip")
+    };
+    assert_eq!(c.transition.map(|t| t.kind), Some(TransitionKind::WhipLeft));
+    json_of(tb.call(
+        "set_effects",
+        &json!({"item_id": clip.to_string(), "effects": [{"kind": "letterbox", "params": {"aspect": 2.39}}]}),
+    ));
+    let Item::Clip(c) = tb.project().timelines.values().next().unwrap().tracks[0].items[0].clone()
+    else {
+        panic!("a clip")
+    };
+    assert_eq!(c.effects[0].kind, EffectKind::Letterbox);
+    assert_eq!(c.effects[0].params[0], 2.39);
 }

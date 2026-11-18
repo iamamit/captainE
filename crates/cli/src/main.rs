@@ -162,6 +162,7 @@ enum Cmd {
         /// Title size in pixels at 1080p (titles only)
         #[arg(long)]
         size: Option<f64>,
+        /// 0.0 (invisible) to 1.0 (solid)
         #[arg(long)]
         opacity: Option<f64>,
         /// Offset from center in canvas pixels
@@ -179,6 +180,7 @@ enum Cmd {
         blend: Option<BlendArg>,
         #[arg(long, allow_negative_numbers = true)]
         gain_db: Option<f64>,
+        /// -1.0 (left) to 1.0 (right)
         #[arg(long, allow_negative_numbers = true)]
         pan: Option<f64>,
         /// Fade lengths in seconds
@@ -199,6 +201,17 @@ enum Cmd {
         enabled: Option<bool>,
         #[arg(long, allow_negative_numbers = true)]
         gain_db: Option<f64>,
+    },
+    /// Add empty tracks: video (above the top video track) or audio (after the last audio track)
+    AddTrack {
+        project: PathBuf,
+        /// video or audio
+        kind: String,
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+        /// Track name (default: the next V/A number)
+        #[arg(long)]
+        name: Option<String>,
     },
     Undo {
         project: PathBuf,
@@ -332,6 +345,9 @@ enum Cmd {
         /// ... up to this time (seconds)
         #[arg(long)]
         to: Option<f64>,
+        /// Output height in pixels (e.g. 2160 for 4K from a 1080p timeline); the framing stays the same
+        #[arg(long)]
+        height: Option<u32>,
     },
 }
 
@@ -594,10 +610,20 @@ fn run(cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Import { project, files } => edit_with(&project, &|s| {
-            let mut out = Vec::new();
+            let (mut out, mut failed) = (Vec::new(), Vec::new());
             for f in &files {
-                let m = captaine_media::media_ref(f, Id::new())
-                    .map_err(|e| format!("{}: {e}", f.display()))?;
+                // one bad file does not stop the rest
+                let m = match captaine_media::media_ref(f, Id::new()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        failed.push(format!("could not import {}: {e}", f.display()));
+                        continue;
+                    }
+                };
+                if s.editor.project().media.values().any(|x| x.path == m.path) {
+                    out.push(format!("{} is already in the project", m.name));
+                    continue;
+                }
                 let d = m.duration.map_or(0, |d| d.value);
                 let r = m.duration.map_or(Rational::FPS_30, |d| d.rate);
                 let kind = match (m.has_video, m.has_audio) {
@@ -612,6 +638,12 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 };
                 out.push(format!("imported {} ({len}, {kind})", m.name));
                 s.apply(Op::AddMedia { media: m })?;
+            }
+            if out.is_empty() {
+                return Err(failed.join("\n"));
+            }
+            for f in &failed {
+                eprintln!("{f}");
             }
             Ok(out.join("\n"))
         }),
@@ -684,15 +716,39 @@ fn run(cmd: Cmd) -> Result<(), String> {
         } => edit_with(&project, &|s| {
             let tl = timeline(s)?;
             let rate = tl.rate;
-            let track_id = match &track {
-                Some(n) => find_track(tl, n)?.id,
-                None => tl
-                    .tracks
+            let (from, until) = (ticks(at, rate), ticks(at, rate) + ticks(dur, rate).max(1));
+            // a track is free when nothing but gaps covers the title's span
+            let free = |t: &captaine_model::Track| {
+                let mut start = 0;
+                t.items.iter().all(|it| {
+                    let end = start + it.duration().value;
+                    let clear = !it.is_content() || end <= from || start >= until;
+                    start = end;
+                    clear
+                })
+            };
+            let pick = |tl: &Timeline| {
+                tl.tracks
                     .iter()
                     .rev()
-                    .find(|t| t.kind == TrackKind::Video)
+                    .filter(|t| t.kind == TrackKind::Video)
+                    .find(|t| free(t))
                     .map(|t| t.id)
-                    .ok_or("no video track")?,
+            };
+            let track_id = match &track {
+                Some(n) => find_track(tl, n)?.id,
+                // the highest video track with room, so a title never covers a clip by surprise;
+                // when every track is busy there, the title gets a new track of its own
+                None => match pick(tl) {
+                    Some(id) => id,
+                    None => {
+                        let tl = tl.clone();
+                        let op = edit::add_tracks(&tl, TrackKind::Video, 1, None)
+                            .map_err(|e| e.to_string())?;
+                        s.apply(op)?;
+                        pick(timeline(s)?).ok_or("no video track")?
+                    }
+                },
             };
             let template = match template {
                 TemplateArg::LowerThird => TitleTemplate::LowerThird,
@@ -1029,6 +1085,33 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 if en { "on" } else { "off" }
             ))
         }),
+        Cmd::AddTrack {
+            project,
+            kind,
+            count,
+            name,
+        } => edit_with(&project, &|s| {
+            let kind = match kind.as_str() {
+                "video" | "v" => TrackKind::Video,
+                "audio" | "a" => TrackKind::Audio,
+                other => return Err(format!("kind is video or audio, not '{other}'")),
+            };
+            let tl = timeline(s)?.clone();
+            let op = captaine_ops::edit::add_tracks(&tl, kind, count, name.as_deref())
+                .map_err(|e| e.to_string())?;
+            let names: Vec<String> = match &op {
+                Op::Transaction { ops, .. } => ops
+                    .iter()
+                    .filter_map(|o| match o {
+                        Op::AddTrack { track, .. } => Some(track.name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            s.apply(op)?;
+            Ok(format!("added {}", names.join(", ")))
+        }),
         Cmd::Proxy { project, height } => edit_with(&project, &|s| {
             let dir = cache_dir(&project);
             let todo: Vec<MediaRef> = s
@@ -1039,17 +1122,33 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 .filter(|m| m.has_video && m.proxy.is_none())
                 .cloned()
                 .collect();
-            let mut ops = Vec::new();
-            for m in &todo {
-                let dst = captaine_media::cache_path(&dir, m.id, "proxy.mp4");
-                eprintln!("proxy for {} ...", m.name);
-                captaine_media::make_proxy(std::path::Path::new(&m.path), &dst, height)
-                    .map_err(|e| e.to_string())?;
-                ops.push(Op::SetProxy {
+            let jobs: Vec<(PathBuf, PathBuf)> = todo
+                .iter()
+                .map(|m| {
+                    eprintln!("proxy for {} ...", m.name);
+                    (
+                        PathBuf::from(&m.path),
+                        captaine_media::cache_path(&dir, m.id, "proxy.mp4"),
+                    )
+                })
+                .collect();
+            let failed = std::sync::Mutex::new(None);
+            captaine_media::make_proxies(&jobs, height, 2, &|i, r| {
+                if let Err(e) = r {
+                    *failed.lock().unwrap() = Some(format!("{}: {e}", todo[i].name));
+                }
+            });
+            if let Some(e) = failed.into_inner().unwrap() {
+                return Err(e);
+            }
+            let ops: Vec<Op> = todo
+                .iter()
+                .zip(&jobs)
+                .map(|(m, (_, dst))| Op::SetProxy {
                     media: m.id,
                     proxy: Some(dst.to_string_lossy().into_owned()),
-                });
-            }
+                })
+                .collect();
             if ops.is_empty() {
                 return Ok("every video already has a proxy".into());
             }
@@ -1358,7 +1457,11 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 description: format!("Import {}", file.display()),
                 ops,
             })?;
-            Ok(format!("imported {} ({n} changes)", file.display()))
+            Ok(format!(
+                "imported {} ({n} change{})",
+                file.display(),
+                if n == 1 { "" } else { "s" }
+            ))
         }),
         Cmd::Render {
             project,
@@ -1370,9 +1473,16 @@ fn run(cmd: Cmd) -> Result<(), String> {
             proxy,
             from,
             to,
+            height,
         } => {
             let s = Session::load(&project)?;
             let tl = timeline(&s)?;
+            // another output size: the whole project scaled, positions included, so the framing is unchanged
+            let sized = height.map(|h| {
+                let (_, ch) = s.editor.project().canvas(tl.id);
+                captaine_render::preview_project(s.editor.project(), h as f64 / ch.max(1) as f64)
+            });
+            let source = sized.as_ref().unwrap_or(s.editor.project());
             let fps = tl.rate.as_f64();
             let range = match (from, to) {
                 (None, None) => None,
@@ -1405,25 +1515,25 @@ fn run(cmd: Cmd) -> Result<(), String> {
             };
             let started = std::time::Instant::now();
             let mut last_pct = u64::MAX;
-            captaine_export::export(
-                s.editor.project(),
-                tl.id,
-                &out,
-                &opts,
-                &mut |done, total| {
-                    let pct = (done * 100 / total) as u64;
-                    if pct != last_pct && pct % 5 == 0 {
-                        eprint!("\rrendering {pct:>3}%");
-                        last_pct = pct;
-                    }
-                },
-            )
+            captaine_export::export(source, tl.id, &out, &opts, &mut |done, total| {
+                let pct = (done * 100 / total) as u64;
+                if pct != last_pct && pct % 5 == 0 {
+                    eprint!("\rrendering {pct:>3}%");
+                    last_pct = pct;
+                }
+            })
             .map_err(|e| e.to_string())?;
             eprintln!();
             println!(
                 "rendered {} ({}) in {:.1}s",
                 out.display(),
-                tc(tl.duration().value, tl.rate),
+                tc(
+                    match range {
+                        Some((a, b)) => b.min(tl.duration().value) - a.max(0),
+                        None => tl.duration().value,
+                    },
+                    tl.rate
+                ),
                 started.elapsed().as_secs_f64()
             );
             Ok(())

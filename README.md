@@ -1,16 +1,55 @@
-# CaptainE
+# captainE
 
-A video editor built from scratch that combines:
+A video editor written from scratch, with an AI co-editor built in and git-style branches for edits.
 
-- **Editing** like Premiere Pro / DaVinci Resolve's Edit page (a non-linear timeline editor),
-- **Motion graphics and compositing** like After Effects / Fusion,
-- **A built-in AI co-editor** (codit, like Copilot in VS Code) that edits through the same commands a person uses,
-- **Git-style branches** for edits: work on a branch, compare it with another branch side by side, merge.
+- **Timeline editing**: media pool, viewer, multi-track timeline, trim, roll, slide, slip, ripple, titles, transitions,
+  keyframes, speed changes.
+- **Colour and effects**: primaries, wheels, curves, HSL, LUTs, scopes, auto balance, shot matching; an effects library.
+- **CoCaptain**, the AI co-editor: ask in plain words ("trim each clip to its best two seconds", "make the music
+  quieter") and it edits through the same commands you use. Every change comes back as a suggestion to preview,
+  apply or discard. It uses your own Claude login or API key.
+- **Branches for edits**: try a cut on a branch, compare two branches side by side, merge.
+- **Delivery**: H.264, HEVC, ProRes, GIF, PNG sequence, WAV/AAC; hardware encoding on macOS; HDR (HLG/PQ) phone
+  footage is converted correctly. Interchange with OTIO, EDL and FCPXML.
+- **Headless CLI** (`captaine`) for scripted edits and renders.
 
-Status: **early code with a working editor window** (`cargo run --release -p captaine-app`) (planning started 2026-10-01, coding 2026-10-09). The engine core exists and is tested;
-there is no GUI yet. See [Building](#building) for what runs today.
+Version **0.1.0**, the first public release. macOS is the main platform; Linux and Windows builds pass CI.
+See [CHANGELOG.md](CHANGELOG.md) for what is in it and [docs/STATUS.md](docs/STATUS.md) for what is left.
+
+## Install and run
+
+Needs [Rust](https://rustup.rs) (stable) and FFmpeg (`ffmpeg` and `ffprobe` on PATH, e.g. `brew install ffmpeg`).
+
+```
+git clone https://github.com/iamamit/captainE.git && cd captainE
+cargo run --release -p captaine-app            # the editor window
+sh tools/bundle.sh                              # macOS: build dist/captainE.app
+cargo run --release -p captaine-cli -- --help   # the command line
+```
+
+CoCaptain needs either Claude Code signed in on the machine or `ANTHROPIC_API_KEY` set
+(or a key in `~/.captaine/anthropic_key`).
+
+## Command line
+
+```
+captaine init proj.json --fps 30 --size 1080x1920
+captaine import proj.json clip.mov photo.heic music.mp3
+captaine add proj.json clip.mov --dur 6
+captaine title proj.json "WEEK 1" --template centered --at 0.5 --dur 3
+captaine split proj.json 2.5 && captaine set proj.json 1 --opacity 0.8 --scale 1.1
+captaine add proj.json music.mp3 --track A2 && captaine set proj.json 0 --track A2 --gain-db -14
+captaine branch proj.json tighter --switch     # also: commit, diff, merge, log
+captaine render proj.json out.mp4              # also: --codec hevc|prores|gif, --from/--to, --proxy
+```
+
+Commands: `init import add title split remove lift move trim roll slide slip tidy set track add-track undo redo show
+log branch checkout commit diff merge proxy thumbs waveform frame loudness export-timeline import-timeline render`.
 
 ## Documents
+
+**Where things stand:** [docs/STATUS.md](docs/STATUS.md): the plan, what is built and what is left, updated after
+every build.
 
 | # | Document | What it covers |
 |---|---|---|
@@ -20,9 +59,9 @@ there is no GUI yet. See [Building](#building) for what runs today.
 | 03 | [Timeline and data model](docs/03-timeline-and-data-model.md) | Time, timeline, clips, keyframes, the operation log, project format |
 | 04 | [Rendering and playback](docs/04-rendering-and-playback.md) | Decoding, caching, proxies, GPU pipeline, compositing math, color, text |
 | 05 | [Audio](docs/05-audio.md) | Audio engine, mixing, loudness, plugins, time-stretch |
-| 06 | [Motion graphics and compositing](docs/06-motion-graphics-and-compositing.md) | After-Effects-style layers, node graph, keyframes, expressions, masks, tracking |
+| 06 | [Motion graphics and compositing](docs/06-motion-graphics-and-compositing.md) | Layers, node graph, keyframes, expressions, masks, tracking |
 | 07 | [Branching and versioning](docs/07-branching-and-versioning.md) | Branches, commits, timeline diff, visual compare, merge, media storage |
-| 08 | [AI co-editor (built-in codit)](docs/08-ai-copilot.md) | Agent architecture, commands as tools, skills, agent-on-a-branch workflow |
+| 08 | [AI co-editor (CoCaptain)](docs/08-ai-copilot.md) | Agent architecture, commands as tools, skills, agent-on-a-branch workflow |
 | 09 | [AI media algorithms](docs/09-ai-media-algorithms.md) | Segmentation, matting, stabilization, interpolation, speech, noise, papers and licenses |
 | 10 | [Tech stack](docs/10-tech-stack.md) | Language, GPU API, UI toolkit, libraries: options and recommendation |
 | 11 | [Licensing and legal](docs/11-licensing-and-legal.md) | Open-source licenses, codec patents, what's safe to ship |
@@ -30,47 +69,11 @@ there is no GUI yet. See [Building](#building) for what runs today.
 | 13 | [Risks and open questions](docs/13-risks-and-open-questions.md) | What could sink it, decisions still to make |
 | 14 | [Phase 1 status](docs/14-phase-1-status.md) | What is built, decisions made while building, known gaps |
 | 15 | [The editor window](docs/15-ui-status.md) | The egui UI: what follows the design, how to run it, known limits |
-| 16 | [Phase 4 status](docs/16-phase-4-status.md) | Branches, compare, merge, Copilot on a branch |
+| 16 | [Phase 4 status](docs/16-phase-4-status.md) | Branches, compare, merge, CoCaptain on a branch |
+| 20 | [Effects](docs/20-effects.md) | The Effects page and library: what captainE has, what is missing |
 | — | [References](docs/references.md) | Every source used, grouped by topic |
 
-## Relationship to the other projects
+## Contributing and licensing
 
-- **codit** (`iamamit/codit`, `iamamit/codit-core`): the AI co-editor inside DaVinci Resolve. Its agent design, skills,
-  undo model and lessons carry over; in CaptainE the agent is native instead of driving another app.
-- **video-template-engine** (`iamamit/video-template-engine`): reusable motion-graphics templates. CaptainE's motion
-  graphics layer should load these templates directly.
-
-## Building
-
-Needs Rust (stable) and FFmpeg (`ffmpeg`/`ffprobe` on PATH) for probing and rendering.
-
-```
-cargo test                      # unit, fuzz and real-ffmpeg render tests
-cargo run -p captaine-cli -- --help
-```
-
-| Crate | Role |
-|---|---|
-| `time` | `Rational`, `RationalTime`, `TimeRange`, SMPTE timecode incl. drop-frame |
-| `model` | Immutable project: media pool, timelines, tracks, clips, gaps, transform/audio properties; stable ids; copy-on-write snapshots |
-| `ops` | Invertible operations, editing gestures (overwrite, move, roll, slide, slip, ...), `Editor` with undo/redo |
-| `media` | Probe files and make proxies (ffprobe/ffmpeg for now) |
-| `render` | Timeline evaluator, frame decoder and cache, linear-light CPU compositor |
-| `audio` | Decode, mixer (gain, pan, fades), EBU R128 loudness, waveform peaks |
-| `export` | Render + mix + encode (H.264, HEVC, ProRes); byte-identical across runs |
-| `vcs` | Commits, branches, diff, three-way merge, state→ops (docs/07) |
-| `project` | The open project: working edits on a branch, commit/checkout/merge, the v2 project file |
-| `agent` | The Claude co-editor: 13 tools over the ops layer, the agent loop, the Anthropic transport |
-| `app` | **The editor window** (egui): media pool, viewer, inspector, timeline, Copilot |
-| `cli` | `captaine` binary: `init import add title split remove lift move trim roll slide slip tidy set track undo redo show log branch checkout commit diff merge proxy thumbs waveform frame loudness render` |
-
-Phase 1 status, decisions and known gaps: [docs/14](docs/14-phase-1-status.md).
-
-```
-captaine init proj.json --fps 30 --size 1920x1080
-captaine import proj.json clip.mp4 music.wav
-captaine add proj.json clip.mp4 --dur 6
-captaine split proj.json 2.5 && captaine set proj.json 1 --opacity 0.8 --scale 0.6 --x 300
-captaine add proj.json music.wav --track A2 && captaine set proj.json 0 --track A2 --gain-db -14
-captaine render proj.json out.mp4        # also: --codec hevc|prores, --proxy
-```
+captainE is written from scratch and distributed free (ad-supported). Read [CONTRIBUTING.md](CONTRIBUTING.md) before
+changing anything: it covers what may and may not go into the code. [LICENSING.md](LICENSING.md) lists every tool used and its license.

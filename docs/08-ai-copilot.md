@@ -43,7 +43,7 @@ Chat panel ──► Agent runtime
 ### Agent-on-a-branch workflow
 
 - Default for multi-step edits: the agent creates `agent/<task>` from the current branch, works there, then shows
-  the **Compare** view. The user merges all, some, or nothing. (Like a Copilot coding-agent pull request.)
+  the **Compare** view. The user merges all, some, or nothing. (Like a CoCaptain coding-agent pull request.)
 - Small, explicit edits ("mute A2") may apply directly to the current branch (user setting).
 - Alternatives: "give me two versions of the intro" → two agent branches, compared side by side (the VideoDiff
   research idea of co-creation with alternatives).
@@ -101,12 +101,17 @@ searches this index, then looks at specific frames only when needed.
   A follow-up request builds on a still-pending suggestion.
 - **Verification before offering:** the combined ops are applied to the real project once more and refused if they
   do not apply.
-- **Privacy:** only project structure (names, times, properties) and analysis results (silence ranges) are sent.
-  No pictures, no sound, no file contents. The key comes from `ANTHROPIC_API_KEY` or `~/.captaine/anthropic_key`
+- **Privacy:** project structure (names, times, properties) and analysis results are sent. Pictures only when the
+  user turns on "Let CoCaptain see the video" (off by default): then the look tools send small labelled frames
+  (at most 40 per request, older ones dropped from the conversation). No sound, no file contents. The key comes from `ANTHROPIC_API_KEY` or `~/.captaine/anthropic_key`
   (mode 600), never from a project file. Model: `claude-sonnet-5-5`, override with `CAPTAINE_MODEL`.
 - **Without a key** the panel falls back to built-in rule-based skills, so it is never dead.
 - **Tests:** a scripted model drives the whole loop (tool errors and recovery, history, pending edits, step limit,
   cut-off replies); the HTTP transport is tested against a local fake server (headers, 401/429/500, bad JSON);
   one `#[ignore]`d test talks to the real API.
-- **Not built yet:** transcripts and beat detection (so no "edit by what was said" or "sync to music"), skills as
+- **Eyes (2026-10-26):** `look` renders the timeline at chosen times (or the middle of every clip) from the scratch
+  copy, so CoCaptain sees its own pending edits; `look_media` shows frames of any video file. Pictures go to the
+  model as image blocks (through Claude Code as stream-json input). The system prompt says: look before you judge,
+  look again after you edit.
+- **Not built yet:** beat detection (so no "edit by what was said" or "sync to music"), skills as
   playbooks, evals, working on a real branch (needs `vcs`).

@@ -118,14 +118,27 @@ impl App {
         std::thread::Builder::new()
             .name("proxies".into())
             .spawn(move || {
-                for m in todo {
-                    let dst = captaine_media::cache_path(&dir, m.id, "proxy.mp4");
-                    let r = captaine_media::make_proxy(std::path::Path::new(&m.path), &dst, height)
-                        .map(|_| dst.to_string_lossy().into_owned())
+                let jobs: Vec<(std::path::PathBuf, std::path::PathBuf)> = todo
+                    .iter()
+                    .map(|m| {
+                        (
+                            std::path::PathBuf::from(&m.path),
+                            captaine_media::cache_path(&dir, m.id, "proxy.mp4"),
+                        )
+                    })
+                    .collect();
+                let tx = std::sync::Mutex::new(tx);
+                // two at a time: one file leaves most of the machine idle
+                captaine_media::make_proxies(&jobs, height, 2, &|i, r| {
+                    let m = &todo[i];
+                    let r = r
+                        .map(|_| jobs[i].1.to_string_lossy().into_owned())
                         .map_err(|e| format!("{}: {e}", m.name));
-                    let _ = tx.send((m.id, r));
+                    if let Ok(tx) = tx.lock() {
+                        let _ = tx.send((m.id, r));
+                    }
                     ctx.request_repaint();
-                }
+                });
             })
             .expect("spawn proxy thread");
     }

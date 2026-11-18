@@ -109,6 +109,8 @@ fn ask(
         history: &[],
         text,
         base_ops: &[],
+        images: &[],
+        files: &[],
     };
     run(transport, &AgentConfig::default(), &req, &mut |_| {})
 }
@@ -147,11 +149,13 @@ fn looks_then_edits_and_returns_one_suggestion() {
         history: &[],
         text: "split the intro and warm up main",
         base_ops: &[],
+        images: &[],
+        files: &[],
     };
-    let r = run(&model, &AgentConfig::default(), &req, &mut |Event::Step(
-        s,
-    )| {
-        events.push(s)
+    let r = run(&model, &AgentConfig::default(), &req, &mut |e| {
+        if let Event::Step(s) = e {
+            events.push(s)
+        }
     })
     .unwrap();
     assert_eq!(r.reply, "Cut the intro at 2 s and warmed the main clip.");
@@ -182,8 +186,8 @@ fn looks_then_edits_and_returns_one_suggestion() {
     assert_eq!(reqs.len(), 4);
     let first = &reqs[0];
     assert_eq!(first["model"], "claude-sonnet-5-5");
-    assert!(first["system"].as_str().unwrap().contains("Copilot"));
-    assert_eq!(first["tools"].as_array().unwrap().len(), 39);
+    assert!(first["system"].as_str().unwrap().contains("CoCaptain"));
+    assert_eq!(first["tools"].as_array().unwrap().len(), 49);
     let user0 = first["messages"][0]["content"].as_str().unwrap();
     assert!(
         user0.contains("[Current state]") && user0.contains("split the intro and warm up main"),
@@ -270,6 +274,8 @@ fn earlier_turns_and_pending_edits_carry_over() {
         history: &history,
         text: "and hide V2",
         base_ops: &r1.new_ops,
+        images: &[],
+        files: &[],
     };
     let r2 = run(&m2, &AgentConfig::default(), &req, &mut |_| {}).unwrap();
     assert_eq!(r2.new_ops.len(), 1, "only the new edit");
@@ -332,6 +338,8 @@ fn failures_are_reported() {
         history: &[],
         text: "x",
         base_ops: &bad,
+        images: &[],
+        files: &[],
     };
     assert!(matches!(
         run(
@@ -362,6 +370,8 @@ fn a_runaway_loop_is_stopped() {
         history: &[],
         text: "loop",
         base_ops: &[],
+        images: &[],
+        files: &[],
     };
     let r = run(&model, &cfg, &req, &mut |_| {}).unwrap();
     assert!(r.reply.contains("stopped after 3 steps"), "{}", r.reply);
@@ -403,13 +413,14 @@ fn live_the_model_can_read_the_timeline_and_make_a_cut() {
         history: &[],
         text: "Cut the selected clip in two at the playhead.",
         base_ops: &[],
+        images: &[],
+        files: &[],
     };
-    let r = run(
-        &transport,
-        &AgentConfig::default(),
-        &req,
-        &mut |Event::Step(s)| eprintln!("step: {s}"),
-    )
+    let r = run(&transport, &AgentConfig::default(), &req, &mut |e| {
+        if let Event::Step(s) = e {
+            eprintln!("step: {s}")
+        }
+    })
     .unwrap();
     eprintln!("reply: {}", r.reply);
     let after = apply_all(&p, &r.new_ops);
@@ -677,7 +688,11 @@ mod cli {
         )
         .unwrap();
         assert_eq!(v["content"][0]["text"], "done");
-        assert!(ClaudeCli::parse_reply("I cannot do that").is_err());
+        // a reply in plain words is the final answer, not a failure
+        let v = ClaudeCli::parse_reply("I trimmed the clips {as asked}.").unwrap();
+        assert_eq!(v["stop_reason"], "end_turn");
+        assert_eq!(v["content"][0]["text"], "I trimmed the clips {as asked}.");
+        assert!(ClaudeCli::parse_reply("  ").is_err());
         assert!(ClaudeCli::parse_reply("{\"nope\":1}").is_err());
     }
 
@@ -691,7 +706,8 @@ mod cli {
             &bin,
             r#"#!/bin/sh
 cat > /dev/null
-echo '{"is_error":false,"result":"{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"hello from the stand-in\"}]}"}'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"result","is_error":false,"result":"{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"hello from the stand-in\"}]}"}'
 "#,
         )
         .unwrap();
@@ -703,17 +719,67 @@ echo '{"is_error":false,"result":"{\"stop_reason\":\"end_turn\",\"content\":[{\"
             .unwrap();
         assert_eq!(r["content"][0]["text"], "hello from the stand-in");
         assert_eq!(r["stop_reason"], "end_turn");
+        // pictures from a tool result travel as image blocks in a stream-json user message
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+cat > "$(dirname "$0")/stdin.jsonl"
+echo '{"type":"result","is_error":false,"result":"{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}"}'
+"#,
+        )
+        .unwrap();
+        let png = json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}});
+        c.send(&json!({"messages": [
+            {"role": "user", "content": "look please"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "look", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "1 picture"}, png]}]},
+        ]}))
+        .unwrap();
+        let sent: Value = serde_json::from_str(
+            std::fs::read_to_string(dir.join("stdin.jsonl"))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        let content = sent["message"]["content"].as_array().unwrap();
+        assert_eq!(sent["type"], "user");
+        assert!(content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[picture #1, attached]"));
+        assert!(content
+            .iter()
+            .any(|b| b["type"] == "image" && b["source"]["data"] == "iVBORw0KGgo="));
+        assert!(content.iter().any(|b| b["text"] == "picture #1:"));
         // a failing program is reported, not swallowed
         std::fs::write(
             &bin,
-            "#!/bin/sh\ncat > /dev/null\necho '{\"is_error\":true,\"result\":\"Not logged in\"}'\n",
+            "#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in\"}'\n",
         )
         .unwrap();
         let e = c.send(&json!({"messages": []})).unwrap_err();
         assert!(
-            e.contains("Not logged in") && e.contains("signed in"),
+            e.starts_with(captaine_agent::CLAUDE_SIGNED_OUT) && e.contains("Not logged in"),
+            "a signed-out answer is told apart so the editor can offer to sign in: {e}"
+        );
+        // any other failure is passed on as it is
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"result\",\"is_error\":true,\"result\":\"Overloaded\"}'\n",
+        )
+        .unwrap();
+        let e = c.send(&json!({"messages": []})).unwrap_err();
+        assert!(
+            !e.starts_with(captaine_agent::CLAUDE_SIGNED_OUT) && e.contains("Overloaded"),
             "{e}"
         );
+        // the sign-in state comes from `claude auth status --json`
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\n[ \"$1 $2\" = \"auth status\" ] && echo '{\"loggedIn\":false,\"authMethod\":\"none\"}'\n",
+        )
+        .unwrap();
+        assert_eq!(c.signed_in(), Some(false));
         std::env::remove_var("CAPTAINE_CLAUDE_BIN");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -739,4 +805,62 @@ fn live_claude_code_answers_and_calls_a_tool() {
         .expect("a tool call");
     assert_eq!(call["name"], "add_marker");
     assert_eq!(call["input"]["at_sec"], 12.5);
+}
+
+/// Asked to look before the user has allowed it, CoCaptain stops at once and says it wanted to see the video,
+/// instead of talking around what it cannot see; the editor then asks the user.
+#[test]
+fn wanting_to_look_stops_the_run_to_ask() {
+    let (p, _) = project();
+    let model = Scripted::new(vec![
+        tool("t1", "look", json!({"per_clip": true})),
+        end("should never be reached"),
+    ]);
+    let req = AgentRequest {
+        project: &p,
+        selection: None,
+        playhead_secs: 0.0,
+        history: &[],
+        text: "does the colour look right?",
+        base_ops: &[],
+        images: &[],
+        files: &[],
+    };
+    let r = run(&model, &AgentConfig::default(), &req, &mut |_| {}).unwrap();
+    assert!(r.wanted_frames);
+    assert!(r.reply.is_empty() && r.new_ops.is_empty());
+    assert_eq!(
+        model.requests.lock().unwrap().len(),
+        1,
+        "stopped after the refused look"
+    );
+}
+
+/// Pictures the user attached go in the first message as image blocks (whatever the see-the-video setting),
+/// and attached files are listed by path.
+#[test]
+fn attached_pictures_and_files_reach_the_model() {
+    let (p, _) = project();
+    let model = Scripted::new(vec![end("I see a red square.")]);
+    let png = vec![0x89, b'P', b'N', b'G'];
+    let req = AgentRequest {
+        project: &p,
+        selection: None,
+        playhead_secs: 0.0,
+        history: &[],
+        text: "what is this?",
+        base_ops: &[],
+        images: std::slice::from_ref(&png),
+        files: &["/Users/me/reference.mp4".to_string()],
+    };
+    run(&model, &AgentConfig::default(), &req, &mut |_| {}).unwrap();
+    let sent = &model.requests.lock().unwrap()[0];
+    let content = sent["messages"][0]["content"].as_array().unwrap();
+    let text = content[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("/Users/me/reference.mp4") && text.contains("attached 1 picture"),
+        "{text}"
+    );
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["data"], "iVBORw==");
 }

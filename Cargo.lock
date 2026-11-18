@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-agent"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-audio",
  "captaine-interchange",
@@ -684,8 +684,10 @@ dependencies = [
 
 [[package]]
 name = "captaine-app"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
+ "arboard",
+ "block2 0.6.2",
  "captaine-agent",
  "captaine-audio",
  "captaine-export",
@@ -706,6 +708,9 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png 0.17.16",
  "rfd",
  "serde",
  "serde_json",
@@ -713,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-audio"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-media",
  "captaine-model",
@@ -728,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-audio",
  "captaine-export",
@@ -746,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-export"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-audio",
  "captaine-media",
@@ -758,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-interchange"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-media",
  "captaine-model",
@@ -771,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-media"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-model",
  "captaine-time",
@@ -781,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-model"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-time",
  "serde",
@@ -791,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-ops"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-model",
  "captaine-time",
@@ -801,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-plugins"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-finder",
@@ -812,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-project"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "captaine-model",
  "captaine-ops",
@@ -824,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-render"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "captaine-media",
@@ -839,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-speech"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -847,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-time"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -855,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-vcs"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "captaine-model",
@@ -867,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "captaine-vision"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "png 0.17.16",
  "serde_json",

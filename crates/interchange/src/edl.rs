@@ -37,7 +37,8 @@ pub fn export(project: &Project, timeline: Id, drop_frame: bool) -> Result<Strin
     );
     let mut n = 0;
     for kind in [TrackKind::Video, TrackKind::Audio] {
-        for (ti, track) in tl.tracks.iter().enumerate().filter(|(_, t)| t.kind == kind) {
+        // tracks are numbered within their kind (V1, V2, A1, A2), as editors label them
+        for (ti, track) in tl.tracks.iter().filter(|t| t.kind == kind).enumerate() {
             for (item, start) in track.items.iter().zip(track.item_starts()) {
                 let Item::Clip(c) = item else { continue };
                 let Some(m) = project.media.get(&c.media) else {
@@ -97,7 +98,7 @@ struct Event {
     rec_out: i64,
     clip_name: Option<String>,
     speed: Option<f64>,
-    /// 1-based position of the track in the timeline, from a `* TRACK:` comment
+    /// 1-based number of the track among the tracks of its kind, from a `* TRACK:` comment
     track_no: Option<usize>,
 }
 
@@ -187,10 +188,12 @@ pub fn import(project: &Project, timeline: Id, text: &str) -> Result<Vec<Op>, St
         } else {
             TrackKind::Video
         };
-        let hinted = e
-            .track_no
-            .and_then(|n| tl.tracks.get(n.checked_sub(1)?))
-            .filter(|t| t.kind == want_kind);
+        let hinted = e.track_no.and_then(|n| {
+            tl.tracks
+                .iter()
+                .filter(|t| t.kind == want_kind)
+                .nth(n.checked_sub(1)?)
+        });
         let Some(track) = hinted.or_else(|| tl.tracks.iter().find(|t| t.kind == want_kind)) else {
             return Err(format!(
                 "the timeline has no {} track",
@@ -203,13 +206,33 @@ pub fn import(project: &Project, timeline: Id, text: &str) -> Result<Vec<Op>, St
                 .rescale(src_rate, Rounding::Nearest)
                 .map_or(0, |t| t.value)
         };
-        let mut clip = Clip::new(
-            Id::new(),
-            media.name.clone(),
-            media.id,
-            RationalTime::new(from_tl(e.src_in), src_rate),
-            RationalTime::new((e.rec_out - e.rec_in).max(1), rate),
-        );
+        // a clip of the same media already starting at this spot keeps its look and sound
+        // (opacity, gain, effects...), which an edit list cannot carry; only the cut changes
+        let existing = scratch.timeline(timeline).and_then(|t| {
+            let tr = t.tracks.iter().find(|x| x.id == track.id)?;
+            tr.items
+                .iter()
+                .zip(tr.item_starts())
+                .find_map(|(it, start)| match it {
+                    Item::Clip(c) if start == e.rec_in && c.media == media.id => Some(c.clone()),
+                    _ => None,
+                })
+        });
+        let mut clip = match existing {
+            Some(mut c) => {
+                c.id = Id::new();
+                c.source_start = RationalTime::new(from_tl(e.src_in), src_rate);
+                c.duration = RationalTime::new((e.rec_out - e.rec_in).max(1), rate);
+                c
+            }
+            None => Clip::new(
+                Id::new(),
+                media.name.clone(),
+                media.id,
+                RationalTime::new(from_tl(e.src_in), src_rate),
+                RationalTime::new((e.rec_out - e.rec_in).max(1), rate),
+            ),
+        };
         if let Some(sp) = e.speed {
             clip.retime = Retime {
                 speed: sp.abs(),
@@ -217,6 +240,8 @@ pub fn import(project: &Project, timeline: Id, text: &str) -> Result<Vec<Op>, St
                 freeze: false,
                 ..Retime::default()
             };
+        } else if !clip.retime.freeze {
+            clip.retime = Retime::default();
         }
         let _ = e.src_out;
         let op = edit::overwrite(&scratch, track.id, RationalTime::new(e.rec_in, rate), clip)

@@ -13,7 +13,39 @@ pub struct ToolBox {
     pub new_ops: Vec<Op>,
     selection: Option<Id>,
     playhead_secs: f64,
+    /// Pictures the last tool call made, handed to the model with its result (PNG)
+    images: Vec<Vec<u8>>,
+    /// Pictures sent so far in this request
+    images_sent: usize,
+    /// The user lets CoCaptain show frames of their video to Claude
+    pub allow_frames: bool,
+    /// A look was refused because the user has not allowed it yet: the run stops so the editor can ask them
+    pub frames_refused: bool,
+    /// Things for the editor itself to do once the reply is in (open a project, export...)
+    pub app_actions: Vec<AppAction>,
 }
+
+/// What CoCaptain asks the editor to do outside the timeline. They happen after its reply, in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AppAction {
+    /// Make an empty project and open it (the open one is saved first)
+    NewProject {
+        name: String,
+        width: u32,
+        height: u32,
+        fps: String,
+    },
+    /// Open a project file
+    OpenProject { path: String },
+    /// Render the timeline to a video file
+    Export { path: String },
+}
+
+/// Most pictures one request may send: enough to study a reference and check an edit, small enough to stay fast.
+pub const IMAGE_BUDGET: usize = 40;
+
+/// Most frames one look takes.
+const MAX_FRAMES_PER_LOOK: usize = 16;
 
 type R = Result<String, String>;
 
@@ -35,6 +67,17 @@ fn req_num(v: &Value, key: &str) -> Result<f64, String> {
 
 fn req_text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
     text(v, key).ok_or_else(|| format!("missing text '{key}'"))
+}
+
+/// "#ff8800" or "ff8800" -> [r, g, b]
+fn parse_hex(c: &str) -> Result<[u8; 3], String> {
+    let hex = c.trim_start_matches('#');
+    let bad = || format!("'{c}' is not a hex colour like #ff8800");
+    if hex.len() != 6 {
+        return Err(bad());
+    }
+    let v = u32::from_str_radix(hex, 16).map_err(|_| bad())?;
+    Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
 fn r2(x: f64) -> f64 {
@@ -59,7 +102,17 @@ impl ToolBox {
             new_ops: Vec::new(),
             selection,
             playhead_secs,
+            images: Vec::new(),
+            images_sent: 0,
+            allow_frames: false,
+            frames_refused: false,
+            app_actions: Vec::new(),
         })
+    }
+
+    /// The pictures the last tool call made, for its result.
+    pub fn take_images(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.images)
     }
 
     pub fn project(&self) -> &Project {
@@ -210,6 +263,7 @@ impl ToolBox {
                     o.insert("fade_out_sec".into(), json!(self.secs(c.audio.fade_out)));
                 }
                 effects_summary(o, &c.effects);
+                keyframes_summary(o, &c.anim, self.fps());
             }
             Item::Title(t) => {
                 o.insert("type".into(), json!("title"));
@@ -231,6 +285,7 @@ impl ToolBox {
                     o.insert("fade_out_sec".into(), json!(self.secs(t.fade_out)));
                 }
                 effects_summary(o, &t.effects);
+                keyframes_summary(o, &t.anim, self.fps());
             }
         }
         v
@@ -258,7 +313,24 @@ impl ToolBox {
             o.insert("rotation_deg".into(), json!(r2(v.transform.rotation_deg)));
         }
         if v.color != d.color {
-            o.insert("color".into(), json!({"exposure": r2(v.color.exposure), "contrast": r2(v.color.contrast), "saturation": r2(v.color.saturation), "temperature_k": v.color.temperature.round()}));
+            // every colour setting that is not at its default, under the names set_clip takes
+            let (c, n) = (&v.color, &d.color);
+            let mut col = serde_json::Map::new();
+            for (key, val, def) in [
+                ("exposure", c.exposure, n.exposure),
+                ("contrast", c.contrast, n.contrast),
+                ("saturation", c.saturation, n.saturation),
+                ("temperature_k", c.temperature, n.temperature),
+                ("tint", c.tint, n.tint),
+                ("highlights", c.highlights, n.highlights),
+                ("shadows", c.shadows, n.shadows),
+                ("vibrance", c.vibrance, n.vibrance),
+            ] {
+                if val != def {
+                    col.insert(key.into(), json!(r2(val)));
+                }
+            }
+            o.insert("color".into(), Value::Object(col));
         }
     }
 
@@ -312,6 +384,12 @@ impl ToolBox {
     pub fn call(&mut self, name: &str, input: &Value) -> R {
         match name {
             "get_timeline" => Ok(self.timeline_json()?.to_string()),
+            "look" => self.look(input),
+            "import_media" => self.import_media(input),
+            "new_project" => self.new_project(input),
+            "open_project" => self.open_project(input),
+            "export_video" => self.export_video(input),
+            "look_media" => self.look_media(input),
             "list_media" => self.list_media(),
             "organize_media" => self.organize_media(input),
             "find_audio_plugins" => self.find_plugins(),
@@ -327,6 +405,7 @@ impl ToolBox {
             "set_speed" => self.set_speed(input),
             "set_transition" => self.set_transition(input),
             "set_effects" => self.set_effects(input),
+            "edit_effect" => self.edit_effect(input),
             "add_layer" => self.add_layer(input),
             "measure_loudness" => self.measure_loudness_tool(input),
             "normalize_loudness" => self.normalize_tool(input),
@@ -350,8 +429,231 @@ impl ToolBox {
             "edit_title" => self.edit_title(input),
             "remove_silences" => self.remove_silences_tool(input),
             "set_track" => self.set_track(input),
+            "add_track" => self.add_track(input),
+            "copy_grade" => self.copy_grade(input),
+            "reset_grade" => self.reset_grade(input),
             other => Err(format!("unknown tool '{other}'")),
         }
+    }
+
+    // ---- looking -----------------------------------------------------------------------------------
+
+    /// Room to send `n` more pictures, or why not.
+    fn picture_room(&mut self, n: usize) -> Result<(), String> {
+        if !self.allow_frames {
+            self.frames_refused = true;
+            return Err("the user has not let CoCaptain see the video: tell them to turn on 'Let CoCaptain \
+                        see the video' in the CoCaptain panel, then ask again"
+                .into());
+        }
+        if self.images_sent + n > IMAGE_BUDGET {
+            return Err(format!(
+                "picture budget for this request is used up ({IMAGE_BUDGET}); work from what you have seen, \
+                 or look at fewer frames on a contact sheet"
+            ));
+        }
+        Ok(())
+    }
+
+    fn keep_pictures(&mut self, pngs: Vec<Vec<u8>>) {
+        self.images_sent += pngs.len();
+        self.images.extend(pngs);
+    }
+
+    fn look_times(input: &Value) -> Vec<f64> {
+        input
+            .get("times")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default()
+    }
+
+    /// The timeline's picture (with the edits made so far) at the given times or in the middle of each clip.
+    fn look(&mut self, input: &Value) -> R {
+        let tl = self.timeline()?.clone();
+        let mut times = Self::look_times(input);
+        if flag(input, "per_clip").unwrap_or(times.is_empty()) {
+            for t in tl.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
+                for (it, st) in t.items.iter().zip(t.item_starts()) {
+                    if matches!(it, Item::Clip(_)) {
+                        times.push(self.secs(st + it.duration().value / 2));
+                    }
+                }
+            }
+            times.sort_by(f64::total_cmp);
+            times.dedup_by(|a, b| (*a - *b).abs() < 0.2);
+        }
+        if times.is_empty() {
+            return Err("give 'times' (seconds) or per_clip: true".into());
+        }
+        let skipped = times.len().saturating_sub(MAX_FRAMES_PER_LOOK);
+        times.truncate(MAX_FRAMES_PER_LOOK);
+        let sheet = flag(input, "sheet").unwrap_or(times.len() > 1);
+        let width = num(input, "width").unwrap_or(if sheet { 480.0 } else { 960.0 }) as u32;
+        self.picture_room(if sheet { 1 } else { times.len() })?;
+        let frames = crate::look::timeline_frames(self.project(), tl.id, &times, width)?;
+        let pngs = crate::look::pictures(&frames, sheet)?;
+        // what each picture is made of, so the model can name what it sees
+        let at: Vec<Value> = times
+            .iter()
+            .map(|&t| {
+                let tick = self.ticks(t);
+                let layers: Vec<String> = tl
+                    .tracks
+                    .iter()
+                    .filter(|t| t.kind == TrackKind::Video)
+                    .filter_map(|t| {
+                        t.items
+                            .iter()
+                            .zip(t.item_starts())
+                            .find(|(it, st)| {
+                                it.is_content() && *st <= tick && tick < st + it.duration().value
+                            })
+                            .map(|(it, _)| match it {
+                                Item::Clip(c) => format!("{} {}", t.name, c.name),
+                                Item::Title(x) if x.adjustment => {
+                                    format!("{} adjustment layer", t.name)
+                                }
+                                Item::Title(x) if x.text.trim().is_empty() => {
+                                    format!("{} {}", t.name, x.name)
+                                }
+                                Item::Title(x) => format!("{} title '{}'", t.name, x.text),
+                                Item::Gap(_) => String::new(),
+                            })
+                    })
+                    .collect();
+                json!({"sec": r2(t), "layers_bottom_to_top": layers})
+            })
+            .collect();
+        let n = pngs.len();
+        self.keep_pictures(pngs);
+        Ok(json!({
+            "pictures": n,
+            "layout": if sheet { "one contact sheet, frames left to right then down, each labelled with its time" } else { "one picture per time" },
+            "frames": at,
+            "note": if skipped > 0 { format!("{skipped} more frames were left out: look at most {MAX_FRAMES_PER_LOOK} at a time") } else { String::new() },
+        })
+        .to_string())
+    }
+
+    /// Frames of a media file (in the pool, or any file by path) at the given times or spread evenly.
+    fn look_media(&mut self, input: &Value) -> R {
+        let path = match (text(input, "media_id"), text(input, "path")) {
+            (Some(id), _) => self.find_media(id)?.path,
+            (None, Some(p)) => p.to_string(),
+            _ => return Err("give media_id (from list_media) or path".into()),
+        };
+        let mut times = Self::look_times(input);
+        let sheet = flag(input, "sheet").unwrap_or(true);
+        let width = num(input, "width").unwrap_or(if sheet { 480.0 } else { 960.0 }) as u32;
+        self.picture_room(1)?;
+        if times.is_empty() {
+            // spread evenly over the file: probe its length first
+            let (_, secs) = crate::look::media_frames(&path, &[0.0], 64)?;
+            let n = num(input, "count")
+                .unwrap_or(8.0)
+                .clamp(1.0, MAX_FRAMES_PER_LOOK as f64) as usize;
+            times = (0..n)
+                .map(|i| r2((i as f64 + 0.5) / n as f64 * secs))
+                .collect();
+        }
+        times.truncate(MAX_FRAMES_PER_LOOK);
+        if !sheet {
+            self.picture_room(times.len())?;
+        }
+        let (frames, secs) = crate::look::media_frames(&path, &times, width)?;
+        let pngs = crate::look::pictures(&frames, sheet)?;
+        let n = pngs.len();
+        self.keep_pictures(pngs);
+        Ok(json!({
+            "file": path,
+            "duration_sec": r2(secs),
+            "pictures": n,
+            "times_sec": times,
+            "layout": if sheet { "one contact sheet, left to right then down, each labelled with its time in the file" } else { "one picture per time" },
+        })
+        .to_string())
+    }
+
+    // ---- the editor itself ---------------------------------------------------------------------------
+
+    /// Bring video, audio or image files into the media pool (part of the suggested edit, so they can be placed
+    /// on the timeline in the same request).
+    fn import_media(&mut self, input: &Value) -> R {
+        let paths: Vec<String> = input
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return Err("give 'paths': files to import".into());
+        }
+        let mut added = Vec::new();
+        for p in &paths {
+            let path = std::path::Path::new(p);
+            let canon = path.canonicalize().map_err(|e| format!("{p}: {e}"))?;
+            if let Some(m) = self
+                .project()
+                .media
+                .values()
+                .find(|m| std::path::Path::new(&m.path) == canon)
+            {
+                added.push(
+                    json!({"id": m.id.to_string(), "name": m.name, "note": "already in the pool"}),
+                );
+                continue;
+            }
+            let m =
+                captaine_media::media_ref(&canon, Id::new()).map_err(|e| format!("{p}: {e}"))?;
+            added.push(json!({"id": m.id.to_string(), "name": m.name, "duration_sec": m.duration.map(|d| r2(d.to_seconds_f64())), "picture": m.has_video, "sound": m.has_audio}));
+            self.commit(Op::AddMedia { media: m })?;
+        }
+        Ok(json!({"imported": added}).to_string())
+    }
+
+    fn new_project(&mut self, input: &Value) -> R {
+        let name = text(input, "name").unwrap_or("Untitled").trim().to_string();
+        let width = num(input, "width").unwrap_or(1920.0) as u32;
+        let height = num(input, "height").unwrap_or(1080.0) as u32;
+        let fps = match input.get("fps") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            _ => "30".into(),
+        };
+        if !(16..=8192).contains(&width) || !(16..=8192).contains(&height) {
+            return Err("width and height must be 16 to 8192 pixels".into());
+        }
+        self.app_actions.push(AppAction::NewProject {
+            name: name.clone(),
+            width,
+            height,
+            fps: fps.clone(),
+        });
+        Ok(json!({"ok": true, "note": format!("'{name}' ({width}x{height}, {fps} fps) is created and opened when you finish replying; the project open now is saved first. Edits you make in this request still go to the project open now, so make this your last step.")}).to_string())
+    }
+
+    fn open_project(&mut self, input: &Value) -> R {
+        let path = req_text(input, "path")?;
+        if !std::path::Path::new(path).is_file() {
+            return Err(format!("no project file at {path}"));
+        }
+        self.app_actions
+            .push(AppAction::OpenProject { path: path.into() });
+        Ok(json!({"ok": true, "note": "it opens when you finish replying (the project open now is saved first); make this your last step"}).to_string())
+    }
+
+    fn export_video(&mut self, input: &Value) -> R {
+        let path = req_text(input, "path")?;
+        if !path.ends_with(".mp4") && !path.ends_with(".mov") {
+            return Err("path must end in .mp4 or .mov".into());
+        }
+        self.app_actions
+            .push(AppAction::Export { path: path.into() });
+        Ok(json!({"ok": true, "note": "the export starts when you finish replying, from the timeline as it is then (a suggestion the user has not applied yet is not in it); progress shows on the Deliver page"}).to_string())
     }
 
     fn list_media(&self) -> R {
@@ -512,12 +814,16 @@ impl ToolBox {
     }
 
     fn delete_item(&mut self, input: &Value) -> R {
-        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        let (item, track, _) = self.find_item(req_text(input, "item_id")?)?;
         let ripple = flag(input, "ripple").unwrap_or(false);
         if ripple {
             self.commit(Op::RemoveItem { item: item.id() })?;
         } else {
             self.plan(|p| edit::lift(p, item.id()))?;
+            // the gap left by the last item of a track would only stretch the timeline: drop it
+            if let Ok(Some(op)) = edit::clean_gaps(self.ed.project(), track) {
+                self.commit(op)?;
+            }
         }
         Ok(json!({"ok": true, "mode": if ripple { "ripple (later items moved earlier)" } else { "lift (a gap was left)" }, "timeline_duration_sec": self.secs(self.timeline()?.duration().value)}).to_string())
     }
@@ -692,11 +998,42 @@ impl ToolBox {
         if ops.is_empty() {
             return Err("nothing to change: pass at least one property".into());
         }
+        // A keyframed property ignores its fixed value; say so rather than report a change nobody will see.
+        let keyed: Vec<&str> = [
+            ("opacity", "opacity"),
+            ("position_x", "position.x"),
+            ("position_y", "position.y"),
+            ("scale_percent", "scale"),
+            ("rotation_deg", "rotation"),
+            ("exposure", "exposure"),
+            ("contrast", "contrast"),
+            ("saturation", "saturation"),
+            ("temperature_k", "temperature"),
+            ("tint", "tint"),
+            ("highlights", "highlights"),
+            ("shadows", "shadows"),
+            ("vibrance", "vibrance"),
+            ("volume_db", "volume"),
+            ("pan", "pan"),
+        ]
+        .into_iter()
+        .filter(|(arg, prop)| input.get(*arg).is_some() && item_anim(&item).0.contains_key(*prop))
+        .map(|(_, prop)| prop)
+        .collect();
         self.commit(Op::Transaction {
-            description: "Copilot: set properties".into(),
+            description: "CoCaptain: set properties".into(),
             ops,
         })?;
-        self.describe(id)
+        let out = self.describe(id)?;
+        if keyed.is_empty() {
+            return Ok(out);
+        }
+        let mut v: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+        v["warning"] = json!(format!(
+            "{} keyframed, so the fixed value has no effect. To shift the whole animation, send its keyframes (get_timeline lists them) to set_keyframes with each value changed; to use one fixed value, call set_keyframes with empty keys, then set_clip",
+            keyed.join(", ") + if keyed.len() == 1 { " is" } else { " are" }
+        ));
+        Ok(v.to_string())
     }
 
     fn set_keyframes(&mut self, input: &Value) -> R {
@@ -704,7 +1041,7 @@ impl ToolBox {
         let prop = req_text(input, "property")?.to_string();
         if !is_property(&prop) {
             return Err(format!(
-                "unknown property '{prop}'; use one of {}",
+                "unknown property '{prop}'; use one of {}, or fx.<kind>.<setting> for an effect on the item",
                 PROPERTIES
                     .iter()
                     .map(|p| p.0)
@@ -712,6 +1049,26 @@ impl ToolBox {
                     .join(", ")
             ));
         }
+        // an effect setting: the effect has to be there, and the values in its range
+        let fx_range = match parse_fx_property(&prop) {
+            Some((kind, nth, param)) => {
+                let effects = match &item {
+                    Item::Clip(c) => &c.effects,
+                    Item::Title(t) => &t.effects,
+                    Item::Gap(_) => return Err("a gap has no effects".into()),
+                };
+                let have = effects.iter().filter(|e| e.kind == kind).count();
+                if have < nth {
+                    return Err(format!(
+                        "the item has {have} {} effect(s); add it first (edit_effect), then animate its settings",
+                        kind.key()
+                    ));
+                }
+                let d = &kind.params()[param];
+                Some((d.min, d.max))
+            }
+            None => None,
+        };
         let mut keys = Vec::new();
         for k in input
             .get("keys")
@@ -722,6 +1079,11 @@ impl ToolBox {
             let at =
                 num(k, "at_sec").ok_or("each key needs at_sec (seconds from the item's start)")?;
             let v = num(k, "value").ok_or("each key needs a value")?;
+            if let Some((lo, hi)) = fx_range {
+                if !(lo..=hi).contains(&v) {
+                    return Err(format!("{prop} = {v} is outside {lo}..{hi}"));
+                }
+            }
             let interp = match text(k, "interp").unwrap_or("linear") {
                 "hold" => Interp::Hold,
                 "linear" => Interp::Linear,
@@ -786,19 +1148,12 @@ impl ToolBox {
         }
         let kind = match text(input, "kind").unwrap_or("dissolve") {
             "none" => None,
-            "dissolve" => Some(TransitionKind::Dissolve),
-            "dip" => Some(TransitionKind::Dip),
-            "wipe_right" => Some(TransitionKind::WipeRight),
-            "wipe_left" => Some(TransitionKind::WipeLeft),
-            "push_left" => Some(TransitionKind::PushLeft),
-            "push_right" => Some(TransitionKind::PushRight),
-            "wipe_down" => Some(TransitionKind::WipeDown),
-            "wipe_up" => Some(TransitionKind::WipeUp),
-            "slide_left" => Some(TransitionKind::SlideLeft),
-            "slide_right" => Some(TransitionKind::SlideRight),
-            "iris" => Some(TransitionKind::Iris),
-            "zoom_in" => Some(TransitionKind::ZoomIn),
-            other => return Err(format!("unknown transition '{other}'")),
+            other => Some(TransitionKind::from_key(other).ok_or_else(|| {
+                format!(
+                    "unknown transition '{other}'; use one of {}",
+                    TransitionKind::ALL.map(|t| t.key()).join(", ")
+                )
+            })?),
         };
         let transition = kind.map(|kind| Transition {
             kind,
@@ -821,67 +1176,141 @@ impl ToolBox {
             return Err("effects go on clips and layers".into());
         }
         let mut list = Vec::new();
+        let mut notes = Vec::new();
         for e in input
             .get("effects")
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or(&[])
         {
-            let name = req_text(e, "kind")?;
-            let kind = EffectKind::from_key(name).ok_or_else(|| {
-                format!(
-                    "unknown effect '{name}'; use one of {}",
-                    EffectKind::ALL
-                        .iter()
-                        .map(|k| k.key())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?;
-            let mut fx = Effect::new(kind);
-            if let Some(en) = flag(e, "enabled") {
-                fx.enabled = en;
-            }
-            if let Some(path) = text(e, "path") {
-                fx.text = path.to_string();
-            }
-            if let Some(pts) = e.get("points").and_then(Value::as_array) {
-                let pts: Option<Vec<(f64, f64)>> = pts
-                    .iter()
-                    .map(|p| {
-                        let a = p.as_array()?;
-                        Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
-                    })
-                    .collect();
-                fx.text = polygon_text(&pts.ok_or("points are [x, y] pairs in percent")?);
-            }
-            if let Some(ps) = e.get("params").and_then(Value::as_object) {
-                for (k, v) in ps {
-                    let idx = kind
-                        .params()
-                        .iter()
-                        .position(|d| d.name.to_lowercase().replace(' ', "_") == *k)
-                        .ok_or_else(|| {
-                            format!(
-                                "{name} has no parameter '{k}'; it has {}",
-                                kind.params()
-                                    .iter()
-                                    .map(|d| d.name.to_lowercase().replace(' ', "_"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        })?;
-                    fx.params[idx] = v.as_f64().ok_or("parameters are numbers")?;
-                }
-            }
-            fx.check().map_err(|m| format!("{name}: {m}"))?;
+            let mut fx = effect_from_json(e, None)?;
+            notes.extend(self.pick_key_colour(&item, &mut fx, e));
             list.push(fx);
         }
         self.commit(Op::SetEffects {
             item: item.id(),
             effects: list,
         })?;
-        self.describe(item.id())
+        with_notes(self.describe(item.id())?, &notes)
+    }
+
+    /// A new chroma key takes its key colour from the clip itself, the way an eyedropper would: the most common
+    /// strong colour near the one asked for (pure green when none is given), since a guessed colour rarely
+    /// matches real footage.
+    fn pick_key_colour(&self, item: &Item, fx: &mut Effect, input: &Value) -> Option<String> {
+        if fx.kind != EffectKind::ChromaKey {
+            return None;
+        }
+        let given = input.get("params").and_then(Value::as_object);
+        let Item::Clip(c) = item else { return None };
+        let media = self.project().media.get(&c.media)?;
+        let asked = [fx.params[0], fx.params[1], fx.params[2]];
+        let default_green = asked == [0.0, 255.0, 0.0];
+        let hue = hue_of(asked);
+        let reach = if default_green { 60.0 } else { 40.0 };
+        match crate::color::key_colour(c, media, hue, reach) {
+            Ok(Some(rgb)) => {
+                for (i, v) in rgb.iter().enumerate() {
+                    fx.params[i] = *v as f64;
+                }
+                // a dull backdrop is close to grey: scale the reach of the key to how colourful the backdrop
+                // is (pure green is the yardstick), so it does not eat into the subject
+                let [r, g, b] = rgb.map(|v| v as f64 / 255.0);
+                let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
+                let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
+                let k = (cb.hypot(cr) / 0.53).clamp(0.2, 1.0);
+                let has = |name: &str| given.is_some_and(|p| p.contains_key(name));
+                if !has("tolerance") || k < 0.6 {
+                    fx.params[3] = (35.0 * k).max(6.0).round();
+                }
+                if !has("softness") || k < 0.6 {
+                    fx.params[4] = (15.0 * k).max(3.0).round();
+                }
+                Some(format!(
+                    "key colour picked from the shot: red {}, green {}, blue {} (tolerance {}, softness {})",
+                    rgb[0], rgb[1], rgb[2], fx.params[3], fx.params[4]
+                ))
+            }
+            Ok(None) => Some(format!(
+                "no backdrop near that colour covers much of the shot (hue {hue:.0}): keying red {}, green {}, blue {} as given; tell the user, or give the colour actually in the shot",
+                asked[0], asked[1], asked[2]
+            )),
+            Err(_) => None,
+        }
+    }
+
+    /// Change one effect of an item, leaving its other effects alone: the settings given are changed, the rest
+    /// keep their current values. A missing effect is added (colour effects go with the other colour effects, in
+    /// front; the rest at the end). `remove: true` takes it off.
+    fn edit_effect(&mut self, input: &Value) -> R {
+        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        let mut effects = match &item {
+            Item::Clip(c) => c.effects.clone(),
+            Item::Title(t) => t.effects.clone(),
+            Item::Gap(_) => return Err("effects go on clips and layers".into()),
+        };
+        let kind = effect_kind(req_text(input, "kind")?)?;
+        let at = effects.iter().position(|e| e.kind == kind);
+        let mut notes = Vec::new();
+        let mut ops = Vec::new();
+        if flag(input, "remove") == Some(true) {
+            let Some(i) = at else {
+                return Err(format!("this item has no {} effect", kind.key()));
+            };
+            effects.remove(i);
+            // its keyframes go too, once no effect of that kind is left
+            if !effects.iter().any(|e| e.kind == kind) {
+                let anim = match &item {
+                    Item::Clip(c) => &c.anim,
+                    Item::Title(t) => &t.anim,
+                    Item::Gap(_) => unreachable!(),
+                };
+                let (a, b) = (format!("fx.{}.", kind.key()), format!("fx.{}#", kind.key()));
+                for prop in anim
+                    .0
+                    .keys()
+                    .filter(|k| k.starts_with(&a) || k.starts_with(&b))
+                {
+                    ops.push(Op::SetAnimTrack {
+                        item: item.id(),
+                        prop: prop.clone(),
+                        keys: Vec::new(),
+                    });
+                }
+            }
+        } else {
+            let mut fx = effect_from_json(input, at.map(|i| effects[i].clone()))?;
+            if at.is_none() {
+                notes.extend(self.pick_key_colour(&item, &mut fx, input));
+            }
+            match at {
+                Some(i) => effects[i] = fx,
+                None if is_color_effect(kind) => {
+                    let i = effects
+                        .iter()
+                        .take_while(|e| is_color_effect(e.kind))
+                        .count();
+                    effects.insert(i, fx);
+                }
+                None => effects.push(fx),
+            }
+        }
+        ops.insert(
+            0,
+            Op::SetEffects {
+                item: item.id(),
+                effects,
+            },
+        );
+        self.commit(if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            Op::Transaction {
+                description: format!("CoCaptain: remove {}", kind.key()),
+                ops,
+            }
+        })?;
+        with_notes(self.describe(item.id())?, &notes)
     }
 
     fn split_at_scenes_tool(&mut self, input: &Value) -> R {
@@ -893,7 +1322,7 @@ impl ToolBox {
             return Ok(json!({"ok": true, "cuts": 0, "note": "no scene changes found; try a lower threshold"}).to_string());
         }
         self.commit(Op::Transaction {
-            description: "Copilot: split at scene changes".into(),
+            description: "CoCaptain: split at scene changes".into(),
             ops,
         })?;
         let t0 = start as f64 / self.fps();
@@ -933,13 +1362,8 @@ impl ToolBox {
         let mut layer = Title::generator(Id::new(), kind, self.time(dur));
         if let Some(sh) = layer.shape.as_mut() {
             if let Some(c) = text(input, "color") {
-                let hex = c.trim_start_matches('#');
-                let v = u32::from_str_radix(hex, 16)
-                    .map_err(|_| "color is a hex value like #ff8800")?;
-                if hex.len() != 6 {
-                    return Err("color is a hex value like #ff8800".into());
-                }
-                sh.color = [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255];
+                let [r, g, b] = parse_hex(c)?;
+                sh.color = [r, g, b, 255];
             }
             if let Some(n) = num(input, "sides") {
                 sh.sides = n.round().clamp(0.0, 99.0) as u32;
@@ -979,7 +1403,7 @@ impl ToolBox {
             return Ok(json!({"ok": true, "cuts": 0, "note": "no filler words found"}).to_string());
         }
         self.commit(Op::Transaction {
-            description: "Copilot: remove filler words".into(),
+            description: "CoCaptain: remove filler words".into(),
             ops,
         })?;
         let t0 = start as f64 / self.fps();
@@ -1006,7 +1430,7 @@ impl ToolBox {
             start as f64 / self.fps(),
         )?;
         self.commit(Op::Transaction {
-            description: "Copilot: add captions".into(),
+            description: "CoCaptain: add captions".into(),
             ops,
         })?;
         Ok(json!({"ok": true, "captions": lines.len(), "track": captaine_interchange::srt::CAPTION_TRACK}).to_string())
@@ -1094,7 +1518,7 @@ impl ToolBox {
             })
             .collect();
         self.commit(Op::Transaction {
-            description: format!("Copilot: {name} {}", if entering { "in" } else { "out" }),
+            description: format!("CoCaptain: {name} {}", if entering { "in" } else { "out" }),
             ops,
         })?;
         self.describe(t.id)
@@ -1130,7 +1554,7 @@ impl ToolBox {
             crate::follow::track_attach(&clip, &media, &title, cs, ts, canvas, self.fps(), None)?;
         let n = ops.len();
         self.commit(Op::Transaction {
-            description: "Copilot: attach title to subject".into(),
+            description: "CoCaptain: attach title to subject".into(),
             ops,
         })?;
         Ok(json!({"ok": true, "tracks_written": n, "title": title.name}).to_string())
@@ -1142,16 +1566,32 @@ impl ToolBox {
             "9:16" => ("9:16", (9u32, 16u32)),
             "1:1" => ("1:1", (1, 1)),
             "4:5" => ("4:5", (4, 5)),
-            other => return Err(format!("aspect is 9:16, 1:1 or 4:5, not '{other}'")),
+            "3:4" => ("3:4", (3, 4)),
+            "4:3" => ("4:3", (4, 3)),
+            "3:2" => ("3:2", (3, 2)),
+            "5:3" => ("5:3", (5, 3)),
+            other => {
+                return Err(format!(
+                    "aspect is 9:16, 1:1, 4:5, 3:4, 4:3, 3:2 or 5:3, not '{other}'"
+                ))
+            }
         };
         let cur = self.timeline()?.clone();
         let s = &self.project().settings;
         let short = s.width.min(s.height).max(2);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
-        let canvas = (
-            even(short as f64),
-            even(short as f64 * ratio.1 as f64 / ratio.0 as f64),
-        );
+        // portrait/square: the short side becomes the width; landscape (4:3): it stays the height
+        let canvas = if ratio.0 > ratio.1 {
+            (
+                even(short as f64 * ratio.0 as f64 / ratio.1 as f64),
+                even(short as f64),
+            )
+        } else {
+            (
+                even(short as f64),
+                even(short as f64 * ratio.1 as f64 / ratio.0 as f64),
+            )
+        };
         let mut copy = cur.duplicate(format!("{} ({label})", cur.name));
         copy.canvas = Some(canvas);
         let mut ops = vec![Op::AddTimeline {
@@ -1174,7 +1614,7 @@ impl ToolBox {
             }
         }
         self.commit(Op::Transaction {
-            description: format!("Copilot: reframe to {label}"),
+            description: format!("CoCaptain: reframe to {label}"),
             ops,
         })?;
         Ok(
@@ -1188,7 +1628,7 @@ impl ToolBox {
         let smoothing = num(input, "smoothing").unwrap_or(15.0).clamp(1.0, 60.0) as u32;
         let ops = crate::stabilize::stabilize(&clip, &media, smoothing)?;
         self.commit(Op::Transaction {
-            description: "Copilot: stabilize".into(),
+            description: "CoCaptain: stabilize".into(),
             ops,
         })?;
         self.describe(clip.id)
@@ -1372,7 +1812,7 @@ impl ToolBox {
             }
         };
         self.commit(Op::Transaction {
-            description: format!("Copilot: normalize to {target} LUFS"),
+            description: format!("CoCaptain: normalize to {target} LUFS"),
             ops,
         })?;
         Ok(json!({"ok": true, "target_lufs": target, "changed_by_db": r2(gain)}).to_string())
@@ -1406,6 +1846,117 @@ impl ToolBox {
         let at = self.time(req_num(input, "at_sec")?);
         self.plan(|p| edit::overwrite_item(p, track.id, at, Item::Title(t)))?;
         self.describe(id)
+    }
+
+    /// Every video clip of the timeline, in playing order.
+    fn video_clips(&self) -> Result<Vec<Clip>, String> {
+        let tl = self.timeline()?;
+        let mut v: Vec<(i64, Clip)> = tl
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .flat_map(|t| {
+                t.items
+                    .iter()
+                    .zip(t.item_starts())
+                    .filter_map(|(it, st)| match it {
+                        Item::Clip(c) => Some((st, c.clone())),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|(_, c)| {
+                self.project()
+                    .media
+                    .get(&c.media)
+                    .is_some_and(|m| m.has_video)
+            })
+            .collect();
+        v.sort_by_key(|(st, _)| *st);
+        Ok(v.into_iter().map(|(_, c)| c).collect())
+    }
+
+    fn copy_grade(&mut self, input: &Value) -> R {
+        let (item, _, _) = self.find_item(req_text(input, "from_item_id")?)?;
+        let Item::Clip(from) = item else {
+            return Err("from_item_id must be a video clip".into());
+        };
+        let grade = Grade::of(&from);
+        let targets: Vec<Clip> = if input.get("all_shots").and_then(Value::as_bool) == Some(true) {
+            self.video_clips()?
+                .into_iter()
+                .filter(|c| c.id != from.id)
+                .collect()
+        } else {
+            let ids = input
+                .get("to_item_ids")
+                .and_then(Value::as_array)
+                .ok_or("give to_item_ids (a list) or all_shots: true")?;
+            let mut v = Vec::new();
+            for id in ids {
+                let (it, _, _) = self.find_item(id.as_str().ok_or("item ids are strings")?)?;
+                match it {
+                    Item::Clip(c) => v.push(c),
+                    _ => return Err("grades go on video clips".into()),
+                }
+            }
+            v
+        };
+        let ops: Vec<Op> = targets
+            .iter()
+            .flat_map(|c| captaine_ops::edit::set_grade(c, &grade))
+            .collect();
+        if ops.is_empty() {
+            return Ok(
+                json!({"ok": true, "changed": 0, "note": "those shots already have this grade"})
+                    .to_string(),
+            );
+        }
+        self.commit(Op::Transaction {
+            description: format!("CoCaptain: copy grade to {} shot(s)", targets.len()),
+            ops,
+        })?;
+        Ok(json!({"ok": true, "changed": targets.len()}).to_string())
+    }
+
+    fn reset_grade(&mut self, input: &Value) -> R {
+        let (item, _, _) = self.find_item(req_text(input, "item_id")?)?;
+        let Item::Clip(c) = item else {
+            return Err("item_id must be a video clip".into());
+        };
+        let ops = captaine_ops::edit::set_grade(&c, &Grade::neutral());
+        if ops.is_empty() {
+            return Ok(json!({"ok": true, "note": "this shot has no grade"}).to_string());
+        }
+        self.commit(Op::Transaction {
+            description: "CoCaptain: reset grade".into(),
+            ops,
+        })?;
+        self.describe(c.id)
+    }
+
+    fn add_track(&mut self, input: &Value) -> R {
+        let kind = match req_text(input, "kind")? {
+            "video" => TrackKind::Video,
+            "audio" => TrackKind::Audio,
+            other => return Err(format!("kind is video or audio, not '{other}'")),
+        };
+        let count = num(input, "count").unwrap_or(1.0).round().clamp(1.0, 16.0) as usize;
+        let tl = self.timeline()?.clone();
+        let op = captaine_ops::edit::add_tracks(&tl, kind, count, text(input, "name"))
+            .map_err(|e| e.to_string())?;
+        let names: Vec<String> = match &op {
+            Op::Transaction { ops, .. } => ops
+                .iter()
+                .filter_map(|o| match o {
+                    Op::AddTrack { track, .. } => Some(track.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.commit(op)?;
+        Ok(json!({"ok": true, "added": names}).to_string())
     }
 
     fn edit_title(&mut self, input: &Value) -> R {
@@ -1444,8 +1995,20 @@ impl ToolBox {
         if let Some(x) = num(input, "shadow") {
             t.style.shadow = x;
         }
+        if let Some(x) = num(input, "glow") {
+            t.style.glow = x.max(0.0);
+        }
         if let Some(x) = num(input, "letter_spacing") {
             t.style.tracking = x;
+        }
+        if let Some(c) = text(input, "color") {
+            t.style.color = parse_hex(c)?;
+        }
+        if let Some(c) = text(input, "outline_color") {
+            t.style.outline_color = parse_hex(c)?;
+        }
+        if let Some(c) = text(input, "accent_color") {
+            t.style.accent = parse_hex(c)?;
         }
         if let Some(a) = text(input, "align") {
             t.style.align = match a {
@@ -1488,7 +2051,7 @@ impl ToolBox {
         }
         let total: f64 = removed.iter().map(|(a, b)| b - a).sum();
         self.commit(Op::Transaction {
-            description: "Copilot: remove silences".into(),
+            description: "CoCaptain: remove silences".into(),
             ops,
         })?;
         let t0 = start as f64 / self.fps();
@@ -1558,12 +2121,18 @@ pub fn tool_definitions() -> Value {
     let item =
         json!({"type": "string", "description": "id of a clip or title, as shown by get_timeline"});
     let track = json!({"type": "string", "description": "track name such as V1 or A2"});
-    json!([
+    let mut tools = json!([
         {"name": "get_timeline", "description": "The whole timeline: tracks, every clip/title/gap with its id, start and duration in seconds, and non-default properties. Call this before editing.", "input_schema": obj(json!({}), &[])},
         {"name": "find_audio_plugins", "description": "List the CLAP audio plugins installed on this computer (id, name, vendor). Read-only.", "input_schema": obj(json!({}), &[])},
         {"name": "add_audio_plugin", "description": "Put an installed CLAP audio plugin on a clip's sound. plugin is its id or name (from find_audio_plugins). settings maps the plugin's control names to values, mix_percent blends the plugin's sound with the original (default 100).", "input_schema": obj(json!({"item_id": item, "plugin": {"type": "string"}, "settings": {"type": "object"}, "mix_percent": {"type": "number"}}), &["item_id", "plugin"])},
         {"name": "organize_media", "description": "File a media item in a bin of the media pool (a folder the user sees), give it tags and a note. Omitted fields stay as they are; bin \"\" takes it out of its bin; tags replaces the whole tag list. Returns the media list.", "input_schema": obj(json!({"media": {"type": "string"}, "bin": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}, "input_color": {"type": "string", "enum": ["auto", "rec709", "rec2020", "hlg", "pq"], "description": "how the footage is encoded; HDR (hlg, pq) and wide-gamut (rec2020) footage is converted to Rec.709 for editing and export. auto reads it from the file."}}), &["media"])},
         {"name": "list_media", "description": "The media pool: ids, names, lengths, whether each has picture and sound.", "input_schema": obj(json!({}), &[])},
+        {"name": "import_media", "description": "Bring files (video, audio, pictures) into the media pool by their full paths; they can then be placed with add_clip in the same request. Part of your suggested edit.", "input_schema": obj(json!({"paths": {"type": "array", "items": {"type": "string"}}}), &["paths"])},
+        {"name": "new_project", "description": "Make a new, empty project (tracks V1, V2, A1, A2) and open it in the editor when you finish replying; the project open now is saved first. Only when the user asks for a new or blank project. Default 1920x1080 at 30 fps; a vertical reel is 1080x1920.", "input_schema": obj(json!({"name": {"type": "string"}, "width": {"type": "number"}, "height": {"type": "number"}, "fps": {"type": "string", "description": "24, 25, 30, 60, 23.976, 29.97 or 59.94"}}), &[])},
+        {"name": "open_project", "description": "Open another project file (.captaine.json) when you finish replying; the one open now is saved first. Only when the user asks.", "input_schema": obj(json!({"path": {"type": "string"}}), &["path"])},
+        {"name": "export_video", "description": "Render the timeline to a video file (.mp4 H.264, or .mov ProRes) when you finish replying. Only when the user asks to export or render.", "input_schema": obj(json!({"path": {"type": "string"}}), &["path"])},
+        {"name": "look", "description": "SEE the timeline: renders the picture at the given times (seconds), including every edit you have made so far, and shows it to you. With per_clip (the default when no times are given) you get the middle frame of every clip. Several frames come as one contact sheet, each labelled with its time; sheet: false gives one bigger picture per time. Up to 16 frames per call and 40 pictures per request, so pick the moments that matter. Use it to judge colour, framing, text placement and timing, and always to check your work after editing.", "input_schema": obj(json!({"times": {"type": "array", "items": {"type": "number"}}, "per_clip": {"type": "boolean"}, "sheet": {"type": "boolean"}, "width": {"type": "number", "description": "pixels per frame (default 480 on a sheet, 960 alone, at most 1024)"}}), &[])},
+        {"name": "look_media", "description": "SEE a media file: frames at the given times (seconds into the file), or `count` frames spread evenly (default 8), as a labelled contact sheet. Works on media in the pool (media_id) or any video file on this Mac (path), e.g. a reference reel the user gave you or footage you are choosing between.", "input_schema": obj(json!({"media_id": {"type": "string"}, "path": {"type": "string"}, "times": {"type": "array", "items": {"type": "number"}}, "count": {"type": "number"}, "sheet": {"type": "boolean"}, "width": {"type": "number"}}), &[])},
         {"name": "find_silences", "description": "Analyse a clip's audio and list quiet stretches (timeline seconds). Read-only.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number", "description": "level below which audio counts as silent; default -42"}, "min_seconds": {"type": "number", "description": "shortest silence to report; default 0.45"}}), &["item_id"])},
         {"name": "split", "description": "Cut the item under a time on one track into two (nothing moves).", "input_schema": obj(json!({"track": track, "at_sec": {"type": "number"}}), &["track", "at_sec"])},
         {"name": "delete_item", "description": "Remove a clip or title. ripple=false leaves a gap (lift); ripple=true closes the gap, moving later items on that track earlier.", "input_schema": obj(json!({"item_id": item, "ripple": {"type": "boolean"}}), &["item_id"])},
@@ -1575,10 +2144,11 @@ pub fn tool_definitions() -> Value {
             "exposure": {"type": "number"}, "contrast": {"type": "number"}, "saturation": {"type": "number"}, "temperature_k": {"type": "number"}, "tint": {"type": "number"}, "highlights": {"type": "number"}, "shadows": {"type": "number"}, "vibrance": {"type": "number"},
             "volume_db": {"type": "number"}, "pan": {"type": "number"}, "muted": {"type": "boolean"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"},
             "name": {"type": "string"}, "enabled": {"type": "boolean"}}), &["item_id"])},
-        {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, volume (dB), pan. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},
+        {"name": "set_keyframes", "description": "Animate one property of a clip or title over time. Replaces that property's keyframes (an empty list removes the animation). property: position.x, position.y (canvas px), scale (percent), rotation (deg), opacity (percent 0-100), exposure, contrast, saturation, temperature, tint, highlights, shadows, vibrance, volume (dB), pan; or any setting of an effect already on the item, as fx.<kind>.<setting> (e.g. fx.blur.radius, fx.zoom_blur.amount, fx.brightness_contrast.brightness; fx.<kind>#2.<setting> for the second effect of that kind), with values in that setting's range. Each key: at_sec from the item's start, value, optional interp (linear, hold, ease_in, ease_out, ease_in_out) used to reach the next key.", "input_schema": obj(json!({"item_id": item, "property": {"type": "string"}, "keys": {"type": "array", "items": {"type": "object", "properties": {"at_sec": {"type": "number"}, "value": {"type": "number"}, "interp": {"type": "string"}}, "required": ["at_sec", "value"]}}}), &["item_id", "property", "keys"])},
         {"name": "set_speed", "description": "Change a clip's speed (speed_percent: 100 normal, 200 twice as fast, 50 slow motion), play it backwards (reverse) or hold its first frame (freeze). The same stretch of source plays, so the clip gets shorter or longer and later items on its track move (ripple).", "input_schema": obj(json!({"item_id": item, "speed_percent": {"type": "number"}, "ramp_to_percent": {"type": "number", "description": "make a speed ramp: the speed changes steadily from speed_percent at the start to this at the end; 0 removes the ramp"}, "reverse": {"type": "boolean"}, "freeze": {"type": "boolean"}}), &["item_id"])},
-        {"name": "set_transition", "description": "Put a transition on the cut between a clip and the clip right before it (item_id is the LATER clip). kind: dissolve, dip, wipe_right, wipe_left, wipe_down, wipe_up, push_left, push_right, slide_left, slide_right, iris, zoom_in, or none to remove. The overlap is centred on the cut and does not change any lengths; it cannot be longer than twice the shorter of the two clips.", "input_schema": obj(json!({"item_id": item, "kind": {"type": "string", "enum": ["dissolve", "dip", "wipe_right", "wipe_left", "push_left", "push_right", "none"]}, "duration_sec": {"type": "number"}}), &["item_id"])},
-        {"name": "set_effects", "description": "Replace the picture effects of a clip, shape or adjustment layer (an empty list removes them). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), mask (shape 0 rectangle/1 ellipse/2 drawn polygon given as points [[x,y],...] in % of the frame, 3 to 64 of them, center_x, center_y, width, height in % of the frame, rotation deg, feather %, invert 0/1), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %, edge_shrink px (negative grows), matte_view 0/1), glow (threshold %, radius px, intensity %), grain (amount %, size px, colour %), aberration (amount px), duotone (shadow_red/green/blue, highlight_red/green/blue 0-255, strength %), invert (amount %), posterize (levels), pixelate (block_size px at 1080p), color_wheels (lift_/gamma_/gain_ master, red, green, blue, each -1..1), curves (master_0%, master_25%.. up to master_100%, same for red/green/blue, output level 0..1 at that input), hsl (red_hue, red_sat, red_lum ... for red, yellow, green, cyan, blue, magenta), lut (strength %, plus path to a .cube file); sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
+        {"name": "set_transition", "description": "Put a transition on the cut between a clip and the clip right before it (item_id is the LATER clip). kind: dissolve, dip, wipe_right, wipe_left, wipe_down, wipe_up, push_left, push_right, slide_left, slide_right, iris, zoom_in, whip_left, whip_right (a fast camera whip with motion blur; 0.15-0.3 s), or none to remove. The overlap is centred on the cut and does not change any lengths; it cannot be longer than twice the shorter of the two clips.", "input_schema": obj(json!({"item_id": item, "kind": {"type": "string", "enum": ["dissolve", "dip", "wipe_right", "wipe_left", "wipe_down", "wipe_up", "push_left", "push_right", "slide_left", "slide_right", "iris", "zoom_in", "whip_left", "whip_right", "none"]}, "duration_sec": {"type": "number"}}), &["item_id"])},
+        {"name": "edit_effect", "description": "Change ONE effect of a clip, shape or adjustment layer and keep all its other effects. Prefer this over set_effects for adjusting a grade: only the params given change, the rest keep their current values; a missing effect of that kind is added (colour effects — color_wheels, curves, hsl, lut — go in front with the other colour effects). remove: true takes that effect off. Same kinds, params, path and points as set_effects.", "input_schema": obj(json!({"item_id": item, "kind": {"type": "string"}, "params": {"type": "object"}, "path": {"type": "string"}, "enabled": {"type": "boolean"}, "remove": {"type": "boolean"}}), &["item_id", "kind"])},
+        {"name": "set_effects", "description": "Replace ALL the picture effects of a clip, shape or adjustment layer with this list (an empty list removes them; effects not in the list are lost — to change or add a single effect use edit_effect). Effects run in order before the transform. kinds: blur (radius px at 1080p), sharpen (amount %), vignette (amount, softness %), mirror (vertical 0/1), crop (left, top, right, bottom in % of the frame), mask (shape 0 rectangle/1 ellipse/2 drawn polygon given as points [[x,y],...] in % of the frame, 3 to 64 of them, center_x, center_y, width, height in % of the frame, rotation deg, feather %, invert 0/1), chroma_key (key_red, key_green, key_blue 0-255 — default pure green —, tolerance, softness, spill_removal %, edge_shrink px (negative grows), matte_view 0/1), glow (threshold %, radius px, intensity %), grain (amount %, size px, colour %), aberration (amount px), duotone (shadow_red/green/blue, highlight_red/green/blue 0-255, strength %), invert (amount %), posterize (levels), letterbox (aspect = width/height left visible, e.g. 2.35 for cinema bars or 1 for a square; opacity %; put it on an adjustment layer so the bars stay still while clips move), pixelate (block_size px at 1080p), color_wheels (lift_/gamma_/gain_ + master, red, green, blue; each -1..1, 0 = unchanged; lift = shadows, gamma = mid-tones, gain = highlights; 0.03-0.15 is a subtle push, 0.3+ is strong), curves (master_0%, master_25%, master_50%, master_75%, master_100%, and the same five for red_, green_, blue_: the output level 0..1 at that input; untouched = 0, 0.25, 0.5, 0.75, 1), hsl (for each band red, yellow, green, cyan, blue, magenta: <band>_hue = shift in degrees -60..60 (0 = none), <band>_sat = saturation in percent 0..200 (100 = unchanged, 0 = grey), <band>_lum = lightness -50..50 (0 = unchanged)), lut (strength %; the .cube file goes in path next to kind, not in params); sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%). Each entry: {kind, enabled?, params?: {name: number}}; unspecified params keep their defaults.", "input_schema": obj(json!({"item_id": item, "effects": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "enabled": {"type": "boolean"}, "params": {"type": "object"}, "path": {"type": "string", "description": "lut only: the .cube file"}, "points": {"type": "array"}}, "required": ["kind"]}}}), &["item_id", "effects"])},
         {"name": "split_at_scenes", "description": "Cut a clip wherever the picture changes abruptly (a hard cut in the footage). threshold 0.05-0.95 (default 0.3; lower finds more), min_seconds is the shortest piece to leave (default 0.5).", "input_schema": obj(json!({"item_id": item, "threshold": {"type": "number"}, "min_seconds": {"type": "number"}}), &["item_id"])},
         {"name": "add_layer", "description": "Add a shape, a solid colour or an adjustment layer on a video track (default: the top one). An adjustment layer draws nothing but runs its effects (set them with set_effects on its item_id) over everything on the tracks below it. kind: rectangle, ellipse, polygon (regular, sides 3-16), star (sides = points), line (a rounded bar: width_percent long, height_percent thick), solid, adjustment. color is hex like #ff8800; width_percent/height_percent size a rectangle or ellipse as a share of the frame.", "input_schema": obj(json!({"kind": {"type": "string", "enum": ["rectangle", "ellipse", "polygon", "star", "line", "solid", "adjustment"]}, "sides": {"type": "number"}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track, "color": {"type": "string"}, "width_percent": {"type": "number"}, "height_percent": {"type": "number"}}), &["kind", "at_sec"])},
         {"name": "transcribe", "description": "Speech to text for a clip, locally. Returns segments with start/end in timeline seconds. Read-only; takes a few seconds per minute of audio.", "input_schema": obj(json!({"item_id": item, "language": {"type": "string", "description": "ISO code like en; omit to detect"}}), &["item_id"])},
@@ -1589,23 +2159,272 @@ pub fn tool_definitions() -> Value {
         {"name": "animate_title", "description": "Animate how a title or layer comes on (direction in) or goes off (out) with a preset: fade, slide_up, slide_down, slide_left, slide_right, pop, zoom, typewriter (in only). duration_sec is how long the move takes (default 0.6).", "input_schema": obj(json!({"item_id": item, "preset": {"type": "string"}, "direction": {"type": "string", "enum": ["in", "out"]}, "duration_sec": {"type": "number"}}), &["item_id", "preset"])},
         {"name": "remove_background", "description": "Cut the subject out of its background using Apple's on-device vision model (Mac only): the background becomes transparent, so whatever is on the tracks below shows through. mode 'subject' (default: people, animals, objects) or 'person'. Takes a few seconds per second of footage.", "input_schema": obj(json!({"item_id": item, "mode": {"type": "string", "enum": ["subject", "person"]}}), &["item_id"])},
         {"name": "attach_title_to_subject", "description": "Make a title (or shape layer) follow the main moving subject of a video clip, by tracking it with Apple's vision model (Mac only). Writes position keyframes on the title.", "input_schema": obj(json!({"clip_id": item, "title_id": item}), &["clip_id", "title_id"])},
-        {"name": "reframe_sequence", "description": "Make a copy of the sequence in another aspect ratio (9:16 vertical, 1:1 square or 4:5 portrait): every video clip is scaled to fill the new frame and panned to keep its subject (a face if there is one) in view. Mac only; takes a few seconds per clip.", "input_schema": obj(json!({"aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5"]}}), &["aspect"])},
+        {"name": "reframe_sequence", "description": "Make a copy of the sequence in another aspect ratio (9:16 vertical, 1:1 square, 4:5 or 3:4 portrait, 4:3, 3:2 or 5:3 landscape): every video clip is scaled to fill the new frame and panned to keep its subject (a face if there is one) in view. Mac only; takes a few seconds per clip.", "input_schema": obj(json!({"aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5", "3:4", "4:3", "3:2", "5:3"]}}), &["aspect"])},
         {"name": "stabilize", "description": "Steady shaky handheld footage: the part of the file the clip plays is analysed and re-rendered smoothed (a new, slightly zoomed copy of that stretch is made and the clip is pointed at it). smoothing is how many frames the camera path is averaged over (default 15; 30 for a walking shot). Takes about real time.", "input_schema": obj(json!({"item_id": item, "smoothing": {"type": "number"}}), &["item_id"])},
         {"name": "auto_color", "description": "Measure a few frames of a clip and set its exposure, contrast, saturation and colour temperature to a balanced look (fixes under- or over-exposure, a colour cast and flat colour; a gentle move, not a style). Replaces the clip's basic colour settings.", "input_schema": obj(json!({"item_id": item}), &["item_id"])},
-        {"name": "match_color", "description": "Make a clip look like another one (same brightness, colour balance and colour) by setting its basic colour settings from a comparison of frames of both. item_id is the clip to change, reference_id the one to match.", "input_schema": obj(json!({"item_id": item, "reference_id": item}), &["item_id", "reference_id"])},
+        {"name": "match_color", "description": "Make a clip look like another one (same brightness, colour balance and colour) by setting its basic colour settings from a comparison of frames of both. item_id is the clip to change, reference_id the one to match. Its wheels, curves, HSL and LUT stay. This alone answers \"match the colour\"; do not follow it with copy_grade, which would replace the shot's own grade.", "input_schema": obj(json!({"item_id": item, "reference_id": item}), &["item_id", "reference_id"])},
         {"name": "sync_by_audio", "description": "Line up clips shot of the same event by their sound. The first clip stays; the others are moved in time so their sound matches it. Clips with no clear match are left alone and reported.", "input_schema": obj(json!({"item_ids": {"type": "array", "items": {"type": "string"}}}), &["item_ids"])},
         {"name": "multicam_cut", "description": "Multicam switching: cut every camera-angle track at a time and show only one angle from there on. angle_tracks are the track names in angle order; angle is 1-based. Call it once at the start (angle 1 at the first clip's time) and then at each switch.", "input_schema": obj(json!({"angle_tracks": {"type": "array", "items": {"type": "string"}}, "angle": {"type": "number"}, "at_sec": {"type": "number"}}), &["angle_tracks", "angle", "at_sec"])},
         {"name": "measure_loudness", "description": "Measure loudness in LUFS (and loudness range, peaks) of one clip, or of the whole mix when item_id is left out. Read-only.", "input_schema": obj(json!({"item_id": item}), &[])},
         {"name": "learn_noise_reduction", "description": "Remove steady background noise (hiss, hum, room tone) from a clip by learning what the noise sounds like from a stretch of the clip that has only noise (at least 0.2 s, about 1 s is better), then adding Noise Reduction using that sample. from_sec and to_sec are seconds into the clip.", "input_schema": obj(json!({"item_id": item, "from_sec": {"type": "number"}, "to_sec": {"type": "number"}, "reduction_db": {"type": "number"}, "sensitivity": {"type": "number"}}), &["item_id", "from_sec", "to_sec"])},
         {"name": "normalize_loudness", "description": "Bring a clip (or, without item_id, the whole sequence by moving every track's level equally) to a target loudness in LUFS: -16 for web and podcasts, -14 for streaming music, -23 for broadcast (EBU R128). Default -16.", "input_schema": obj(json!({"item_id": item, "target_lufs": {"type": "number"}}), &[])},
         {"name": "add_title", "description": "Add a title on a video track (default: the top one). Templates: lower_third (name plate, uses subtitle), centered, caption, minimal (text with an accent line), boxed (text in a bordered plate), quote (large quotation mark, wrapped text, subtitle is the speaker).", "input_schema": obj(json!({"text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "at_sec": {"type": "number"}, "duration_sec": {"type": "number"}, "track": track}), &["text", "at_sec"])},
-        {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / letter_spacing (px at 1080p), align (left, center, right) or font (default, mono, or a font file path).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "shadow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
+        {"name": "edit_title", "description": "Change a title's text, second line, template, size (px at 1080p), fades, outline / shadow / glow (soft dark halo behind the letters, keeps text readable on bright pictures) / letter_spacing (px at 1080p), align (left, center, right), colours (color = the text, outline_color, accent_color = the plate or line of lower_third, minimal, boxed and quote; hex like #d90d12) or font (default, mono, or a font file path; for a font collection (.ttc) add '#' and the style name or face number, e.g. /System/Library/Fonts/Supplemental/Futura.ttc#Condensed ExtraBold).", "input_schema": obj(json!({"item_id": item, "outline": {"type": "number"}, "color": {"type": "string"}, "outline_color": {"type": "string"}, "accent_color": {"type": "string"}, "shadow": {"type": "number"}, "glow": {"type": "number"}, "letter_spacing": {"type": "number"}, "align": {"type": "string"}, "font": {"type": "string"}, "text": {"type": "string"}, "subtitle": {"type": "string"}, "template": {"type": "string", "enum": ["lower_third", "centered", "caption", "minimal", "boxed", "quote"]}, "size": {"type": "number"}, "fade_in_sec": {"type": "number"}, "fade_out_sec": {"type": "number"}}), &["item_id"])},
         {"name": "remove_silences", "description": "Cut the silent stretches out of a clip (a jump-cut tightening), keeping keep_seconds of room either side. Later items on the track move earlier.", "input_schema": obj(json!({"item_id": item, "threshold_db": {"type": "number"}, "min_seconds": {"type": "number"}, "keep_seconds": {"type": "number"}}), &["item_id"])},
+        {"name": "copy_grade", "description": "Give other shots the same grade as one shot: its colour settings (exposure, contrast, saturation, white balance...) and colour effects (wheels, curves, HSL, LUT). This REPLACES their own grade (their wheels, curves, HSL, LUT and colour keyframes are lost): use it when asked for the same grade or look, not to match colour (that is match_color). Their other effects stay. to_item_ids lists the shots, or all_shots: true for every video clip.", "input_schema": obj(json!({"from_item_id": item, "to_item_ids": {"type": "array", "items": {"type": "string"}}, "all_shots": {"type": "boolean"}}), &["from_item_id"])},
+        {"name": "reset_grade", "description": "Remove a shot's grade: neutral colour settings and no colour effects (wheels, curves, HSL, LUT); its other effects stay.", "input_schema": obj(json!({"item_id": item}), &["item_id"])},
+        {"name": "add_track", "description": "Add new empty tracks: kind video (placed above the top video track) or audio (after the last audio track). count (default 1); name is optional (default V3, A3 and so on). Returns the names of the tracks added.", "input_schema": obj(json!({"kind": {"type": "string", "enum": ["video", "audio"]}, "count": {"type": "number"}, "name": {"type": "string"}}), &["kind"])},
         {"name": "set_track", "description": "Hide/mute a track or change its volume.", "input_schema": obj(json!({"track": track, "enabled": {"type": "boolean"}, "volume_db": {"type": "number"}}), &["track"])},
-    ])
+    ]);
+    generated_parts(&mut tools);
+    tools
+}
+
+/// Hue in degrees of an RGB colour (0-255 channels).
+fn hue_of(c: [f64; 3]) -> f64 {
+    let [r, g, b] = c.map(|v| v / 255.0);
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let d = mx - mn;
+    if d <= 0.0 {
+        return 120.0;
+    }
+    60.0 * if mx == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    }
+}
+
+/// A tool result with notes for the model added (when there are any).
+fn with_notes(out: String, notes: &[String]) -> R {
+    if notes.is_empty() {
+        return Ok(out);
+    }
+    let mut v: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    v["note"] = json!(notes.join("; "));
+    Ok(v.to_string())
+}
+
+/// Settings that need more than a name and a range to be used well.
+fn effect_note(k: EffectKind) -> &'static str {
+    match k {
+        EffectKind::ColorWheels => "each -1..1, 0 = unchanged; lift = shadows, gamma = mid-tones, gain = highlights; 0.03-0.15 is a subtle push, 0.3+ is strong",
+        EffectKind::Curves => "the output level 0..1 at that input; untouched = 0, 0.25, 0.5, 0.75, 1",
+        EffectKind::Hsl => "<band>_hue = shift in degrees (0 = none), <band>_sat = percent (100 = unchanged, 0 = grey), <band>_lum = lightness (0 = unchanged)",
+        EffectKind::Lut => "the .cube file goes in path next to kind, not in params",
+        EffectKind::Mask => "shape 0 rectangle/1 ellipse/2 drawn polygon given as points [[x,y],...] in % of the frame, 3 to 64 of them",
+        EffectKind::ChromaKey => "key colour 0-255 (default green); a new key is refined to the actual backdrop colour in the shot near the one given, like an eyedropper; edge_shrink px (negative grows)",
+        EffectKind::Letterbox => "aspect = width/height left visible, e.g. 2.35; put it on an adjustment layer so the bars stay still",
+        EffectKind::DropShadow => "distance and softness in px at 1080p; only shows around layers smaller than the frame or with transparency (titles, shapes, scaled clips)",
+        EffectKind::CornerPin => "corners in % of the frame; untouched = 0,0 100,0 100,100 0,100",
+        EffectKind::LowFrameRate => "frames per second actually shown",
+        EffectKind::Gradient => "corner colours 0-255",
+        _ => "",
+    }
+}
+
+/// Every picture effect by library category with its settings and ranges, for the tool descriptions.
+fn effect_catalog() -> String {
+    let mut out = String::new();
+    for cat in Category::ALL {
+        let kinds: Vec<EffectKind> = EffectKind::ALL
+            .into_iter()
+            .filter(|k| k.category() == cat && k.category() != Category::Sound)
+            .collect();
+        if kinds.is_empty() {
+            continue;
+        }
+        out += &format!("{}: ", cat.label());
+        let entries: Vec<String> = kinds
+            .iter()
+            .map(|k| {
+                let ps: Vec<String> = k
+                    .params()
+                    .iter()
+                    .map(|d| format!("{} {}..{} ({})", param_key(d.name), d.min, d.max, d.default))
+                    .collect();
+                let note = effect_note(*k);
+                format!(
+                    "{} = {} [{}{}]",
+                    k.key(),
+                    k.about().to_lowercase(),
+                    ps.join(", "),
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {note}")
+                    }
+                )
+            })
+            .collect();
+        out += &entries.join("; ");
+        out += ". ";
+    }
+    out
+}
+
+/// The parts of the tool list that come from the model's catalogues, so a new effect or transition is known to
+/// CoCaptain the moment it exists.
+fn generated_parts(tools: &mut Value) {
+    let Some(list) = tools.as_array_mut() else {
+        return;
+    };
+    for t in list {
+        match t["name"].as_str() {
+            Some("set_effects") => {
+                t["description"] = json!(format!(
+                    "Replace ALL the effects of a clip, shape or adjustment layer with this list (an empty list removes them; effects not in the list are lost — to change or add a single effect use edit_effect). Picture effects run in order before the transform. Each entry: {{kind, enabled?, params?: {{setting: number}}, path?, points?}}; unspecified settings keep their defaults. Settings are written as shown: name min..max (default). Picture effects — {}Sound effects: eq (low_gain, low_freq, mid_1_gain, mid_1_freq, mid_1_q, mid_2_gain, mid_2_freq, mid_2_q, high_gain, high_freq; gains in dB), compressor (threshold_db, ratio, attack_ms, release_ms, makeup_db), limiter (ceiling_db, release_ms), de_esser (threshold_db, reduction_%), noise_reduction (reduction_db, sensitivity_%), ducking (threshold_db, reduction_db, attack_ms, release_ms).",
+                    effect_catalog()
+                ));
+            }
+            Some("set_transition") => {
+                let kinds: Vec<String> = TransitionKind::ALL
+                    .iter()
+                    .map(|k| format!("{} ({})", k.key(), k.about().to_lowercase()))
+                    .collect();
+                t["description"] = json!(format!(
+                    "Put a transition on the cut between a clip and the clip right before it (item_id is the LATER clip). kind: {}; or none to remove. Whips and flashes work best short (0.15-0.4 s). The overlap is centred on the cut and does not change any lengths; it cannot be longer than twice the shorter of the two clips.",
+                    kinds.join(", ")
+                ));
+                let mut keys: Vec<&str> = TransitionKind::ALL.iter().map(|k| k.key()).collect();
+                keys.push("none");
+                t["input_schema"]["properties"]["kind"]["enum"] = json!(keys);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The effects on an item, briefly: which kinds, and which are switched off.
+fn effect_kind(name: &str) -> Result<EffectKind, String> {
+    EffectKind::from_key(name).ok_or_else(|| {
+        format!(
+            "unknown effect '{name}'; use one of {}",
+            EffectKind::ALL
+                .iter()
+                .map(|k| k.key())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+/// One effect from its JSON description (`kind`, `params`, `enabled`, `path`, `points`). Starting from `base`
+/// (an effect already on the item) only the settings given change; without it, the rest are the defaults.
+fn effect_from_json(e: &Value, base: Option<Effect>) -> Result<Effect, String> {
+    let name = req_text(e, "kind")?;
+    let kind = effect_kind(name)?;
+    let mut fx = base
+        .filter(|b| b.kind == kind)
+        .unwrap_or_else(|| Effect::new(kind));
+    if let Some(en) = flag(e, "enabled") {
+        fx.enabled = en;
+    }
+    // The file path is accepted at the top level or, as models often send it, inside params.
+    let in_params = e
+        .get("params")
+        .and_then(|p| p.get("path"))
+        .and_then(Value::as_str);
+    if let Some(path) = text(e, "path").or(in_params) {
+        fx.text = path.to_string();
+    }
+    if let Some(pts) = e.get("points").and_then(Value::as_array) {
+        let pts: Option<Vec<(f64, f64)>> = pts
+            .iter()
+            .map(|p| {
+                let a = p.as_array()?;
+                Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+            })
+            .collect();
+        fx.text = polygon_text(&pts.ok_or("points are [x, y] pairs in percent")?);
+    }
+    if let Some(ps) = e.get("params").and_then(Value::as_object) {
+        for (k, v) in ps.iter().filter(|(k, _)| *k != "path") {
+            let idx = kind
+                .params()
+                .iter()
+                .position(|d| d.name.to_lowercase().replace(' ', "_") == *k)
+                .ok_or_else(|| {
+                    format!(
+                        "{name} has no parameter '{k}'; it has {}",
+                        kind.params()
+                            .iter()
+                            .map(|d| d.name.to_lowercase().replace(' ', "_"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            let val = v.as_f64().ok_or("parameters are numbers")?;
+            let d = &kind.params()[idx];
+            if !(d.min..=d.max).contains(&val) {
+                return Err(format!(
+                    "{name} {k} = {val} is outside {}..{} (default {})",
+                    d.min, d.max, d.default
+                ));
+            }
+            fx.params[idx] = val;
+        }
+    }
+    fx.check().map_err(|m| format!("{name}: {m}"))?;
+    Ok(fx)
+}
+
+/// Animated properties with their keyframes, in the form set_keyframes takes, so they can be edited and sent
+/// back: "keyframes": {"exposure": [{"at_sec": 0.0, "value": -1.0, "interp": "ease_out"}, ...]}. Long
+/// animations (motion tracking) only give their count.
+fn keyframes_summary(o: &mut serde_json::Map<String, Value>, anim: &Anim, fps: f64) {
+    if anim.is_empty() {
+        return;
+    }
+    let m: serde_json::Map<String, Value> = anim
+        .0
+        .iter()
+        .map(|(k, keys)| {
+            let v = if keys.len() > 12 {
+                json!({"count": keys.len()})
+            } else {
+                Value::Array(
+                    keys.iter()
+                        .map(|key| {
+                            let mut e =
+                                json!({"at_sec": r2(key.t as f64 / fps), "value": r2(key.v)});
+                            if key.interp != Interp::Linear {
+                                e["interp"] = json!(interp_name(key.interp));
+                            }
+                            e
+                        })
+                        .collect(),
+                )
+            };
+            (k.clone(), v)
+        })
+        .collect();
+    o.insert("keyframes".into(), Value::Object(m));
+}
+
+fn interp_name(i: Interp) -> &'static str {
+    match i {
+        Interp::Hold => "hold",
+        Interp::Linear => "linear",
+        Interp::EaseIn => "ease_in",
+        Interp::EaseOut => "ease_out",
+        Interp::EaseInOut => "ease_in_out",
+        // a curve drawn in the editor; ease_in_out is the nearest shape set_keyframes can send back
+        Interp::Bezier(..) => "ease_in_out",
+    }
+}
+
+fn item_anim(item: &Item) -> &Anim {
+    static NONE: std::sync::OnceLock<Anim> = std::sync::OnceLock::new();
+    match item {
+        Item::Clip(c) => &c.anim,
+        Item::Title(t) => &t.anim,
+        Item::Gap(_) => NONE.get_or_init(Anim::default),
+    }
+}
+
 fn effects_summary(o: &mut serde_json::Map<String, Value>, effects: &[Effect]) {
     if effects.is_empty() {
         return;
@@ -1616,6 +2435,19 @@ fn effects_summary(o: &mut serde_json::Map<String, Value>, effects: &[Effect]) {
             let mut v = json!({"kind": e.kind.key()});
             if !e.enabled {
                 v["enabled"] = json!(false);
+            }
+            // the settings that differ from the defaults, under the names set_effects takes
+            let mut params = serde_json::Map::new();
+            for (d, val) in e.kind.params().iter().zip(&e.params) {
+                if (val - d.default).abs() > 1e-9 {
+                    params.insert(d.name.to_lowercase().replace(' ', "_"), json!(r2(*val)));
+                }
+            }
+            if !params.is_empty() {
+                v["params"] = Value::Object(params);
+            }
+            if e.kind == EffectKind::Lut && !e.text.is_empty() {
+                v["path"] = json!(e.text);
             }
             if let Some(p) = captaine_plugins::PluginRef::parse(&e.text) {
                 v["plugin"] = json!(p.id);

@@ -151,6 +151,10 @@ pub enum Icon {
     Pause,
     Forward,
     ToEnd,
+    /// `[`: the in point
+    MarkIn,
+    /// `]`: the out point
+    MarkOut,
 }
 
 pub fn icon_button(ui: &mut Ui, icon: Icon, diameter: f32, primary: bool) -> Response {
@@ -211,6 +215,19 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, diameter: f32, primary: bool) -> Res
         Icon::ToEnd => {
             bar(s);
             tri(-s * 0.4, 1.0);
+        }
+        Icon::MarkIn | Icon::MarkOut => {
+            // a square bracket: a tall stroke with short arms pointing into the marked range
+            let dir = if matches!(icon, Icon::MarkIn) {
+                1.0
+            } else {
+                -1.0
+            };
+            let (h, arm, x) = (s * 1.4, s * 0.9, c.x - dir * s * 0.45);
+            let st = Stroke::new(1.8, ink);
+            p.line_segment([pos2(x, c.y - h), pos2(x, c.y + h)], st);
+            p.line_segment([pos2(x, c.y - h), pos2(x + dir * arm, c.y - h)], st);
+            p.line_segment([pos2(x, c.y + h), pos2(x + dir * arm, c.y + h)], st);
         }
     }
     resp
@@ -400,7 +417,7 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
                 menus(app, ui);
             });
             // page tabs, centred on the whole bar
-            let tabs_w = 6.0 * 64.0;
+            let tabs_w = 5.0 * 64.0;
             let tabs_rect = Rect::from_min_size(
                 pos2(full.center().x - tabs_w / 2.0, full.top() + 6.0),
                 vec2(tabs_w, 28.0),
@@ -409,7 +426,6 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (page, label) in [
-                        (Page::Media, "Media"),
                         (Page::Cut, "Cut"),
                         (Page::Edit, "Edit"),
                         (Page::Color, "Color"),
@@ -417,16 +433,23 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
                         (Page::Deliver, "Deliver"),
                     ] {
                         if tab(ui, label, app.page == page)
-                            .on_hover_text(if matches!(page, Page::Edit | Page::Deliver) {
-                                ""
-                            } else {
-                                "Not built yet"
-                            })
+                            .on_hover_text(
+                                if matches!(
+                                    page,
+                                    Page::Edit | Page::Color | Page::Effects | Page::Deliver
+                                ) {
+                                    ""
+                                } else {
+                                    "Not built yet"
+                                },
+                            )
                             .clicked()
                         {
                             match page {
-                                Page::Edit => app.page = Page::Edit,
-                                Page::Deliver => app.export.open = true,
+                                Page::Edit => app.set_page(Page::Edit),
+                                Page::Color => app.set_page(Page::Color),
+                                Page::Effects => app.set_page(Page::Effects),
+                                Page::Deliver => app.set_page(Page::Deliver),
                                 _ => app.toast(
                                     format!("The {label} page is planned for a later phase"),
                                     false,
@@ -438,25 +461,32 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let render_label = match render_progress(app) {
+                        Some(p) => format!("Rendering {:.0}%", p * 100.0),
+                        None => "Render".to_string(),
+                    };
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Render").strong().color(Color32::WHITE),
+                                RichText::new(render_label).strong().color(Color32::WHITE),
                             )
                             .fill(theme::ACCENT)
                             .min_size(vec2(72.0, 26.0)),
                         )
+                        .on_hover_text("Open the Deliver page (⌘E)")
                         .clicked()
                     {
-                        app.export.open = true;
+                        app.set_page(Page::Deliver);
                     }
-                    let label = RichText::new("Copilot")
-                        .size(12.0)
-                        .color(if app.show_copilot {
-                            Color32::WHITE
-                        } else {
-                            theme::TEXT
-                        });
+                    // room on the left for the status dot
+                    let label =
+                        RichText::new("    CoCaptain")
+                            .size(12.0)
+                            .color(if app.show_copilot {
+                                Color32::WHITE
+                            } else {
+                                theme::TEXT
+                            });
                     let r = ui.add(
                         egui::Button::new(label)
                             .fill(if app.show_copilot {
@@ -464,7 +494,7 @@ pub fn top_bar(app: &mut App, root: &mut Ui) {
                             } else {
                                 theme::FIELD
                             })
-                            .min_size(vec2(84.0, 26.0)),
+                            .min_size(vec2(104.0, 26.0)),
                     );
                     let dot = pos2(r.rect.left() + 14.0, r.rect.center().y);
                     ui.painter().circle_filled(dot, 3.5, theme::OK);
@@ -501,7 +531,7 @@ pub fn fps_label(r: Rational) -> String {
 fn menus(app: &mut App, ui: &mut Ui) {
     egui::MenuBar::new().ui(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.menu_button("File", |ui| {
+        bar_menu(ui, "File", |ui| {
             if ui.button("New Project…").clicked() {
                 app.new_project = Some(("Untitled".into(), 1920, 1080, "30".into()));
                 ui.close();
@@ -530,7 +560,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 .button(format!("Export…   {}", app.keymap.label(Action::Export)))
                 .clicked()
             {
-                app.export.open = true;
+                app.set_page(Page::Deliver);
                 ui.close();
             }
             ui.menu_button("Export Timeline As", |ui| {
@@ -550,7 +580,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 import_interchange(app);
             }
         });
-        ui.menu_button("Edit", |ui| {
+        bar_menu(ui, "Edit", |ui| {
             if ui
                 .add_enabled(
                     app.session.editor.can_undo(),
@@ -572,7 +602,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
         });
-        ui.menu_button("Trim", |ui| {
+        bar_menu(ui, "Trim", |ui| {
             let sel = app.selected();
             if ui
                 .add_enabled(sel.is_some(), egui::Button::new("Trim Start to Playhead"))
@@ -589,7 +619,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
         });
-        ui.menu_button("Timeline", |ui| {
+        bar_menu(ui, "Timeline", |ui| {
             if ui
                 .button(format!(
                     "Split at Playhead   {}",
@@ -624,7 +654,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
         });
-        ui.menu_button("Clip", |ui| {
+        bar_menu(ui, "Clip", |ui| {
             let has = app.selected().is_some();
             if ui
                 .add_enabled(has, egui::Button::new("Enable / Disable"))
@@ -650,7 +680,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
         });
-        ui.menu_button("Mark", |ui| {
+        bar_menu(ui, "Mark", |ui| {
             if ui
                 .button(format!("Mark In   {}", app.keymap.label(Action::MarkIn)))
                 .clicked()
@@ -671,7 +701,7 @@ fn menus(app: &mut App, ui: &mut Ui) {
                 ui.close();
             }
         });
-        ui.menu_button("View", |ui| {
+        bar_menu(ui, "View", |ui| {
             if ui.button("Zoom In   =").clicked() {
                 app.pps = (app.pps * 1.25).min(600.0);
                 ui.close();
@@ -686,26 +716,63 @@ fn menus(app: &mut App, ui: &mut Ui) {
             }
             ui.separator();
             if ui
-                .button(format!("Copilot   {}", app.keymap.label(Action::Copilot)))
+                .button(format!(
+                    "CoCaptain   {}",
+                    app.keymap.label(Action::CoCaptain)
+                ))
                 .clicked()
             {
                 app.show_copilot = !app.show_copilot;
                 ui.close();
             }
         });
-        ui.menu_button("Settings", |ui| {
+        bar_menu(ui, "Settings", |ui| {
             if ui.button("Preferences…").clicked() {
                 app.prefs_open = true;
                 ui.close();
             }
         });
-        ui.menu_button("Help", |ui| {
+        bar_menu(ui, "Help", |ui| {
             if ui.button("Keyboard Shortcuts   ?").clicked() {
                 app.show_shortcuts = true;
                 ui.close();
             }
         });
     });
+}
+
+/// A menu of the menu bar. While any menu of the bar is open, hovering another title opens that one instead, as
+/// in desktop apps, so the menus can be browsed with one click. Escape closes it (in `handle_shortcuts`).
+fn bar_menu(ui: &mut Ui, title: &str, content: impl FnOnce(&mut Ui)) {
+    let (response, _) = egui::containers::menu::MenuButton::new(title).ui(ui, content);
+    let ctx = ui.ctx().clone();
+    let mine = egui::Popup::default_response_id(&response);
+    let key = bar_menus_key();
+    let mut ids: Vec<egui::Id> = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    if !ids.contains(&mine) {
+        ids.push(mine);
+        ctx.data_mut(|d| d.insert_temp(key, ids.clone()));
+    }
+    let other_open = ids
+        .iter()
+        .any(|&id| id != mine && egui::Popup::is_id_open(&ctx, id));
+    if other_open && response.hovered() {
+        // one popup is open at a time, so this also closes the other menu
+        egui::Popup::open_id(&ctx, mine);
+        ctx.request_repaint();
+    }
+}
+
+fn bar_menus_key() -> egui::Id {
+    egui::Id::new("captaine-bar-menus")
+}
+
+/// The menu of the menu bar that is open, if any.
+fn open_bar_menu(ctx: &Context) -> Option<egui::Id> {
+    let ids: Vec<egui::Id> = ctx
+        .data(|d| d.get_temp(bar_menus_key()))
+        .unwrap_or_default();
+    ids.into_iter().find(|&id| egui::Popup::is_id_open(ctx, id))
 }
 
 /// Write the current timeline in an interchange format other editors read.
@@ -891,7 +958,18 @@ pub fn split_at_playhead(app: &mut App) {
     }
 }
 
+/// Close the gap picked on the timeline: everything after it moves left on every track (see `edit::close_gap`).
+pub fn delete_gap(app: &mut App) {
+    if let Some(g) = app.selected_gap.take() {
+        app.do_plan(|p| edit::close_gap(p, g));
+    }
+}
+
 pub fn lift_selection(app: &mut App) {
+    if app.selected_clip.is_none() && app.selected_gap.is_some() {
+        delete_gap(app);
+        return;
+    }
     if app.selection_ids().len() > 1 {
         app.delete_selection(false);
         return;
@@ -913,6 +991,10 @@ pub fn lift_selection(app: &mut App) {
 }
 
 pub fn extract_selection(app: &mut App) {
+    if app.selected_clip.is_none() && app.selected_gap.is_some() {
+        delete_gap(app);
+        return;
+    }
     if app.selection_ids().len() > 1 {
         app.delete_selection(true);
         return;
@@ -1011,6 +1093,13 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
+    // while a menu of the menu bar is open, keys belong to it: Escape closes it, nothing else edits
+    if let Some(menu) = open_bar_menu(ctx) {
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            egui::Popup::close_id(ctx, menu);
+        }
+        return;
+    }
     if app.rebinding.is_some() {
         capture_rebinding(app, ctx);
         return;
@@ -1107,9 +1196,9 @@ pub fn handle_shortcuts(app: &mut App, ctx: &Context) {
         import_dialog(app);
     }
     if act(Action::Export) {
-        app.export.open = true;
+        app.set_page(Page::Deliver);
     }
-    if act(Action::Copilot) {
+    if act(Action::CoCaptain) {
         app.show_copilot = !app.show_copilot;
     }
     if pressed(Modifiers::SHIFT, Key::Delete) || pressed(Modifiers::SHIFT, Key::Backspace) {
@@ -1308,6 +1397,12 @@ fn prefs_window(app: &mut App, ctx: &Context) {
                 app.prefs.proxy_height = h.round() as u32;
             }
             changed |= r.done;
+            let before = app.prefs.auto_proxies;
+            ui.checkbox(
+                &mut app.prefs.auto_proxies,
+                "Make proxies automatically for footage bigger than HD (for the Proxy switch in the viewer)",
+            );
+            changed |= app.prefs.auto_proxies != before;
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Keyboard shortcuts").strong().size(12.5));
@@ -1408,19 +1503,16 @@ pub fn media_pool(app: &mut App, root: &mut Ui) {
                 crate::titles_ui::pool_tab(app, ui);
                 return;
             }
-            if app.pool_tab != PoolTab::Media {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Coming in a later phase").color(theme::MUTED));
-                    ui.label(
-                        RichText::new(
-                            "Titles, transitions and effects are not part of the engine yet.",
-                        )
-                        .size(11.0)
-                        .color(theme::FAINT),
-                    );
-                });
-                return;
+            match app.pool_tab {
+                PoolTab::Effects => {
+                    crate::effects_page::library(app, ui, crate::effects_page::LibTab::Effects);
+                    return;
+                }
+                PoolTab::Transitions => {
+                    crate::effects_page::library(app, ui, crate::effects_page::LibTab::Transitions);
+                    return;
+                }
+                _ => {}
             }
             egui::Frame::new()
                 .inner_margin(egui::Margin::same(10))
@@ -1492,14 +1584,16 @@ fn sequences_list(app: &mut App, ui: &mut Ui) {
 }
 
 fn bins(app: &mut App, ui: &mut Ui) {
-    let (mut footage, mut audio) = (0, 0);
+    let (mut footage, mut audio, mut stills) = (0, 0, 0);
     for m in app
         .project()
         .media
         .values()
         .filter(|m| m.nested_timeline().is_none())
     {
-        if m.has_video {
+        if captaine_media::is_still_image(&m.path) {
+            stills += 1;
+        } else if m.has_video {
             footage += 1;
         } else {
             audio += 1;
@@ -1509,8 +1603,7 @@ fn bins(app: &mut App, ui: &mut Ui) {
     for (bin, name, n) in [
         (Bin::Footage, "Footage", footage),
         (Bin::Audio, "Audio", audio),
-        (Bin::Graphics, "Graphics", 0),
-        (Bin::Stills, "Stills", 0),
+        (Bin::Stills, "Stills", stills),
     ] {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -1566,9 +1659,9 @@ fn grid(app: &mut App, ui: &mut Ui) {
         })
         .filter(|m| match app.bin {
             Bin::All => true,
-            Bin::Footage => m.has_video,
+            Bin::Footage => m.has_video && !captaine_media::is_still_image(&m.path),
             Bin::Audio => !m.has_video,
-            Bin::Graphics | Bin::Stills => false,
+            Bin::Stills => captaine_media::is_still_image(&m.path),
         })
         .cloned()
         .collect();
@@ -1815,7 +1908,7 @@ pub fn drag_edge(app: &mut App, ui: &mut Ui, panel: Rect, which: PanelKind) {
         PanelKind::Pool => {
             Rect::from_min_max(pos2(panel.right() - 7.0, panel.top()), panel.right_bottom())
         }
-        PanelKind::Inspector => {
+        PanelKind::Inspector | PanelKind::CoCaptain => {
             Rect::from_min_max(panel.left_top(), pos2(panel.left() + 7.0, panel.bottom()))
         }
         PanelKind::Timeline => {
@@ -1837,6 +1930,7 @@ pub fn drag_edge(app: &mut App, ui: &mut Ui, panel: Rect, which: PanelKind) {
             match which {
                 PanelKind::Pool => app.prefs.pool_w = p.x - panel.left(),
                 PanelKind::Inspector => app.prefs.inspector_w = panel.right() - p.x,
+                PanelKind::CoCaptain => app.prefs.cocaptain_w = panel.right() - p.x,
                 PanelKind::Timeline => app.prefs.timeline_h = panel.bottom() - p.y,
             }
             app.prefs = app.prefs.clone().sane();
@@ -2120,6 +2214,22 @@ pub fn effects_stack(
     section(ui, "Effects");
     let mut fx = current.to_vec();
     let key = format!("fx:{}", id.to_full_string());
+    // keyframes: the item's animation and where the playhead is inside it (None: outside)
+    let (anim, local) = match app.item_with_start(id) {
+        Some((item, _, start)) => {
+            let anim = match &item {
+                Item::Clip(c) => c.anim.clone(),
+                Item::Title(t) => t.anim.clone(),
+                Item::Gap(_) => Anim::default(),
+            };
+            let len = item.duration().value;
+            let inside = app.playhead >= start && app.playhead < start + len;
+            (anim, inside.then_some(app.playhead - start))
+        }
+        None => (Anim::default(), None),
+    };
+    let mut key_edits: Vec<(String, f64)> = Vec::new();
+    let mut key_toggles: Vec<(String, f64)> = Vec::new();
     let (mut changed, mut done, mut structural) = (false, false, false);
     let mut remove = None;
     let mut mv: Option<(usize, i32)> = None;
@@ -2370,27 +2480,85 @@ pub fn effects_stack(
             }
             _ => &[],
         };
-        for (i, (v, d)) in e.params.iter_mut().zip(e.kind.params()).enumerate() {
-            if hidden.contains(&i) {
+        let keyable = !e.kind.is_audio() && i < current.len() && current[i].kind == e.kind;
+        let label = e.kind.label();
+        for (pi, (v, d)) in e.params.iter_mut().zip(e.kind.params()).enumerate() {
+            if hidden.contains(&pi) {
                 continue;
             }
-            let r = slider_row(
-                ui,
-                d.name,
-                v,
-                d.min..=d.max,
-                d.default,
-                d.decimals,
-                "",
-                e.enabled,
-            );
-            changed |= r.changed;
-            done |= r.done;
+            if !keyable {
+                let r = slider_row(
+                    ui,
+                    d.name,
+                    v,
+                    d.min..=d.max,
+                    d.default,
+                    d.decimals,
+                    "",
+                    e.enabled,
+                );
+                changed |= r.changed;
+                done |= r.done;
+                continue;
+            }
+            let prop = captaine_model::fx_property(current, i, pi);
+            let keys = anim.keys(&prop);
+            let animated = !keys.is_empty();
+            let on_key = local.is_some_and(|t| keys.iter().any(|k| k.t == t));
+            let mut shown = match (animated, local) {
+                (true, Some(t)) => anim.value(&prop, t).unwrap_or(*v).clamp(d.min, d.max),
+                _ => *v,
+            };
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if diamond(
+                    ui,
+                    &format!("{label} {}", d.name),
+                    animated,
+                    on_key,
+                    e.enabled && local.is_some(),
+                )
+                .clicked()
+                {
+                    key_toggles.push((prop.clone(), shown));
+                }
+                let before = shown;
+                let r = slider_row(
+                    ui,
+                    d.name,
+                    &mut shown,
+                    d.min..=d.max,
+                    d.default,
+                    d.decimals,
+                    "",
+                    e.enabled && (!animated || local.is_some()),
+                );
+                if r.changed && (shown - before).abs() > 1e-12 {
+                    if animated {
+                        key_edits.push((prop.clone(), shown));
+                    } else {
+                        *v = shown;
+                        changed = true;
+                    }
+                }
+                done |= r.done;
+            });
         }
         ui.add_space(4.0);
     }
+    // an effect taken off takes its keyframes with it once no effect of that kind is left
+    let mut cleared: Vec<String> = Vec::new();
     if let Some(i) = remove {
-        fx.remove(i);
+        let kind = fx.remove(i).kind;
+        if !fx.iter().any(|e| e.kind == kind) {
+            let (a, b) = (format!("fx.{}.", kind.key()), format!("fx.{}#", kind.key()));
+            cleared.extend(
+                anim.0
+                    .keys()
+                    .filter(|k| k.starts_with(&a) || k.starts_with(&b))
+                    .cloned(),
+            );
+        }
         structural = true;
     }
     if let Some((i, d)) = mv {
@@ -2405,17 +2573,37 @@ pub fn effects_stack(
     }
     app.poll_plugin_scan();
     ui.horizontal_wrapped(|ui| {
-        for kind in EffectKind::ALL {
-            if kind == EffectKind::Plugin
-                || kind.is_audio() && !has_audio
-                || !kind.is_audio() && !has_video
-            {
-                continue;
-            }
-            if chip(ui, &format!("+ {}", kind.label()), false, fx.len() < 16).clicked() {
-                fx.push(Effect::new(kind));
-                structural = true;
-            }
+        // one menu, by library category (the Effects page has the full library with search and previews)
+        if fx.len() < 16 {
+            ui.menu_button("+ Add effect", |ui| {
+                for cat in captaine_model::Category::ALL {
+                    let kinds: Vec<EffectKind> = EffectKind::ALL
+                        .into_iter()
+                        .filter(|k| {
+                            k.category() == cat
+                                && *k != EffectKind::Plugin
+                                && *k != EffectKind::Matte
+                                && (k.is_audio() && has_audio || !k.is_audio() && has_video)
+                        })
+                        .collect();
+                    if kinds.is_empty() {
+                        continue;
+                    }
+                    ui.menu_button(cat.label(), |ui| {
+                        for kind in kinds {
+                            if ui
+                                .button(kind.label())
+                                .on_hover_text(kind.about())
+                                .clicked()
+                            {
+                                fx.push(Effect::new(kind));
+                                structural = true;
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
         }
         if has_audio {
             ui.menu_button("+ Audio plugin ▾", |ui| {
@@ -2464,12 +2652,57 @@ pub fn effects_stack(
             });
         }
     });
+    if let Some(t) = local {
+        for (prop, val) in key_edits {
+            let mut keys = anim.keys(&prop).to_vec();
+            match keys.iter_mut().find(|k| k.t == t) {
+                Some(k) => k.v = val,
+                None => {
+                    keys.push(Keyframe::new(t, val));
+                    keys.sort_by_key(|k| k.t);
+                }
+            }
+            app.do_merging(
+                Op::SetAnimTrack {
+                    item: id,
+                    prop: prop.clone(),
+                    keys,
+                },
+                &format!("k:{key}:{prop}"),
+            );
+        }
+        for (prop, val) in key_toggles {
+            let mut keys = anim.keys(&prop).to_vec();
+            match keys.iter().position(|k| k.t == t) {
+                Some(i) => {
+                    keys.remove(i);
+                }
+                None => {
+                    keys.push(Keyframe::new(t, val));
+                    keys.sort_by_key(|k| k.t);
+                }
+            }
+            app.end_merge();
+            app.do_op(Op::SetAnimTrack {
+                item: id,
+                prop,
+                keys,
+            });
+        }
+    }
     if structural {
         app.end_merge();
         app.do_op(Op::SetEffects {
             item: id,
             effects: fx,
         });
+        for prop in cleared {
+            app.do_op(Op::SetAnimTrack {
+                item: id,
+                prop,
+                keys: Vec::new(),
+            });
+        }
     } else if changed {
         app.do_merging(
             Op::SetEffects {
@@ -2484,7 +2717,7 @@ pub fn effects_stack(
     }
 }
 
-fn transition_controls(app: &mut App, ui: &mut Ui, clip: &Clip, track: Id) {
+pub fn transition_controls(app: &mut App, ui: &mut Ui, clip: &Clip, track: Id) {
     section(ui, "Transition");
     let Some(prev) = clip_before(app, track, clip.id) else {
         ui.label(
@@ -3233,7 +3466,7 @@ pub fn dialogs(app: &mut App, ctx: &Context) {
                             ("= / -", "Zoom the timeline"),
                             ("⇧Z", "Fit the timeline"),
                             ("⌘I / ⌘E", "Import media / export"),
-                            ("⌘J", "Copilot"),
+                            ("⌘J", "CoCaptain"),
                         ] {
                             ui.label(RichText::new(k).font(mono(11.5)).color(theme::ACCENT_HOVER));
                             ui.label(d);
@@ -3244,7 +3477,6 @@ pub fn dialogs(app: &mut App, ctx: &Context) {
         app.show_shortcuts = open;
     }
     new_project_dialog(app, ctx);
-    export_dialog(app, ctx);
     prefs_window(app, ctx);
     crate::track_ui::dialogs(app, ctx);
 }
@@ -3323,205 +3555,336 @@ fn new_project_dialog(app: &mut App, ctx: &Context) {
     }
 }
 
-fn export_dialog(app: &mut App, ctx: &Context) {
-    if !app.export.open {
-        return;
-    }
-    let mut open = true;
-    let busy = app
-        .export
+/// Is any render still going (or waiting its turn)?
+pub fn rendering(app: &App) -> bool {
+    app.export
         .jobs
         .iter()
-        .any(|j| j.progress.lock().expect("export").2.is_none());
+        .any(|j| j.progress.lock().expect("export").2.is_none())
+}
+
+/// Overall progress of the renders still going, 0..1.
+pub fn render_progress(app: &App) -> Option<f32> {
+    let (mut done, mut total) = (0u64, 0u64);
+    for j in &app.export.jobs {
+        let g = j.progress.lock().expect("export");
+        if g.2.is_none() {
+            done += g.0 as u64;
+            total += g.1.max(1) as u64;
+        }
+    }
+    (total > 0).then(|| done as f32 / total as f32)
+}
+
+/// Where a render goes unless the user picks a file: `exports/<project>.<ext>` next to the project (or in
+/// ~/Movies/captainE), numbered so an earlier render or a queued one is never overwritten.
+pub fn default_export_path(app: &App) -> std::path::PathBuf {
+    let dir = app
+        .path
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|d| d.join("exports"))
+        .unwrap_or_else(|| dirs_home().join("Movies").join("captainE").join("exports"));
     let codec = app.export.codec;
-    egui::Window::new("Export")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            ui.set_min_width(460.0);
-            ui.label(RichText::new("Presets").size(11.0).color(theme::MUTED));
-            ui.horizontal_wrapped(|ui| {
-                for p in captaine_export::PRESETS {
-                    let on = app.export.codec == p.codec
-                        && (!p.codec.uses_quality() || app.export.crf == p.crf);
-                    if chip(ui, p.name, on, true).on_hover_text(p.note).clicked() {
-                        app.export.codec = p.codec;
-                        app.export.crf = p.crf;
-                        app.export.path = None;
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            ui.label(RichText::new("Format").size(11.0).color(theme::MUTED));
-            ui.horizontal_wrapped(|ui| {
-                for c in Codec::ALL {
-                    if chip(ui, c.label(), codec == c, true).clicked() {
-                        app.export.codec = c;
-                        app.export.path = None;
-                    }
-                }
-            });
-            if codec.uses_quality() {
-                let mut crf = app.export.crf as f64;
-                let r = slider_row(
-                    ui,
-                    "Quality (CRF)",
-                    &mut crf,
-                    12.0..=30.0,
-                    18.0,
-                    0,
-                    "",
-                    true,
-                );
-                if r.changed {
-                    app.export.crf = crf.round() as u32;
-                }
-                ui.label(
-                    RichText::new(
-                        "Lower is better quality and a larger file. 18 is visually lossless.",
-                    )
-                    .size(10.5)
+    let title = app.project_title();
+    let name = |n: usize| {
+        let stem = if n == 1 {
+            title.clone()
+        } else {
+            format!("{title}-{n}")
+        };
+        if codec == Codec::PngSequence {
+            dir.join(stem)
+        } else {
+            dir.join(format!("{stem}.{}", codec.extension()))
+        }
+    };
+    (1..)
+        .map(name)
+        .find(|p| !p.exists() && !app.export.jobs.iter().any(|j| &j.path == p))
+        .expect("a free name")
+}
+
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var_os("HOME").map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from)
+}
+
+/// The render settings of the Deliver page: presets, format, quality, range and where the file goes.
+pub fn export_settings(app: &mut App, ui: &mut Ui) {
+    let codec = app.export.codec;
+    ui.label(RichText::new("Presets").size(11.0).color(theme::MUTED));
+    ui.horizontal_wrapped(|ui| {
+        for p in captaine_export::PRESETS {
+            let on =
+                app.export.codec == p.codec && (!p.codec.uses_quality() || app.export.crf == p.crf);
+            if chip(ui, p.name, on, true).on_hover_text(p.note).clicked() {
+                app.export.codec = p.codec;
+                app.export.crf = p.crf;
+                app.export.path = None;
+            }
+        }
+    });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Format").size(11.0).color(theme::MUTED));
+    ui.horizontal_wrapped(|ui| {
+        for c in Codec::ALL {
+            if chip(ui, c.label(), codec == c, true).clicked() {
+                app.export.codec = c;
+                app.export.path = None;
+            }
+        }
+    });
+    if codec.uses_quality() {
+        ui.add_space(4.0);
+        let mut crf = app.export.crf as f64;
+        let r = slider_row(
+            ui,
+            "Quality (CRF)",
+            &mut crf,
+            12.0..=30.0,
+            18.0,
+            0,
+            "",
+            true,
+        );
+        if r.changed {
+            app.export.crf = crf.round() as u32;
+        }
+        ui.label(
+            RichText::new("Lower is better quality and a larger file. 18 is visually lossless.")
+                .size(10.5)
+                .color(theme::FAINT),
+        );
+    }
+    if codec == Codec::Hevc {
+        let hdr = app.export.hdr;
+        if chip(ui, "HDR (HLG, Rec.2020, 10-bit)", hdr, true)
+            .on_hover_text(
+                "For HDR displays and phones; the picture is graded in Rec.709 and carried over",
+            )
+            .clicked()
+        {
+            app.export.hdr = !hdr;
+        }
+    }
+    ui.add_space(8.0);
+    let marks = app
+        .mark_in
+        .zip(app.mark_out)
+        .map(|(a, b)| (a.min(b), a.max(b)));
+    ui.label(RichText::new("Range").size(11.0).color(theme::MUTED));
+    ui.horizontal(|ui| {
+        if chip(
+            ui,
+            "Whole timeline",
+            !app.export.marks_only || marks.is_none(),
+            true,
+        )
+        .clicked()
+        {
+            app.export.marks_only = false;
+        }
+        if chip(
+            ui,
+            "In to Out marks",
+            app.export.marks_only && marks.is_some(),
+            marks.is_some(),
+        )
+        .on_hover_text("Set marks with I and O in the viewer or timeline")
+        .clicked()
+        {
+            app.export.marks_only = true;
+        }
+    });
+    // what will come out
+    let (w, h) = app.canvas();
+    let fps = fps_label(app.rate());
+    let len = match (app.export.marks_only, marks) {
+        (true, Some((a, b))) => b - a,
+        _ => app.timeline().map_or(0, |t| t.duration().value),
+    };
+    let secs = len as f64 / app.fps();
+    ui.label(
+        RichText::new(format!(
+            "{w} × {h} · {fps} fps · {:02}:{:02}.{:01}",
+            (secs / 60.0) as i64,
+            secs as i64 % 60,
+            ((secs.fract()) * 10.0) as i64
+        ))
+        .font(mono(11.0))
+        .color(theme::MUTED),
+    );
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(if codec == Codec::PngSequence {
+            "Folder"
+        } else {
+            "File"
+        })
+        .size(11.0)
+        .color(theme::MUTED),
+    );
+    let target = app
+        .export
+        .path
+        .clone()
+        .unwrap_or_else(|| default_export_path(app));
+    ui.label(
+        RichText::new(
+            target
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into()),
+        )
+        .size(12.5),
+    );
+    ui.label(
+        RichText::new(
+            target
+                .parent()
+                .map_or(String::new(), |d| d.display().to_string()),
+        )
+        .size(10.5)
+        .color(theme::FAINT),
+    )
+    .on_hover_text(target.display().to_string());
+    if chip(ui, "Change…", false, true).clicked() {
+        let picked = if codec == Codec::PngSequence {
+            rfd::FileDialog::new()
+                .set_file_name(app.project_title())
+                .save_file()
+        } else {
+            let ext = codec.extension();
+            rfd::FileDialog::new()
+                .set_file_name(format!("{}.{ext}", app.project_title()))
+                .add_filter("export", &[ext])
+                .save_file()
+        };
+        if let Some(p) = picked {
+            app.export.path = Some(p);
+        }
+    }
+}
+
+/// The Render (or "Add to Render Queue") button of the Deliver page, kept in view under the settings.
+pub fn render_button(app: &mut App, ui: &mut Ui) {
+    let busy = rendering(app);
+    let marks = app
+        .mark_in
+        .zip(app.mark_out)
+        .map(|(a, b)| (a.min(b), a.max(b)));
+    let target = app
+        .export
+        .path
+        .clone()
+        .unwrap_or_else(|| default_export_path(app));
+    let label = if busy {
+        "Add to Render Queue"
+    } else {
+        "Render"
+    };
+    if ui
+        .add_sized(
+            [ui.available_width(), 34.0],
+            egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
+                .fill(theme::ACCENT),
+        )
+        .clicked()
+    {
+        if app.export.path.is_none() {
+            if let Some(dir) = target.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            app.export.path = Some(target);
+        }
+        let range = if app.export.marks_only { marks } else { None };
+        let ctx = ui.ctx().clone();
+        queue_export(app, &ctx, range);
+    }
+}
+
+/// The render queue of the Deliver page: each render with its progress, cancel, and where the file went.
+pub fn render_queue(app: &mut App, ui: &mut Ui) {
+    if app.export.jobs.is_empty() {
+        ui.add_space(20.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("No renders yet").color(theme::MUTED));
+            ui.label(
+                RichText::new("Pick a preset on the left and press Render. Renders run one after another while you keep editing.")
+                    .size(11.0)
                     .color(theme::FAINT),
-                );
-            }
-            if codec == Codec::Hevc {
-                let hdr = app.export.hdr;
-                if chip(ui, "HDR (HLG, Rec.2020, 10-bit)", hdr, true)
-                    .on_hover_text("For HDR displays and phones; the picture is graded in Rec.709 and carried over")
-                    .clicked()
-                {
-                    app.export.hdr = !hdr;
-                }
-            }
-            let marks = app
-                .mark_in
-                .zip(app.mark_out)
-                .map(|(a, b)| (a.min(b), a.max(b)));
-            ui.horizontal(|ui| {
-                ui.label("Range");
-                if chip(
-                    ui,
-                    "Whole timeline",
-                    !app.export.marks_only || marks.is_none(),
-                    true,
-                )
-                .clicked()
-                {
-                    app.export.marks_only = false;
-                }
-                if chip(
-                    ui,
-                    "In to Out marks",
-                    app.export.marks_only && marks.is_some(),
-                    marks.is_some(),
-                )
-                .clicked()
-                {
-                    app.export.marks_only = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(if codec == Codec::PngSequence {
-                    "Folder"
-                } else {
-                    "File"
+            );
+        });
+        return;
+    }
+    let mut remove = None;
+    for (i, j) in app.export.jobs.iter().enumerate() {
+        let (done, total, result) = j.progress.lock().expect("export").clone();
+        let started = j.started.load(std::sync::atomic::Ordering::Relaxed);
+        egui::Frame::new()
+            .fill(theme::PANEL_DARK)
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&j.name).size(12.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if result.is_some() { "Clear" } else { "Cancel" };
+                        if chip(ui, label, false, true).clicked() {
+                            if result.is_some() {
+                                remove = Some(i);
+                            } else {
+                                j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    });
                 });
-                let text = app
-                    .export
-                    .path
-                    .as_ref()
-                    .map_or("Choose…".to_string(), |p| p.display().to_string());
-                if ui.button(text).clicked() {
-                    let picked = if codec == Codec::PngSequence {
-                        rfd::FileDialog::new()
-                            .set_file_name(app.project_title())
-                            .save_file()
-                    } else {
-                        let ext = codec.extension();
-                        rfd::FileDialog::new()
-                            .set_file_name(format!("{}.{ext}", app.project_title()))
-                            .add_filter("export", &[ext])
-                            .save_file()
-                    };
-                    if let Some(p) = picked {
-                        app.export.path = Some(p);
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    app.export.path.is_some(),
-                    egui::Button::new(
-                        RichText::new(if busy { "Add to queue" } else { "Export" })
-                            .color(Color32::WHITE),
-                    )
-                    .fill(theme::ACCENT),
-                )
-                .clicked()
-            {
-                let range = if app.export.marks_only { marks } else { None };
-                queue_export(app, ctx, range);
-            }
-            if !app.export.jobs.is_empty() {
-                ui.separator();
-                ui.label(RichText::new("Queue").size(11.0).color(theme::MUTED));
-                let mut remove = None;
-                for (i, j) in app.export.jobs.iter().enumerate() {
-                    let (done, total, result) = j.progress.lock().expect("export").clone();
-                    let started = j.started.load(std::sync::atomic::Ordering::Relaxed);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&j.name).size(12.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let label = if result.is_some() { "Clear" } else { "Cancel" };
-                            if chip(ui, label, false, true).clicked() {
-                                if result.is_some() {
-                                    remove = Some(i);
-                                } else {
-                                    j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
+                match &result {
+                    Some(Ok(())) => {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(theme::OK, "Finished");
+                            if chip(ui, "Show in Finder", false, true).clicked() {
+                                let _ = std::process::Command::new("open")
+                                    .arg("-R")
+                                    .arg(&j.path)
+                                    .spawn();
                             }
                         });
-                    });
-                    match &result {
-                        Some(Ok(())) => {
-                            ui.colored_label(theme::OK, format!("Finished: {}", j.path.display()));
-                        }
-                        Some(Err(e)) => {
-                            ui.colored_label(Color32::LIGHT_RED, e);
-                        }
-                        None if !started => {
-                            ui.label(RichText::new("Waiting…").size(11.0).color(theme::MUTED));
-                        }
-                        None => {
-                            ui.add(
-                                egui::ProgressBar::new(if total > 0 {
-                                    done as f32 / total as f32
-                                } else {
-                                    0.0
-                                })
-                                .show_percentage(),
-                            );
-                        }
+                        ui.label(
+                            RichText::new(j.path.display().to_string())
+                                .size(10.5)
+                                .color(theme::FAINT),
+                        );
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(Color32::LIGHT_RED, e);
+                    }
+                    None if !started => {
+                        ui.label(RichText::new("Waiting…").size(11.0).color(theme::MUTED));
+                    }
+                    None => {
+                        ui.add(
+                            egui::ProgressBar::new(if total > 0 {
+                                done as f32 / total as f32
+                            } else {
+                                0.0
+                            })
+                            .show_percentage(),
+                        );
                     }
                 }
-                if let Some(i) = remove {
-                    app.export.jobs.remove(i);
-                }
-            }
-        });
-    app.export.open = open;
-    if busy {
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            });
+        ui.add_space(6.0);
+    }
+    if let Some(i) = remove {
+        app.export.jobs.remove(i);
     }
 }
 
 /// Serialises exports: a job waits here until the ones before it are done.
 static EXPORT_TURN: Mutex<()> = Mutex::new(());
 
-fn queue_export(app: &mut App, ctx: &Context, range: Option<(i64, i64)>) {
+pub(crate) fn queue_export(app: &mut App, ctx: &Context, range: Option<(i64, i64)>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (Some(path), Some(tl)) = (app.export.path.clone(), app.timeline_id()) else {
         return;

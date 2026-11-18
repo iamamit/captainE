@@ -126,6 +126,25 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
             );
             ui.painter()
                 .galley(chip_rect.min + vec2(7.0, 4.0), galley, Color32::WHITE);
+            // the captainE badge, faint, in the picture's bottom-right corner (viewer only: never rendered
+            // into exports)
+            if pic.width() > 160.0 {
+                let side = 22.0;
+                let badge = Rect::from_min_size(
+                    pic.right_bottom() - vec2(side + 12.0, side + 12.0),
+                    vec2(side, side),
+                );
+                let [r, g, b, _] = theme::ACCENT.to_array();
+                ui.painter()
+                    .rect_filled(badge, 5.0, Color32::from_rgba_unmultiplied(r, g, b, 150));
+                ui.painter().text(
+                    badge.center(),
+                    Align2::CENTER_CENTER,
+                    "cE",
+                    ui_font(9.5),
+                    Color32::from_white_alpha(210),
+                );
+            }
             if app.preview_override.is_some() {
                 let r =
                     Rect::from_min_size(pic.left_bottom() + vec2(12.0, -34.0), vec2(190.0, 22.0));
@@ -133,7 +152,7 @@ pub fn central(app: &mut App, root: &mut egui::Ui) {
                 ui.painter().text(
                     r.center(),
                     Align2::CENTER_CENTER,
-                    "Previewing Copilot edit",
+                    "Previewing CoCaptain edit",
                     ui_font(11.5),
                     Color32::WHITE,
                 );
@@ -207,15 +226,18 @@ fn transport(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     p.rect_filled(rect, 0.0, Color32::from_rgb(0x11, 0x11, 0x14));
     p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, theme::BORDER));
     // the timecode shrinks to fit the room to the left of the buttons
-    let room = rect.center().x - 108.0 - 22.0 - (rect.left() + 16.0);
-    let size = (room / (11.0 * 0.62)).clamp(11.0, 26.0);
-    p.text(
-        pos2(rect.left() + 16.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        app.tc(app.playhead),
-        mono(size),
-        Color32::WHITE,
-    );
+    let room = rect.center().x - 158.0 - 22.0 - (rect.left() + 16.0);
+    let size = (room / (11.0 * 0.62)).min(26.0);
+    // a narrow viewer (a side panel open) has no room for it; the timecode on the picture still shows
+    if size >= 11.0 {
+        p.text(
+            pos2(rect.left() + 16.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            app.tc(app.playhead),
+            mono(size),
+            Color32::WHITE,
+        );
+    }
     let c = rect.center();
     let mut at = |dx: f32, icon: Icon, d: f32, primary: bool| {
         let r = Rect::from_center_size(pos2(c.x + dx, c.y), vec2(d, d));
@@ -255,32 +277,84 @@ fn transport(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     {
         app.set_playhead(app.duration_ticks());
     }
-    let right = Rect::from_min_max(pos2(rect.right() - 250.0, rect.top()), rect.max);
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(right.shrink2(vec2(16.0, 0.0))),
-        |ui| {
-            ui.horizontal_centered(|ui| {
-                if chip(ui, "Mark In", app.mark_in.is_some(), true)
-                    .on_hover_text("I")
-                    .clicked()
-                {
-                    app.mark_in = Some(app.playhead);
-                }
-                if chip(ui, "Mark Out", app.mark_out.is_some(), true)
-                    .on_hover_text("O")
-                    .clicked()
-                {
-                    app.mark_out = Some(app.playhead);
-                }
-                let sh = if app.playing { app.shuttle } else { 1.0 };
-                ui.label(
-                    RichText::new(format!("{sh:.1}x"))
-                        .font(mono(11.0))
-                        .color(theme::MUTED),
-                );
-            });
-        },
-    );
+    // in and out marks as bracket buttons either side of the transport; lit while a mark is set
+    for (dx, icon, set, tip) in [
+        (-158.0, Icon::MarkIn, app.mark_in.is_some(), "Mark In (I)"),
+        (158.0, Icon::MarkOut, app.mark_out.is_some(), "Mark Out (O)"),
+    ] {
+        let r = at(dx, icon, 32.0, false);
+        if set {
+            r.ctx.layer_painter(r.layer_id).circle_stroke(
+                r.rect.center(),
+                15.5,
+                Stroke::new(1.5, theme::ACCENT),
+            );
+        }
+        if r.on_hover_text(tip).clicked() {
+            if matches!(icon, Icon::MarkIn) {
+                app.mark_in = Some(app.playhead);
+            } else {
+                app.mark_out = Some(app.playhead);
+            }
+        }
+    }
+    // the room right of the `]` button decides how much of the playback settings fits
+    let room = rect.right() - (c.x + 158.0 + 16.0 + 12.0);
+    if room >= 70.0 {
+        let compact = room < 210.0;
+        let w = if compact { 70.0 } else { 210.0 };
+        let right = Rect::from_min_max(pos2(rect.right() - w, rect.top()), rect.max);
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(right.shrink2(vec2(8.0, 0.0))),
+            |ui| {
+                ui.horizontal_centered(|ui| {
+                    if compact {
+                        // one menu holds the resolution and the proxy switch
+                        ui.menu_button(
+                            format!("{} ▾", app.prefs.playback_quality.label()),
+                            |ui| playback_menu(app, ui),
+                        )
+                        .response
+                        .on_hover_text("Playback resolution and proxies");
+                        return;
+                    }
+                    let sh = if app.playing { app.shuttle } else { 1.0 };
+                    ui.label(
+                        RichText::new(format!("{sh:.1}x"))
+                            .font(mono(11.0))
+                            .color(theme::MUTED),
+                    );
+                    // playback resolution, as in other editors: stopped frames are always full quality
+                    let q = app.prefs.playback_quality;
+                    let mut picked = q;
+                    egui::ComboBox::from_id_salt("playback-quality")
+                        .width(58.0)
+                        .selected_text(q.label())
+                        .show_ui(ui, |ui| {
+                            for o in crate::keymap::PlaybackQuality::ALL {
+                                ui.selectable_value(&mut picked, o, o.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Playback resolution while playing. Auto: as sharp as the viewer can show (up to 1920 wide); \
+                             1/2 and 1/4 of that for smoother playback; Full: the timeline's own size. \
+                             When stopped, the frame is always made from the original footage at full quality.",
+                        );
+                    if picked != q {
+                        app.prefs.playback_quality = picked;
+                        let _ = app.prefs.save();
+                    }
+                    if chip(ui, "Proxy", app.prefs.use_proxies, true)
+                        .on_hover_text("Play from proxy files (lighter, for slower machines); made if missing")
+                        .clicked()
+                    {
+                        toggle_proxies(app);
+                    }
+                });
+            },
+        );
+    }
     let _ = Sense::hover();
 }
 
@@ -447,5 +521,55 @@ fn scopes_panel(app: &mut App, ui: &mut egui::Ui, pic: Rect) {
                 theme::MUTED
             },
         );
+    }
+}
+
+/// The playback settings as a menu (for a narrow viewer).
+fn playback_menu(app: &mut App, ui: &mut egui::Ui) {
+    ui.label(
+        RichText::new("Playback resolution")
+            .color(theme::MUTED)
+            .size(11.0),
+    );
+    ui.label(
+        RichText::new("While playing. A paused frame is always full quality.")
+            .color(theme::FAINT)
+            .size(10.5),
+    );
+    for o in crate::keymap::PlaybackQuality::ALL {
+        if ui
+            .selectable_label(app.prefs.playback_quality == o, o.label())
+            .clicked()
+        {
+            app.prefs.playback_quality = o;
+            let _ = app.prefs.save();
+            ui.close();
+        }
+    }
+    ui.separator();
+    if ui
+        .selectable_label(app.prefs.use_proxies, "Play from proxies")
+        .clicked()
+    {
+        toggle_proxies(app);
+        ui.close();
+    }
+}
+
+/// Turn proxy playback on or off; turning it on makes the proxies that are missing.
+fn toggle_proxies(app: &mut App) {
+    app.prefs.use_proxies = !app.prefs.use_proxies;
+    let _ = app.prefs.save();
+    if app.prefs.use_proxies {
+        let missing: Vec<captaine_model::Id> = app
+            .project()
+            .media
+            .values()
+            .filter(|m| m.has_video && m.proxy.is_none() && m.nested_timeline().is_none())
+            .map(|m| m.id)
+            .collect();
+        if !missing.is_empty() {
+            app.make_proxies(&missing, app.prefs.proxy_height);
+        }
     }
 }

@@ -511,31 +511,52 @@ pub fn export(
             .spawn()
             .map_err(ExportError::Io)?;
         let mut stdin = child.stdin.take().expect("piped");
-        let mut write_err = None;
+        // a writer thread turns each picture into bytes and pipes it to the encoder while the next one renders;
+        // it hands the picture's memory back for reuse
+        let (to_writer, frames) = std::sync::mpsc::sync_channel::<captaine_render::Canvas>(2);
+        let (give_back, returned) = std::sync::mpsc::channel::<captaine_render::Canvas>();
+        let writer = std::thread::Builder::new()
+            .name("export-writer".into())
+            .spawn(move || -> std::io::Result<()> {
+                for c in frames {
+                    stdin.write_all(&c.to_rgb8())?;
+                    let _ = give_back.send(c);
+                }
+                Ok(())
+            })
+            .map_err(ExportError::Io)?;
+        let stop = |child: &mut std::process::Child, to_writer| {
+            drop(to_writer);
+            let _ = child.kill();
+            let _ = child.wait();
+        };
+        let mut sent = Some(to_writer);
         for tick in first..last {
             if cancelled() {
-                drop(stdin);
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child, sent.take());
+                let _ = writer.join();
                 remove_when_free(out);
                 return Err(ExportError::Cancelled);
+            }
+            for c in returned.try_iter() {
+                renderer.recycle(c);
             }
             let frame = match renderer.render(tick) {
                 Ok(f) => f,
                 Err(e) => {
-                    drop(stdin);
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop(&mut child, sent.take());
+                    let _ = writer.join();
                     return Err(ExportError::Render(e.to_string()));
                 }
             };
-            if let Err(e) = stdin.write_all(&frame.to_rgb8()) {
-                write_err = Some(e); // ffmpeg exited early: its stderr says why
+            // the writer is gone only when ffmpeg stopped taking frames: its stderr says why
+            if sent.as_ref().is_some_and(|tx| tx.send(frame).is_err()) {
                 break;
             }
             progress(tick + 1 - first, total);
         }
-        drop(stdin);
+        drop(sent);
+        let write_err = writer.join().ok().and_then(|r| r.err());
         let res = child.wait_with_output()?;
         if !res.status.success() {
             let msg = String::from_utf8_lossy(&res.stderr).trim().to_string();

@@ -110,6 +110,20 @@ pub fn color_wheel(ui: &mut Ui, label: &str, rgb: &mut [f64; 3]) -> (bool, bool)
     (changed, done)
 }
 
+/// How far the wheel reaches: the rim gives offsets of this size (half of the effect's -1..1 range), a gentle
+/// push rather than a full colour swing.
+const WHEEL_REACH: f64 = 0.5;
+
+/// Stored channel offsets -> wheel offsets (the puck's scale).
+pub fn wheel_from_params(p: [f64; 3]) -> [f64; 3] {
+    p.map(|v| v / WHEEL_REACH)
+}
+
+/// Wheel offsets -> stored channel offsets, inside the effect's range.
+pub fn params_from_wheel(rgb: [f64; 3]) -> [f64; 3] {
+    rgb.map(|v| (v * WHEEL_REACH).clamp(-1.0, 1.0))
+}
+
 /// The three wheels of a Color wheels effect (lift, gamma, gain), each over its master slider's value.
 /// Returns `(changed, done)`.
 pub fn wheels_row(ui: &mut Ui, e: &mut Effect) -> (bool, bool) {
@@ -118,16 +132,16 @@ pub fn wheels_row(ui: &mut Ui, e: &mut Effect) -> (bool, bool) {
     ui.horizontal(|ui| {
         for (i, name) in ["Lift", "Gamma", "Gain"].into_iter().enumerate() {
             ui.vertical(|ui| {
-                let mut rgb = [
+                // the puck shows the stored offsets at the wheel's scale, so it stays where it was dropped
+                let mut rgb = wheel_from_params([
                     e.params[i * 4 + 1],
                     e.params[i * 4 + 2],
                     e.params[i * 4 + 3],
-                ];
+                ]);
                 let (c, d) = color_wheel(ui, &format!("{name} wheel"), &mut rgb);
                 if c {
-                    // the wheel's reach is half a stop-ish: keep the numbers in the effect's -1..1 range
-                    for (k, v) in rgb.iter().enumerate() {
-                        e.params[i * 4 + 1 + k] = (v * 0.5).clamp(-1.0, 1.0);
+                    for (k, v) in params_from_wheel(rgb).into_iter().enumerate() {
+                        e.params[i * 4 + 1 + k] = v;
                     }
                 }
                 ui.label(egui::RichText::new(name).size(11.0).color(theme::MUTED));
@@ -183,14 +197,12 @@ pub fn curve_editor(ui: &mut Ui, e: &mut Effect, which: usize) -> (bool, bool) {
     };
     // the smooth curve through the points
     let ys: Vec<f64> = e.params[base..base + 5].to_vec();
-    let pts: Vec<Pos2> = (0..=48)
+    // exactly the curve the effect applies (the renderer's own table), not an approximation
+    let table = captaine_render::curve_table(&ys);
+    let pts: Vec<Pos2> = (0..=64)
         .map(|k| {
-            let x = k as f64 / 48.0;
-            let seg = ((x * 4.0) as usize).min(3);
-            let t = x * 4.0 - seg as f64;
-            // cosine blend between neighbouring points: a good-enough preview of the real monotone spline
-            let w = (1.0 - (t * std::f64::consts::PI).cos()) / 2.0;
-            let y = ys[seg] * (1.0 - w) + ys[seg + 1] * w;
+            let x = k as f64 / 64.0;
+            let y = table[((x * 255.0).round() as usize).min(255)];
             pos2(
                 rect.left() + rect.width() * x as f32,
                 rect.bottom() - rect.height() * y as f32,
@@ -420,4 +432,35 @@ pub fn polygon_editor(ui: &mut Ui, e: &mut Effect) -> (bool, bool) {
         e.text = captaine_model::polygon_text(&pts);
     }
     (changed, done)
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    #[test]
+    fn the_puck_stays_where_it_was_dropped() {
+        // drop the puck at points around the wheel, store, read back: it must be drawn at the same point
+        for (x, y) in [
+            (0.0, 0.0),
+            (0.6, 0.0),
+            (-0.3, 0.5),
+            (0.0, -0.9),
+            (0.7, 0.7),
+            (-1.0, 0.0),
+        ] {
+            let stored = params_from_wheel(wheel_to_rgb(x, y));
+            let (px, py) = rgb_to_wheel(wheel_from_params(stored));
+            assert!(
+                (px - x).abs() < 1e-5 && (py - y).abs() < 1e-5,
+                "dropped at ({x}, {y}), drawn at ({px}, {py})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rim_gives_half_strength_offsets() {
+        let stored = params_from_wheel(wheel_to_rgb(1.0, 0.0));
+        assert!((stored[0] - 0.5).abs() < 1e-9, "red at the rim: {stored:?}");
+    }
 }

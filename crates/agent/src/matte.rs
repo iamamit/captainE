@@ -13,6 +13,10 @@ pub fn cache_dir() -> PathBuf {
     home.join(".captaine/mattes")
 }
 
+/// Bumped when the way mattes are made changes, so mattes cached by an older version are made again.
+/// 2: small subjects are found and segmented in a crop; frames are read 1280 wide.
+const MATTE_VERSION: u32 = 2;
+
 fn key(media: &MediaRef, clip: &Clip, mode: MatteMode) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -27,6 +31,7 @@ fn key(media: &MediaRef, clip: &Clip, mode: MatteMode) -> String {
         clip.source_start.value,
         clip.source_span(),
         mode == MatteMode::Person,
+        MATTE_VERSION,
     )
         .hash(&mut h);
     format!("{:016x}", h.finish())

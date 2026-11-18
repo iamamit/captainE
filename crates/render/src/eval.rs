@@ -88,6 +88,23 @@ impl Layer<'_> {
     }
 }
 
+/// With a Low frame rate effect, the clip moves on only every few timeline frames: `local` is held back to the
+/// last step of that slower rate.
+fn held(c: &Clip, local: i64, fps: f64) -> i64 {
+    let Some(e) = c
+        .effects
+        .iter()
+        .find(|e| e.enabled && e.kind == captaine_model::EffectKind::LowFrameRate)
+    else {
+        return local;
+    };
+    let step = fps / e.params[0].max(0.01);
+    if step <= 1.0 {
+        return local;
+    }
+    ((local as f64 / step).floor() * step).round() as i64
+}
+
 /// Things visible at `tick`, bottom layer first. Audio-only media contributes no picture.
 pub fn layers_at<'a>(
     project: &'a Project,
@@ -112,7 +129,7 @@ pub fn layers_at<'a>(
                 let items = &tl.tracks[*ti].items;
                 let make = |c: &'a Clip, at: i64, state: Option<TransitionState>| {
                     let media = project.media.get(&c.media).filter(|m| m.has_video)?;
-                    let local = tick - at;
+                    let local = held(c, tick - at, tl.rate.as_f64());
                     let mut frame = c.source_frame_beyond(local).max(0);
                     if let Some(len) = media.duration {
                         frame = frame.min((len.value - 1).max(0));

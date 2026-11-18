@@ -1,3 +1,6 @@
 .DS_Store
 target/
 cache/
+dist/
+__pycache__/
+*.pyc

@@ -3,6 +3,7 @@
 use captaine_model::{Effect, EffectKind};
 use rayon::prelude::*;
 
+use crate::library::FxTime;
 use crate::Frame8;
 
 /// The frame with every enabled effect applied in order, or `None` when there is nothing to do.
@@ -17,32 +18,48 @@ pub fn apply_effects_with(
     effects: &[Effect],
     mattes: &[Option<std::sync::Arc<Frame8>>],
 ) -> Option<Frame8> {
-    apply_effects_at(frame, effects, mattes, 0)
+    apply_effects_at(frame, effects, mattes, FxTime::default())
 }
 
-/// Like [`apply_effects_with`]; `phase` (the frame number) makes film grain change from frame to frame.
+/// Like [`apply_effects_with`], at a moment of the clip (`at`): grain, waves, shake and the like move with it.
 pub fn apply_effects_at(
     frame: &Frame8,
     effects: &[Effect],
     mattes: &[Option<std::sync::Arc<Frame8>>],
-    phase: u64,
+    at: FxTime,
 ) -> Option<Frame8> {
-    let mut active = effects
+    if !effects.iter().any(|e| e.enabled && !e.kind.is_audio()) {
+        return None;
+    }
+    Some(apply_effects_owned(frame.clone(), effects, mattes, at))
+}
+
+/// [`apply_effects_at`] on a picture the caller no longer needs: changed in place, no copy (a 4K frame is
+/// 33 MB). Returns the picture unchanged when there is nothing to do.
+pub fn apply_effects_owned(
+    frame: Frame8,
+    effects: &[Effect],
+    mattes: &[Option<std::sync::Arc<Frame8>>],
+    at: FxTime,
+) -> Frame8 {
+    let active = effects
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.enabled && !e.kind.is_audio())
-        .peekable();
-    active.peek()?;
-    let mut out = frame.clone();
-    let k = (frame.height as f64 / 1080.0).max(0.01);
+        .filter(|(_, e)| e.enabled && !e.kind.is_audio());
+    let mut out = frame;
+    let k = (out.height as f64 / 1080.0).max(0.01);
     for (i, e) in active {
         let p = &e.params;
         match e.kind {
             EffectKind::Blur => blur(&mut out, p[0] * k),
-            EffectKind::Sharpen => sharpen(&mut out, p[0] / 100.0, 1.5 * k),
+            EffectKind::Sharpen => sharpen(&mut out, p[0] / 100.0, (1.5 * k).max(1.0)),
             EffectKind::Vignette => vignette(&mut out, p[0] / 100.0, p[1] / 100.0),
             EffectKind::Mirror => mirror(&mut out, p[0] >= 0.5),
-            EffectKind::Crop => crop(&mut out, [p[0], p[1], p[2], p[3]].map(|v| v / 100.0)),
+            EffectKind::Crop => crop(
+                &mut out,
+                [p[0], p[1], p[2], p[3]].map(|v| v / 100.0),
+                p[4] / 100.0,
+            ),
             EffectKind::ChromaKey => {
                 chroma_key(
                     &mut out,
@@ -64,7 +81,7 @@ pub fn apply_effects_at(
                 p[0] / 100.0,
                 (p[1] * k).max(1.0),
                 p[2] / 100.0,
-                phase,
+                at.frame,
             ),
             EffectKind::Aberration => aberration(&mut out, p[0] * k),
             EffectKind::Duotone => duotone(
@@ -75,6 +92,7 @@ pub fn apply_effects_at(
             ),
             EffectKind::Invert => invert(&mut out, p[0] / 100.0),
             EffectKind::Posterize => posterize(&mut out, p[0].round() as u32),
+            EffectKind::Letterbox => letterbox(&mut out, p[0], p[1] / 100.0),
             EffectKind::Pixelate => pixelate(&mut out, (p[0] * k).round().max(1.0) as usize),
             EffectKind::ColorWheels => wheels(&mut out, p),
             EffectKind::Curves => curves(&mut out, p),
@@ -83,17 +101,20 @@ pub fn apply_effects_at(
             EffectKind::Mask => mask(&mut out, p, &e.text),
             EffectKind::Matte => {
                 if let Some(Some(m)) = mattes.get(i) {
-                    subject_matte(&mut out, m, p[0] >= 0.5, p[1] * k, p[2] * k);
+                    let refine = p.get(4).copied().unwrap_or(100.0) / 100.0;
+                    subject_matte(&mut out, m, p[0] >= 0.5, p[1] * k, p[2] * k, refine);
                 }
             }
-            _ => {}
+            other => {
+                crate::library::apply(other, &mut out, p, k, at);
+            }
         }
     }
-    Some(out)
+    out
 }
 
 /// Premultiplied floats, 4 per pixel.
-fn to_premul(f: &Frame8) -> Vec<f32> {
+pub(crate) fn to_premul(f: &Frame8) -> Vec<f32> {
     let mut v = vec![0.0f32; f.rgba.len()];
     v.par_chunks_mut(4)
         .zip(f.rgba.par_chunks(4))
@@ -107,7 +128,7 @@ fn to_premul(f: &Frame8) -> Vec<f32> {
     v
 }
 
-fn from_premul(f: &mut Frame8, v: &[f32]) {
+pub(crate) fn from_premul(f: &mut Frame8, v: &[f32]) {
     f.rgba
         .par_chunks_mut(4)
         .zip(v.par_chunks(4))
@@ -211,13 +232,25 @@ fn double(v: &[f32], dw: usize, dh: usize, w: usize, h: usize) -> Vec<f32> {
 
 /// Gaussian-like blur (three box passes each way) of standard deviation `sigma` pixels, on premultiplied data.
 /// A wide blur of a big picture is done at half size and scaled back up: it is a smooth result anyway.
-fn blur_premul(v: Vec<f32>, w: usize, h: usize, sigma: f64) -> Vec<f32> {
+/// Radius of the three box passes that approximate a Gaussian of `sigma` (Wells, 1986). A blur of half a pixel
+/// or more gets at least a one-pixel box, so small frames (previews, thumbnails) still show a light blur instead
+/// of none.
+fn box_radius(sigma: f64) -> usize {
+    let r = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0).round() as usize;
+    if sigma >= 0.5 {
+        r.max(1)
+    } else {
+        r
+    }
+}
+
+pub(crate) fn blur_premul(v: Vec<f32>, w: usize, h: usize, sigma: f64) -> Vec<f32> {
     if sigma >= 8.0 && w >= 64 && h >= 64 {
         let (small, dw, dh) = halve(&v, w, h);
         let soft = blur_premul(small, dw, dh, sigma / 2.0);
         return double(&soft, dw, dh, w, h);
     }
-    let r = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0).round() as usize;
+    let r = box_radius(sigma);
     if r == 0 {
         return v;
     }
@@ -236,7 +269,7 @@ fn blur_premul(v: Vec<f32>, w: usize, h: usize, sigma: f64) -> Vec<f32> {
     transpose(&t, h, w)
 }
 
-fn blur(f: &mut Frame8, radius_px: f64) {
+pub(crate) fn blur(f: &mut Frame8, radius_px: f64) {
     if radius_px < 0.5 {
         return;
     }
@@ -245,38 +278,129 @@ fn blur(f: &mut Frame8, radius_px: f64) {
     from_premul(f, &v);
 }
 
+/// Unsharp mask on brightness: the detail (luma minus its blur) is added to all three channels, so edges
+/// get crisper without colour fringes. One channel instead of four keeps it cheap at 4K.
 fn sharpen(f: &mut Frame8, amount: f64, sigma: f64) {
     let (w, h) = (f.width as usize, f.height as usize);
-    let src = to_premul(f);
-    let soft = blur_premul(src.clone(), w, h, sigma);
-    let mut out = src.clone();
-    out.par_chunks_mut(4)
-        .zip(src.par_chunks(4))
-        .zip(soft.par_chunks(4))
-        .for_each(|((o, s), b)| {
-            for c in 0..3 {
-                o[c] = (s[c] + amount as f32 * (s[c] - b[c])).clamp(0.0, s[3]);
+    if w == 0 || h == 0 || amount == 0.0 {
+        return;
+    }
+    let luma: Vec<f32> = f
+        .rgba
+        .par_chunks(4)
+        .map(|p| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32)
+        .collect();
+    let soft = blur_plane(&luma, w, h, sigma);
+    let k = amount as f32;
+    f.rgba
+        .par_chunks_mut(4)
+        .zip(luma.par_iter().zip(soft.par_iter()))
+        .for_each(|(p, (l, b))| {
+            if p[3] == 0 {
+                return;
+            }
+            let d = k * (l - b);
+            for v in p.iter_mut().take(3) {
+                *v = (*v as f32 + d).round().clamp(0.0, 255.0) as u8;
             }
         });
-    from_premul(f, &out);
+}
+
+/// Gaussian-like blur (three box passes each way) of one channel, `sigma` in pixels.
+pub(crate) fn blur_plane(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
+    let r = box_radius(sigma);
+    if r == 0 || w == 0 || h == 0 {
+        return src.to_vec();
+    }
+    let rows = |v: &[f32], width: usize| -> Vec<f32> {
+        let mut out = vec![0.0f32; v.len()];
+        out.par_chunks_mut(width)
+            .zip(v.par_chunks(width))
+            .for_each(|(dst, row)| {
+                let mut a = row.to_vec();
+                let mut b = vec![0.0f32; width];
+                let n = (2 * r + 1) as f32;
+                let last = width as isize - 1;
+                for _ in 0..3 {
+                    let at = |x: isize| a[x.clamp(0, last) as usize];
+                    let mut sum: f32 = (-(r as isize)..=r as isize).map(at).sum();
+                    for (x, o) in b.iter_mut().enumerate() {
+                        *o = sum / n;
+                        sum += at(x as isize + r as isize + 1) - at(x as isize - r as isize);
+                    }
+                    std::mem::swap(&mut a, &mut b);
+                }
+                dst.copy_from_slice(&a);
+            });
+        out
+    };
+    // one vertical box pass without transposing: each output row is a running sum of whole rows, so memory is
+    // read in order; strips of rows go to different cores, each starting its own sum
+    let column_pass = |v: &[f32], out: &mut [f32]| {
+        let n = (2 * r + 1) as f32;
+        let last = h as isize - 1;
+        let strip = 32usize;
+        out.par_chunks_mut(w * strip)
+            .enumerate()
+            .for_each(|(k, dst)| {
+                let y0 = (k * strip) as isize;
+                let row = |y: isize| &v[y.clamp(0, last) as usize * w..][..w];
+                let mut sum = vec![0.0f32; w];
+                for y in y0 - r as isize..=y0 + r as isize {
+                    for (s, x) in sum.iter_mut().zip(row(y)) {
+                        *s += x;
+                    }
+                }
+                for (i, o) in dst.chunks_exact_mut(w).enumerate() {
+                    let y = y0 + i as isize;
+                    for (o, s) in o.iter_mut().zip(&sum) {
+                        *o = s / n;
+                    }
+                    let (add, sub) = (row(y + r as isize + 1), row(y - r as isize));
+                    for ((s, a), b) in sum.iter_mut().zip(add).zip(sub) {
+                        *s += a - b;
+                    }
+                }
+            });
+    };
+    let mut a = rows(src, w);
+    let mut b = vec![0.0f32; a.len()];
+    for _ in 0..3 {
+        column_pass(&a, &mut b);
+        std::mem::swap(&mut a, &mut b);
+    }
+    a
 }
 
 fn vignette(f: &mut Frame8, amount: f64, softness: f64) {
     let (w, h) = (f.width as f64, f.height as f64);
     let width = f.width as usize;
-    let inner = 0.9 * (1.0 - softness);
+    let inner = (0.9 * (1.0 - softness)) as f32;
+    let span = (1.0 - inner).max(1e-6);
+    let norm = 1.0 / 0.5f64.hypot(0.5) as f32;
+    let amount = amount as f32;
+    // squared distances from the middle along each axis, as fractions of the picture
+    let dx2: Vec<f32> = (0..width)
+        .map(|x| {
+            let d = ((x as f64 + 0.5) / w - 0.5) as f32;
+            d * d
+        })
+        .collect();
     f.rgba
         .par_chunks_mut(width * 4)
         .enumerate()
         .for_each(|(y, row)| {
-            for x in 0..width {
-                let (dx, dy) = ((x as f64 + 0.5) / w - 0.5, (y as f64 + 0.5) / h - 0.5);
-                let d = (dx * dx + dy * dy).sqrt() / 0.5f64.hypot(0.5);
-                let t = ((d - inner) / (1.0 - inner).max(1e-6)).clamp(0.0, 1.0);
-                let s = t * t * (3.0 - 2.0 * t);
-                let g = (1.0 - amount * s) as f32;
-                for c in 0..3 {
-                    row[x * 4 + c] = (row[x * 4 + c] as f32 * g).round() as u8;
+            let dy = ((y as f64 + 0.5) / h - 0.5) as f32;
+            let dy2 = dy * dy;
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                let d = (dx2[x] + dy2).sqrt() * norm;
+                if d <= inner {
+                    continue; // inside the clear middle: unchanged
+                }
+                let t = ((d - inner) / span).clamp(0.0, 1.0);
+                let g = 1.0 - amount * (t * t * (3.0 - 2.0 * t));
+                for v in px.iter_mut().take(3) {
+                    *v = (*v as f32 * g).round() as u8;
                 }
             }
         });
@@ -300,7 +424,8 @@ fn mirror(f: &mut Frame8, vertical: bool) {
     }
 }
 
-fn crop(f: &mut Frame8, edges: [f64; 4]) {
+/// Removes the edges; `round` (a fraction of the remaining shorter side) rounds the corners, anti-aliased.
+fn crop(f: &mut Frame8, edges: [f64; 4], round: f64) {
     let (w, h) = (f.width as f64, f.height as f64);
     let (x0, y0, x1, y1) = (
         edges[0] * w,
@@ -308,12 +433,22 @@ fn crop(f: &mut Frame8, edges: [f64; 4]) {
         (1.0 - edges[2]) * w,
         (1.0 - edges[3]) * h,
     );
+    let r = (round * (x1 - x0).min(y1 - y0)).max(0.0);
     for y in 0..f.height as usize {
         for x in 0..f.width as usize {
             let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
+            let i = (y * f.width as usize + x) * 4;
             if cx < x0 || cx >= x1 || cy < y0 || cy >= y1 {
-                let i = (y * f.width as usize + x) * 4;
                 f.rgba[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+            } else if r > 0.0 {
+                // distance past the rounded corner's circle, if this pixel is in a corner square
+                let qx = (x0 + r - cx).max(cx - (x1 - r)).max(0.0);
+                let qy = (y0 + r - cy).max(cy - (y1 - r)).max(0.0);
+                if qx > 0.0 && qy > 0.0 {
+                    let out = qx.hypot(qy) - r;
+                    let keep = (0.5 - out).clamp(0.0, 1.0);
+                    f.rgba[i + 3] = (f.rgba[i + 3] as f64 * keep).round() as u8;
+                }
             }
         }
     }
@@ -414,40 +549,89 @@ fn show_alpha(f: &mut Frame8) {
     }
 }
 
-fn luma8(p: &[u8]) -> f32 {
+pub(crate) fn luma8(p: &[u8]) -> f32 {
     (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
 }
 
 /// Bloom: the bright parts, blurred, added back on top.
-fn glow(f: &mut Frame8, threshold: f64, radius_px: f64, intensity: f64) {
+pub(crate) fn glow(f: &mut Frame8, threshold: f64, radius_px: f64, intensity: f64) {
     let (w, h) = (f.width as usize, f.height as usize);
+    if w == 0 || h == 0 {
+        return;
+    }
     let t = threshold as f32;
-    let mut bright = vec![0.0f32; w * h * 4];
-    for (i, p) in f.rgba.chunks_exact(4).enumerate() {
-        let l = luma8(p);
-        // how far above the threshold, softly, so the edge of the bloom is not a hard line
-        let k = ((l - t) / (1.0 - t).max(0.05)).clamp(0.0, 1.0);
-        let a = p[3] as f32 / 255.0;
-        for c in 0..3 {
-            bright[i * 4 + c] = p[c] as f32 * k * a;
-        }
-        bright[i * 4 + 3] = 255.0 * k * a;
+    let sigma = (radius_px / 2.0).max(0.5);
+    // a bloom is soft: gather the bright parts straight into a smaller picture (blocks of `step` pixels),
+    // blur that, and read it back smoothly while adding it - no full-size float copies of a 4K frame
+    let mut step = 1usize;
+    while step < 8 && sigma / (step * 2) as f64 >= 2.0 {
+        step *= 2;
     }
-    let soft = blur_premul(bright, w, h, (radius_px / 2.0).max(0.5));
-    let gain = intensity as f32;
-    for (i, p) in f.rgba.chunks_exact_mut(4).enumerate() {
-        for c in 0..3 {
-            // screen-style add so a bright area never clips harshly
-            let (a, b) = (
-                p[c] as f32 / 255.0,
-                (soft[i * 4 + c] / 255.0 * gain).min(1.0),
-            );
-            p[c] = ((a + b - a * b) * 255.0).round() as u8;
-        }
-    }
+    let (sw, sh) = (w.div_ceil(step), h.div_ceil(step));
+    let mut small = vec![0.0f32; sw * sh * 3];
+    let rgba = &f.rgba;
+    small
+        .par_chunks_mut(sw * 3)
+        .enumerate()
+        .for_each(|(by, row)| {
+            let (y0, y1) = (by * step, ((by + 1) * step).min(h));
+            for bx in 0..sw {
+                let (x0, x1) = (bx * step, ((bx + 1) * step).min(w));
+                let mut acc = [0.0f32; 3];
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let p = &rgba[(y * w + x) * 4..][..4];
+                        // how far above the threshold, softly, so the edge of the bloom is not a hard line
+                        let k = ((luma8(p) - t) / (1.0 - t).max(0.05)).clamp(0.0, 1.0)
+                            * (p[3] as f32 / 255.0);
+                        for c in 0..3 {
+                            acc[c] += p[c] as f32 * k;
+                        }
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as f32;
+                for c in 0..3 {
+                    row[bx * 3 + c] = acc[c] / n;
+                }
+            }
+        });
+    // blur each colour plane of the small picture
+    let planes: Vec<Vec<f32>> = (0..3)
+        .into_par_iter()
+        .map(|c| {
+            let plane: Vec<f32> = small.iter().skip(c).step_by(3).copied().collect();
+            blur_plane(&plane, sw, sh, sigma / step as f64)
+        })
+        .collect();
+    let gain = intensity as f32 / 255.0;
+    let s = step as f32;
+    f.rgba
+        .par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            // bilinear position in the small picture
+            let fy = ((y as f32 + 0.5) / s - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (y0, ty) = (fy.floor() as usize, fy.fract());
+            let y1 = (y0 + 1).min(sh - 1);
+            for x in 0..w {
+                let fx = ((x as f32 + 0.5) / s - 0.5).clamp(0.0, (sw - 1) as f32);
+                let (x0, tx) = (fx.floor() as usize, fx.fract());
+                let x1 = (x0 + 1).min(sw - 1);
+                let p = &mut row[x * 4..x * 4 + 4];
+                for c in 0..3 {
+                    let pl = &planes[c];
+                    let top = pl[y0 * sw + x0] * (1.0 - tx) + pl[y0 * sw + x1] * tx;
+                    let bot = pl[y1 * sw + x0] * (1.0 - tx) + pl[y1 * sw + x1] * tx;
+                    let b = ((top * (1.0 - ty) + bot * ty) * gain).min(1.0);
+                    // screen-style add so a bright area never clips harshly
+                    let a = p[c] as f32 / 255.0;
+                    p[c] = ((a + b - a * b) * 255.0).round() as u8;
+                }
+            }
+        });
 }
 
-fn hash(mut x: u64) -> u64 {
+pub(crate) fn hash(mut x: u64) -> u64 {
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
     x ^= x >> 33;
@@ -538,13 +722,64 @@ fn invert(f: &mut Frame8, amount: f64) {
     }
 }
 
-fn posterize(f: &mut Frame8, levels: u32) {
+pub(crate) fn posterize(f: &mut Frame8, levels: u32) {
     let n = levels.max(2) as f64 - 1.0;
     for p in f.rgba.chunks_exact_mut(4) {
         for v in p.iter_mut().take(3) {
             *v = ((*v as f64 / 255.0 * n).round() / n * 255.0).round() as u8;
         }
     }
+}
+
+/// Opaque black bars so that only a `aspect` (width / height) window in the middle shows: top and bottom for a
+/// wider shape, left and right for a narrower one. Edges are anti-aliased; `opacity` < 1 lets the picture through.
+fn letterbox(f: &mut Frame8, aspect: f64, opacity: f64) {
+    let (w, h) = (f.width as f64, f.height as f64);
+    if w <= 0.0 || h <= 0.0 || aspect <= 0.0 || opacity <= 0.0 {
+        return;
+    }
+    let wide = aspect > w / h;
+    // half the size of the window that stays visible, across the bars
+    let half = if wide {
+        w / aspect / 2.0
+    } else {
+        h * aspect / 2.0
+    };
+    let mid = if wide { h / 2.0 } else { w / 2.0 };
+    let cover = |c: f64| ((c + 0.5 - mid).abs() - half + 0.5).clamp(0.0, 1.0) * opacity;
+    let paint = |px: &mut [u8], bar: f64| {
+        let a = px[3] as f64 / 255.0;
+        // the picture (straight alpha) under black: colour fades out, cover grows
+        let shown = a * (1.0 - bar);
+        let out_a = shown + bar;
+        for v in px.iter_mut().take(3) {
+            *v = if out_a > 0.0 {
+                (*v as f64 * shown / out_a).round() as u8
+            } else {
+                0
+            };
+        }
+        px[3] = (out_a * 255.0).round() as u8;
+    };
+    let width = f.width as usize;
+    f.rgba
+        .par_chunks_mut(width * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            if wide {
+                let bar = cover(y as f64);
+                if bar > 0.0 {
+                    row.chunks_exact_mut(4).for_each(|px| paint(px, bar));
+                }
+            } else {
+                for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                    let bar = cover(x as f64);
+                    if bar > 0.0 {
+                        paint(px, bar);
+                    }
+                }
+            }
+        });
 }
 
 /// Keep the picture only inside (or, inverted, outside) a rectangle or ellipse with a soft edge.
@@ -638,8 +873,16 @@ fn polygon_mask(f: &mut Frame8, poly: &[(f64, f64)], feather: f64, invert: bool)
 }
 
 /// Keep the picture where `matte` (a grey picture of any size) is white. The matte is stretched to the
-/// frame, softened by `feather` pixels and grown (`choke` > 0 shrinks the subject) by `choke` pixels.
-fn subject_matte(f: &mut Frame8, matte: &Frame8, invert: bool, feather: f64, choke: f64) {
+/// frame, its edge snapped to the picture's own edges by `refine` (0..1, see [`refine_matte`]), softened by
+/// `feather` pixels and grown (`choke` > 0 shrinks the subject) by `choke` pixels.
+fn subject_matte(
+    f: &mut Frame8,
+    matte: &Frame8,
+    invert: bool,
+    feather: f64,
+    choke: f64,
+    refine: f64,
+) {
     let (w, h) = (f.width as usize, f.height as usize);
     // the matte as a frame-sized float grid in 0..1
     let mut m = vec![0.0f32; w * h];
@@ -659,6 +902,9 @@ fn subject_matte(f: &mut Frame8, matte: &Frame8, invert: bool, feather: f64, cho
             let bot = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
             m[y * w + x] = top * (1.0 - fy) + bot * fy;
         }
+    }
+    if refine > 0.0 {
+        refine_matte(&mut m, f, refine as f32);
     }
     // choke: erode (positive) or dilate (negative) with a separable min/max, then soften
     let r = choke.abs().round() as usize;
@@ -680,6 +926,104 @@ fn subject_matte(f: &mut Frame8, matte: &Frame8, invert: bool, feather: f64, cho
         let keep = if invert { 1.0 - v } else { *v };
         f.rgba[i * 4 + 3] = (f.rgba[i * 4 + 3] as f32 * keep.clamp(0.0, 1.0)).round() as u8;
     }
+}
+
+/// Snap a soft, low-resolution matte to the edges of the picture it cuts out.
+///
+/// A segmentation matte is made small and stretched to the frame, so its edge is a blurry band several pixels
+/// wide; drawn as is, that band shows a ring of the old background around the subject. A guided filter (He, Sun
+/// and Tang, "Guided Image Filtering", ECCV 2010) re-fits the matte inside every small window as a straight-line
+/// function of the picture's brightness, which moves the edge onto the picture's own edge; the result is then
+/// steepened so the band left over becomes a clean edge. Only the box around the uncertain band is worked on.
+/// `amount` blends between the stretched matte (0) and the refined one (1).
+fn refine_matte(m: &mut [f32], f: &Frame8, amount: f32) {
+    let (w, h) = (f.width as usize, f.height as usize);
+    // window half-width: 4 px on a 1080-line frame
+    let r = ((h as f32 / 270.0).round() as usize).max(2);
+    // the box holding every pixel that is neither clearly in nor clearly out, grown by two windows
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            let v = m[y * w + x];
+            if v > 0.02 && v < 0.98 {
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if x1 < x0 {
+        return;
+    }
+    let pad = 2 * r;
+    let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+    let (x1, y1) = ((x1 + pad).min(w - 1), (y1 + pad).min(h - 1));
+    let (bw, bh) = (x1 - x0 + 1, y1 - y0 + 1);
+    let luma = |x: usize, y: usize| {
+        let p = &f.rgba[(y * w + x) * 4..][..3];
+        (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
+    };
+    let guide: Vec<f32> = (0..bh)
+        .flat_map(|y| (0..bw).map(move |x| (x, y)))
+        .map(|(x, y)| luma(x0 + x, y0 + y))
+        .collect();
+    let input: Vec<f32> = (0..bh)
+        .flat_map(|y| (0..bw).map(move |x| (x, y)))
+        .map(|(x, y)| m[(y0 + y) * w + x0 + x])
+        .collect();
+    let mean = |v: &[f32]| box_mean(v, bw, bh, r);
+    let mean_i = mean(&guide);
+    let mean_p = mean(&input);
+    let ii: Vec<f32> = guide.iter().map(|g| g * g).collect();
+    let ip: Vec<f32> = guide.iter().zip(&input).map(|(g, p)| g * p).collect();
+    let (corr_i, corr_ip) = (mean(&ii), mean(&ip));
+    // small: edges of low contrast still steer the matte
+    let eps = 1e-3f32;
+    let mut a = vec![0.0f32; bw * bh];
+    let mut b = vec![0.0f32; bw * bh];
+    for k in 0..bw * bh {
+        let var = corr_i[k] - mean_i[k] * mean_i[k];
+        let cov = corr_ip[k] - mean_i[k] * mean_p[k];
+        a[k] = cov / (var + eps);
+        b[k] = mean_p[k] - a[k] * mean_i[k];
+    }
+    let (ma, mb) = (mean(&a), mean(&b));
+    for y in 0..bh {
+        for x in 0..bw {
+            let k = y * bw + x;
+            let q = ma[k] * guide[k] + mb[k];
+            // steepen: the middle half of the range becomes the whole edge
+            let t = ((q - 0.25) / 0.5).clamp(0.0, 1.0);
+            let hard = t * t * (3.0 - 2.0 * t);
+            let v = &mut m[(y0 + y) * w + x0 + x];
+            *v += (hard - *v) * amount;
+        }
+    }
+}
+
+/// Mean over a (2r+1)-square window around each pixel (the window is cut at the borders), from a summed-area
+/// table.
+fn box_mean(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let mut sat = vec![0.0f64; (w + 1) * (h + 1)];
+    for y in 0..h {
+        let mut row = 0.0f64;
+        for x in 0..w {
+            row += v[y * w + x] as f64;
+            sat[(y + 1) * (w + 1) + x + 1] = sat[y * (w + 1) + x + 1] + row;
+        }
+    }
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        let (ya, yb) = (y.saturating_sub(r), (y + r + 1).min(h));
+        for x in 0..w {
+            let (xa, xb) = (x.saturating_sub(r), (x + r + 1).min(w));
+            let s = sat[yb * (w + 1) + xb] - sat[ya * (w + 1) + xb] - sat[yb * (w + 1) + xa]
+                + sat[ya * (w + 1) + xa];
+            out[y * w + x] = (s / ((yb - ya) * (xb - xa)) as f64) as f32;
+        }
+    }
+    out
 }
 
 /// Minimum (erode) or maximum (dilate) over a square window of half-width `r`.
@@ -711,12 +1055,14 @@ fn morph(m: &[f32], w: usize, h: usize, r: usize, erode: bool) -> Vec<f32> {
 }
 
 /// Apply one 256-entry table per colour channel.
-fn map_channels(f: &mut Frame8, tables: &[[u8; 256]; 3]) {
-    for px in f.rgba.chunks_exact_mut(4) {
-        for c in 0..3 {
-            px[c] = tables[c][px[c] as usize];
+pub(crate) fn map_channels(f: &mut Frame8, tables: &[[u8; 256]; 3]) {
+    f.rgba.par_chunks_mut(4 * 1024).for_each(|run| {
+        for px in run.chunks_exact_mut(4) {
+            for c in 0..3 {
+                px[c] = tables[c][px[c] as usize];
+            }
         }
-    }
+    });
 }
 
 /// Lift / gamma / gain, each with a master and a per-channel tint, on display values.
@@ -736,7 +1082,8 @@ fn wheels(f: &mut Frame8, p: &[f64]) {
 }
 
 /// Smooth, never-overshooting curve through points at x = 0, .25, .5, .75, 1 (Fritsch-Carlson).
-fn curve_table(y: &[f64]) -> [f64; 256] {
+/// The Curves effect uses it, and the curve editor draws it, so the picture and the editor agree.
+pub fn curve_table(y: &[f64]) -> [f64; 256] {
     let h = 0.25;
     let d: Vec<f64> = (0..4).map(|i| (y[i + 1] - y[i]) / h).collect();
     let mut m = [0.0; 5];
@@ -791,7 +1138,7 @@ fn curves(f: &mut Frame8, p: &[f64]) {
     map_channels(f, &tables);
 }
 
-fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+pub(crate) fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
     let l = (mx + mn) / 2.0;
     if mx == mn {
@@ -813,7 +1160,7 @@ fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     (h * 60.0, s, l)
 }
 
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
+pub(crate) fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
     if s == 0.0 {
         return (l, l, l);
     }
@@ -861,10 +1208,17 @@ fn hsl(f: &mut Frame8, p: &[f64]) {
             ds += w * (p[band * 3 + 1] / 100.0 - 1.0);
             dl += w * p[band * 3 + 2] / 100.0;
         }
+        // hue and lightness changes follow how colourful the pixel really is (its chroma, not HSL saturation,
+        // which is high even for nearly black pixels): greys and faint tints stay put, strong colours move fully
+        let chroma = (px[0].max(px[1]).max(px[2]) - px[0].min(px[1]).min(px[2])) as f64 / 255.0;
+        let k = {
+            let t = ((chroma - 0.04) / 0.16).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
         let (r, g, b) = hsl_to_rgb(
-            h + dh,
+            h + dh * k,
             (s * (1.0 + ds)).clamp(0.0, 1.0),
-            (l + dl).clamp(0.0, 1.0),
+            (l + dl * k).clamp(0.0, 1.0),
         );
         px[0] = (r * 255.0).round() as u8;
         px[1] = (g * 255.0).round() as u8;
@@ -1059,6 +1413,32 @@ mod matte_tests {
     }
 
     #[test]
+    fn refining_snaps_a_soft_matte_edge_to_the_picture_edge() {
+        // picture: dark subject on the left half, bright background on the right; the matte's edge is a soft
+        // 8-pixel ramp centred 3 px off the real edge, as a stretched segmentation matte would be
+        let (w, h) = (96usize, 1080usize); // the window is 4 px at this height
+        let mut f = Frame8::solid(w as u32, h as u32, [230, 230, 230, 255]);
+        for y in 0..h {
+            for x in 0..48 {
+                f.rgba[(y * w + x) * 4..][..3].copy_from_slice(&[30, 30, 30]);
+            }
+        }
+        let mut m: Vec<f32> = (0..w * h)
+            .map(|i| (((51.0 - (i % w) as f32) / 8.0) + 0.5).clamp(0.0, 1.0))
+            .collect();
+        let before = m[4 * w + 52];
+        refine_matte(&mut m, &f, 1.0);
+        let row = &m[4 * w..5 * w];
+        assert!(row[45] > 0.95, "inside stays in: {}", row[45]);
+        assert!(row[54] < 0.05, "background is cut: {}", row[54]);
+        assert!(
+            row[52] < before * 0.5,
+            "the band past the real edge is cleared: {before} -> {}",
+            row[52]
+        );
+    }
+
+    #[test]
     fn the_matte_keeps_white_and_hides_black_whatever_its_size() {
         let pic = Frame8::solid(64, 32, [200, 100, 50, 255]);
         let mut e = Effect::new(EffectKind::Matte);
@@ -1112,6 +1492,36 @@ mod matte_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// HSL lightness on a colour band moves strong colours of that band and leaves greys and faint tints alone,
+    /// as a grade expects (darkening a yellow-green floor must not darken warm-grey walls).
+    #[test]
+    fn hsl_lightness_spares_greys_and_faint_tints() {
+        let f = Frame8 {
+            width: 3,
+            height: 1,
+            rgba: vec![
+                150, 170, 40, 255, // turf: strong yellow-green
+                130, 128, 122, 255, // warm grey wall
+                128, 128, 128, 255, // pure grey
+            ],
+        };
+        let mut e = Effect::new(EffectKind::Hsl);
+        e.params[5] = -25.0; // yellow lum
+        e.params[8] = -25.0; // green lum
+        let out = apply_effects(&f, &[e]).unwrap();
+        let luma = |p: &[u8]| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
+        assert!(
+            luma(&out.rgba[0..4]) < luma(&f.rgba[0..4]) - 25.0,
+            "turf darkened"
+        );
+        assert!(
+            (luma(&out.rgba[4..8]) - luma(&f.rgba[4..8])).abs() < 2.0,
+            "wall unchanged"
+        );
+        assert_eq!(&out.rgba[8..12], &f.rgba[8..12]);
+    }
+
     use super::*;
 
     fn fx(kind: EffectKind, params: &[f64]) -> Vec<Effect> {
@@ -1253,7 +1663,7 @@ mod tests {
             255,
             "the left half is mirrored onto the right"
         );
-        let c = apply_effects(&f, &fx(EffectKind::Crop, &[25.0, 0.0, 25.0, 50.0])).unwrap();
+        let c = apply_effects(&f, &fx(EffectKind::Crop, &[25.0, 0.0, 25.0, 50.0, 0.0])).unwrap();
         assert_eq!(px(&c, 0, 0)[3], 0);
         assert_eq!(px(&c, 3, 0)[3], 255);
         assert_eq!(px(&c, 3, 3)[3], 0, "the bottom half is cropped");
@@ -1360,7 +1770,7 @@ mod tests {
         let sigma = 12.0;
         let fast = blur_premul(to_premul(&f), w, h, sigma);
         // the same blur without the shortcut: ask for it just under the threshold twice as wide
-        let r = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0).round() as usize;
+        let r = box_radius(sigma);
         let (mut a, mut b) = (to_premul(&f), vec![0.0; w * h * 4]);
         for _ in 0..3 {
             box_pass(&a, &mut b, w, h, r);
@@ -1517,13 +1927,13 @@ mod tests {
         let f = Frame8::solid(64, 64, [128, 128, 128, 255]);
         let e = fx(EffectKind::Grain, &[50.0, 1.5, 20.0]);
         let (a, b) = (
-            apply_effects_at(&f, &e, &[], 1).unwrap(),
-            apply_effects_at(&f, &e, &[], 2).unwrap(),
+            apply_effects_at(&f, &e, &[], FxTime::new(1, 0.0)).unwrap(),
+            apply_effects_at(&f, &e, &[], FxTime::new(2, 0.0)).unwrap(),
         );
         assert_ne!(a, b, "a new frame, new grain");
         assert_eq!(
             a,
-            apply_effects_at(&f, &e, &[], 1).unwrap(),
+            apply_effects_at(&f, &e, &[], FxTime::new(1, 0.0)).unwrap(),
             "the same frame twice is identical"
         );
         let spread = |x: &Frame8| {
@@ -1670,5 +2080,55 @@ mod tests {
         assert!(b.check().is_err());
         b.params = vec![500.0];
         assert!(b.check().is_err());
+    }
+}
+
+#[cfg(test)]
+mod letterbox_tests {
+    use super::*;
+    use captaine_model::{Effect, EffectKind};
+
+    fn fx(aspect: f64) -> Vec<Effect> {
+        let mut e = Effect::new(EffectKind::Letterbox);
+        e.params[0] = aspect;
+        vec![e]
+    }
+
+    #[test]
+    fn scope_bars_on_a_16_9_picture() {
+        let f = Frame8::solid(192, 108, [200, 100, 50, 255]);
+        let out = apply_effects(&f, &fx(2.35)).unwrap();
+        let px = |x: u32, y: u32| &out.rgba[((y * 192 + x) * 4) as usize..][..4];
+        // 192 / 2.35 = 81.7 visible rows, about 13 rows of bar at each end
+        assert_eq!(px(10, 2), [0, 0, 0, 255]);
+        assert_eq!(px(10, 105), [0, 0, 0, 255]);
+        assert_eq!(px(10, 54), [200, 100, 50, 255]);
+        assert_eq!(px(10, 20), [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn pillarbox_when_narrower_and_transparent_stays_covered() {
+        let f = Frame8::solid(160, 90, [10, 20, 30, 0]);
+        let out = apply_effects(&f, &fx(1.0)).unwrap();
+        let px = |x: u32| &out.rgba[((45 * 160 + x) * 4) as usize..][..4];
+        assert_eq!(
+            px(5),
+            [0, 0, 0, 255],
+            "a bar is opaque black even over nothing"
+        );
+        assert_eq!(px(80)[3], 0, "the window is untouched");
+    }
+}
+
+#[cfg(test)]
+mod curve_table_tests {
+    use super::curve_table;
+
+    #[test]
+    fn untouched_points_give_a_straight_line() {
+        let t = curve_table(&[0.0, 0.25, 0.5, 0.75, 1.0]);
+        for (i, v) in t.iter().enumerate() {
+            assert!((v - i as f64 / 255.0).abs() < 1e-9, "at {i}: {v}");
+        }
     }
 }

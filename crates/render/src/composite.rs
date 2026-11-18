@@ -4,36 +4,39 @@ use rayon::prelude::*;
 use crate::color::to_linear;
 use crate::{Canvas, Frame8};
 
+/// Per channel: sRGB byte -> linear light, with the per-channel part of a grade already applied.
+type Lut = [[f32; 256]; 3];
+
 /// Premultiplied linear texel; coordinates clamp to the picture edge (coverage is applied separately).
 #[inline]
-fn texel(f: &Frame8, x: i64, y: i64) -> [f32; 4] {
+fn texel(f: &Frame8, lut: &Lut, x: i64, y: i64) -> [f32; 4] {
     let x = x.clamp(0, f.width as i64 - 1) as u32;
     let y = y.clamp(0, f.height as i64 - 1) as u32;
     let i = ((y * f.width + x) * 4) as usize;
     let a = f.rgba[i + 3] as f32 / 255.0;
     [
-        to_linear(f.rgba[i]) * a,
-        to_linear(f.rgba[i + 1]) * a,
-        to_linear(f.rgba[i + 2]) * a,
+        lut[0][f.rgba[i] as usize] * a,
+        lut[1][f.rgba[i + 1] as usize] * a,
+        lut[2][f.rgba[i + 2] as usize] * a,
         a,
     ]
 }
 
 /// Bilinear sample at continuous source coordinates (pixel centers at +0.5).
 #[inline]
-fn sample(f: &Frame8, sx: f64, sy: f64) -> [f32; 4] {
+fn sample(f: &Frame8, lut: &Lut, sx: f64, sy: f64) -> [f32; 4] {
     let (x, y) = (sx - 0.5, sy - 0.5);
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = ((x - x0) as f32, (y - y0) as f32);
     let (x0, y0) = (x0 as i64, y0 as i64);
     if fx == 0.0 && fy == 0.0 {
-        return texel(f, x0, y0);
+        return texel(f, lut, x0, y0);
     }
     let (a, b, c, d) = (
-        texel(f, x0, y0),
-        texel(f, x0 + 1, y0),
-        texel(f, x0, y0 + 1),
-        texel(f, x0 + 1, y0 + 1),
+        texel(f, lut, x0, y0),
+        texel(f, lut, x0 + 1, y0),
+        texel(f, lut, x0, y0 + 1),
+        texel(f, lut, x0 + 1, y0 + 1),
     );
     let mut o = [0.0; 4];
     for k in 0..4 {
@@ -44,67 +47,107 @@ fn sample(f: &Frame8, sx: f64, sy: f64) -> [f32; 4] {
     o
 }
 
-/// Linear-light grade of one un-premultiplied color.
-fn grade(rgb: [f32; 3], c: &ColorProps) -> [f32; 3] {
-    let gain = 2f32.powf(c.exposure as f32);
-    // temperature: +-1500 K moves red and blue a quarter stop in opposite directions
-    let warm =
-        (((c.temperature - ColorProps::NEUTRAL_KELVIN) / 1500.0).clamp(-4.0, 4.0) * 0.25) as f32;
-    let (wr, wb) = (2f32.powf(warm), 2f32.powf(-warm));
-    let mut out = [rgb[0] * gain * wr, rgb[1] * gain, rgb[2] * gain * wb];
-    const PIVOT: f32 = 0.18;
-    if c.contrast != 1.0 {
-        let k = c.contrast as f32;
-        for v in &mut out {
-            *v = if *v > 0.0 {
-                PIVOT * (*v / PIVOT).powf(k)
+/// A clip's colour settings turned into the numbers the per-pixel grade needs, worked out once per layer
+/// instead of once per pixel (same arithmetic, same results).
+struct Grade<'a> {
+    c: &'a ColorProps,
+    gain: f32,
+    wr: f32,
+    wb: f32,
+    tint: [f32; 3],
+}
+
+impl<'a> Grade<'a> {
+    fn new(c: &'a ColorProps) -> Grade<'a> {
+        let gain = 2f32.powf(c.exposure as f32);
+        // temperature: +-1500 K moves red and blue a quarter stop in opposite directions
+        let warm = (((c.temperature - ColorProps::NEUTRAL_KELVIN) / 1500.0).clamp(-4.0, 4.0) * 0.25)
+            as f32;
+        // positive tint adds magenta: a little less green, a little more red and blue
+        let t = (c.tint / 100.0) as f32 * 0.3;
+        Grade {
+            c,
+            gain,
+            wr: 2f32.powf(warm),
+            wb: 2f32.powf(-warm),
+            tint: [2f32.powf(t * 0.5), 2f32.powf(-t), 2f32.powf(t * 0.5)],
+        }
+    }
+
+    /// The part of the grade that treats each channel on its own (exposure, temperature, contrast, tint).
+    fn channel(&self, ch: usize, v: f32) -> f32 {
+        let c = self.c;
+        let w = [self.wr, 1.0, self.wb][ch];
+        let mut v = if ch == 1 {
+            v * self.gain
+        } else {
+            v * self.gain * w
+        };
+        const PIVOT: f32 = 0.18;
+        if c.contrast != 1.0 {
+            v = if v > 0.0 {
+                PIVOT * (v / PIVOT).powf(c.contrast as f32)
             } else {
                 0.0
             };
         }
-    }
-    if c.tint != 0.0 {
-        // positive tint adds magenta: a little less green, a little more red and blue
-        let t = (c.tint / 100.0) as f32 * 0.3;
-        out[0] *= 2f32.powf(t * 0.5);
-        out[1] *= 2f32.powf(-t);
-        out[2] *= 2f32.powf(t * 0.5);
-    }
-    if c.highlights != 0.0 || c.shadows != 0.0 {
-        let y = (0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]).max(0.0);
-        let smooth = |a: f32, b: f32, x: f32| {
-            let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
-        };
-        let w_shadow = 1.0 - smooth(0.0, 0.35, y);
-        let w_light = smooth(0.25, 1.0, y);
-        let stops =
-            1.5 * ((c.shadows / 100.0) as f32 * w_shadow + (c.highlights / 100.0) as f32 * w_light);
-        let g = 2f32.powf(stops);
-        for v in &mut out {
-            *v *= g;
+        if c.tint != 0.0 {
+            v *= self.tint[ch];
         }
+        v
     }
-    if c.saturation != 100.0 {
-        let s = (c.saturation / 100.0) as f32;
-        let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
-        for v in &mut out {
-            *v = (y + (*v - y) * s).max(0.0);
+
+    /// sRGB byte -> graded linear light, per channel: the per-channel part of the grade worked out for all
+    /// 256 values once, so drawing a pixel is a table lookup instead of several powers.
+    fn lut(&self) -> Lut {
+        std::array::from_fn(|ch| std::array::from_fn(|i| self.channel(ch, to_linear(i as u8))))
+    }
+
+    /// Whether the grade has parts that mix the channels (and so must run per pixel).
+    fn mixes(&self) -> bool {
+        let c = self.c;
+        c.highlights != 0.0 || c.shadows != 0.0 || c.saturation != 100.0 || c.vibrance != 0.0
+    }
+
+    /// The channel-mixing part of the grade (highlights, shadows, saturation, vibrance), after [`channel`](Self::channel).
+    fn mix(&self, mut out: [f32; 3]) -> [f32; 3] {
+        let c = self.c;
+        if c.highlights != 0.0 || c.shadows != 0.0 {
+            let y = (0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]).max(0.0);
+            let smooth = |a: f32, b: f32, x: f32| {
+                let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            let w_shadow = 1.0 - smooth(0.0, 0.35, y);
+            let w_light = smooth(0.25, 1.0, y);
+            let stops = 1.5
+                * ((c.shadows / 100.0) as f32 * w_shadow + (c.highlights / 100.0) as f32 * w_light);
+            let g = 2f32.powf(stops);
+            for v in &mut out {
+                *v *= g;
+            }
         }
-    }
-    if c.vibrance != 0.0 {
-        let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
-        let (mx, mn) = (
-            out[0].max(out[1]).max(out[2]),
-            out[0].min(out[1]).min(out[2]),
-        );
-        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
-        let s = 1.0 + (c.vibrance / 100.0) as f32 * (1.0 - sat);
-        for v in &mut out {
-            *v = (y + (*v - y) * s).max(0.0);
+        if c.saturation != 100.0 {
+            let s = (c.saturation / 100.0) as f32;
+            let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+            for v in &mut out {
+                *v = (y + (*v - y) * s).max(0.0);
+            }
         }
+        if c.vibrance != 0.0 {
+            let y = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+            let (mx, mn) = (
+                out[0].max(out[1]).max(out[2]),
+                out[0].min(out[1]).min(out[2]),
+            );
+            let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+            let s = 1.0 + (c.vibrance / 100.0) as f32 * (1.0 - sat);
+            for v in &mut out {
+                *v = (y + (*v - y) * s).max(0.0);
+            }
+        }
+        out
     }
-    out
 }
 
 #[inline]
@@ -144,6 +187,17 @@ pub struct LayerFx {
     pub scale: f64,
     /// Only a circle of this radius, as a fraction of half the canvas diagonal, around the middle is drawn
     pub iris: Option<f64>,
+    /// Smear the layer sideways, as when the camera whips: the length of the streak as a fraction of its width
+    pub motion_blur: f64,
+    /// Repeat the picture sideways so a layer moved off-centre still fills the canvas (no empty edge)
+    pub wrap_x: bool,
+    /// Extra turn, in degrees clockwise, on top of the layer's own rotation
+    pub spin: f64,
+    /// Only the part a clock hand has swept, starting at twelve o'clock, is drawn: the fraction of the full turn
+    pub clock: Option<f64>,
+    /// The layer stands still (no moving position, scale or rotation): when it is drawn at about 1:1, put its
+    /// pixels exactly on the canvas grid, so an off-centre placement does not average neighbouring pixels
+    pub snap: bool,
 }
 
 impl Default for LayerFx {
@@ -154,6 +208,11 @@ impl Default for LayerFx {
             mask: None,
             scale: 1.0,
             iris: None,
+            motion_blur: 0.0,
+            wrap_x: false,
+            spin: 0.0,
+            clock: None,
+            snap: false,
         }
     }
 }
@@ -166,20 +225,39 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
     }
     let t = &props.transform;
     let fit = (cw / fw).min(ch / fh);
-    let (sx, sy) = (fit * t.scale.0 * fx.scale, fit * t.scale.1 * fx.scale);
-    let (sin, cos) = t.rotation_deg.to_radians().sin_cos();
+    let (mut sx, mut sy) = (fit * t.scale.0 * fx.scale, fit * t.scale.1 * fx.scale);
+    let turn = t.rotation_deg + fx.spin;
+    let (sin, cos) = turn.to_radians().sin_cos();
 
-    // bounding box of the drawn picture on the canvas
-    let (hw, hh) = (fw * sx.abs() / 2.0, fh * sy.abs() / 2.0);
-    let (cx, cy) = (
+    let (mut cx, mut cy) = (
         cw / 2.0 + t.position.0 + fx.shift.0 * cw,
         ch / 2.0 + t.position.1 + fx.shift.1 * ch,
     );
+    // a still picture decoded at the size it is shown: draw it 1:1 with whole-pixel placement. A fraction of a
+    // pixel of offset (or a 0.1% size difference from even decode sizes) would otherwise blur the whole frame
+    if fx.snap
+        && turn.rem_euclid(360.0) == 0.0
+        && (sx - 1.0).abs() < 0.003
+        && (sy - 1.0).abs() < 0.003
+    {
+        (sx, sy) = (1.0, 1.0);
+        cx = (cx - fw / 2.0).round() + fw / 2.0;
+        cy = (cy - fh / 2.0).round() + fh / 2.0;
+    }
+
+    // bounding box of the drawn picture on the canvas
+    let (hw, hh) = (fw * sx.abs() / 2.0, fh * sy.abs() / 2.0);
     let ex = hw * cos.abs() + hh * sin.abs();
     let ey = hw * sin.abs() + hh * cos.abs();
-    let x0 = ((cx - ex - 1.0).floor().max(0.0)) as u32;
+    let (x0, x1) = if fx.wrap_x {
+        (0, canvas.width)
+    } else {
+        (
+            ((cx - ex - 1.0).floor().max(0.0)) as u32,
+            ((cx + ex + 1.0).ceil().min(cw)).max(0.0) as u32,
+        )
+    };
     let y0 = ((cy - ey - 1.0).floor().max(0.0)) as u32;
-    let x1 = ((cx + ex + 1.0).ceil().min(cw)).max(0.0) as u32;
     let y1 = ((cy + ey + 1.0).ceil().min(ch)).max(0.0) as u32;
 
     let opacity = (props.opacity * fx.opacity) as f32;
@@ -188,6 +266,17 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
         .map(|m| [m[0] * cw, m[1] * ch, m[2] * cw, m[3] * ch]);
     let iris = fx.iris.map(|f| f * (cw * cw + ch * ch).sqrt() / 2.0);
     let graded_neutral = props.color.is_neutral();
+    let grader = Grade::new(&props.color);
+    // sRGB -> linear with the per-channel grade folded in; channel mixing (saturation...) runs per pixel
+    let lut: Lut = if graded_neutral {
+        let plain: [f32; 256] = std::array::from_fn(|i| to_linear(i as u8));
+        [plain; 3]
+    } else {
+        grader.lut()
+    };
+    let mixes = !graded_neutral && grader.mixes();
+    let normal = props.blend == BlendMode::Normal;
+    let (inv_sx, inv_sy) = (1.0 / sx, 1.0 / sy);
     let width = canvas.width as usize;
     // each row of the canvas is independent: spread them over every core
     canvas
@@ -197,6 +286,9 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
         .filter(|(y, _)| (*y as u32) >= y0 && (*y as u32) < y1)
         .for_each(|(y, row)| {
             let y = y as u32;
+            // the parts of the inverse transform that only depend on the row
+            let dy = y as f64 + 0.5 - cy;
+            let (row_x, row_y) = (dy * sin, dy * cos);
             for x in x0..x1 {
                 if let Some(m) = mask {
                     let (mx, my) = (x as f64 + 0.5, y as f64 + 0.5);
@@ -210,27 +302,56 @@ pub fn draw_layer_fx(canvas: &mut Canvas, frame: &Frame8, props: &VideoProps, fx
                         continue;
                     }
                 }
-                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                if let Some(c) = fx.clock {
+                    let (ix, iy) = (x as f64 + 0.5 - cw / 2.0, y as f64 + 0.5 - ch / 2.0);
+                    // angle clockwise from straight up, as a fraction of a turn
+                    let a = (ix.atan2(-iy) / std::f64::consts::TAU).rem_euclid(1.0);
+                    if a >= c {
+                        continue;
+                    }
+                }
+                let dx = x as f64 + 0.5 - cx;
                 // inverse of (scale, then clockwise rotation): rotate back, then unscale
-                let (ux, uy) = (dx * cos + dy * sin, -dx * sin + dy * cos);
-                let (px, py) = (ux / sx + fw / 2.0, uy / sy + fh / 2.0);
+                let (ux, uy) = (dx * cos + row_x, -dx * sin + row_y);
+                let (mut px, py) = (ux * inv_sx + fw / 2.0, uy * inv_sy + fh / 2.0);
                 // how much of this canvas pixel the picture covers (distance to the nearest edge, in canvas pixels)
-                let ex = (px.min(fw - px) * sx.abs() + 0.5).clamp(0.0, 1.0);
+                let ex = if fx.wrap_x {
+                    px = px.rem_euclid(fw);
+                    1.0
+                } else {
+                    (px.min(fw - px) * sx.abs() + 0.5).clamp(0.0, 1.0)
+                };
                 let ey = (py.min(fh - py) * sy.abs() + 0.5).clamp(0.0, 1.0);
                 let k = (ex * ey) as f32 * opacity;
                 if k <= 0.0 {
                     continue;
                 }
-                let mut s = sample(frame, px, py);
-                if !graded_neutral && s[3] > 0.0 {
+                let mut s = sample(frame, &lut, px, py);
+                if mixes && s[3] > 0.0 {
                     let a = s[3];
-                    let g = grade([s[0] / a, s[1] / a, s[2] / a], &props.color);
-                    s = [g[0] * a, g[1] * a, g[2] * a, a];
+                    if a >= 1.0 {
+                        // opaque (camera footage): nothing to un-premultiply
+                        let g = grader.mix([s[0], s[1], s[2]]);
+                        s = [g[0], g[1], g[2], a];
+                    } else {
+                        let g = grader.mix([s[0] / a, s[1] / a, s[2] / a]);
+                        s = [g[0] * a, g[1] * a, g[2] * a, a];
+                    }
                 }
                 let s = [s[0] * k, s[1] * k, s[2] * k, s[3] * k];
                 let i = x as usize * 4;
-                let d = [row[i], row[i + 1], row[i + 2], row[i + 3]];
-                row[i..i + 4].copy_from_slice(&blend(props.blend, s, d));
+                let d = &mut row[i..i + 4];
+                if normal {
+                    // the usual case, without going through the general blend
+                    let k = 1.0 - s[3];
+                    d[0] = s[0] + d[0] * k;
+                    d[1] = s[1] + d[1] * k;
+                    d[2] = s[2] + d[2] * k;
+                    d[3] = s[3] + d[3] - s[3] * d[3];
+                } else {
+                    let o = blend(props.blend, s, [d[0], d[1], d[2], d[3]]);
+                    d.copy_from_slice(&o);
+                }
             }
         });
 }
@@ -255,6 +376,25 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_layer_fills_the_canvas_when_moved() {
+        // a half-width picture moved right: without wrap the left of the canvas stays black, with wrap it repeats
+        let f = Frame8::solid(4, 4, [255, 255, 255, 255]);
+        let p = VideoProps::default();
+        let mut moved = LayerFx {
+            shift: (0.25, 0.0),
+            ..LayerFx::default()
+        };
+        let mut plain = Canvas::black(8, 4);
+        draw_layer_fx(&mut plain, &f, &p, &moved);
+        assert_eq!(px(&plain, 0, 2), [0, 0, 0]);
+        moved.wrap_x = true;
+        let mut wrapped = Canvas::black(8, 4);
+        draw_layer_fx(&mut wrapped, &f, &p, &moved);
+        assert_eq!(px(&wrapped, 0, 2), [255, 255, 255]);
+        assert_eq!(px(&wrapped, 7, 2), [255, 255, 255]);
+    }
+
+    #[test]
     fn same_size_layer_is_an_exact_copy() {
         let mut f = Frame8::solid(4, 4, [0, 0, 0, 255]);
         for (i, v) in f.rgba.iter_mut().enumerate() {
@@ -265,6 +405,32 @@ mod tests {
         let mut c = Canvas::black(4, 4);
         draw_layer(&mut c, &f, &props());
         assert_eq!(c.to_rgba8(), f.rgba);
+    }
+
+    #[test]
+    fn still_layer_moved_by_part_of_a_pixel_stays_sharp() {
+        // a 1-pixel-wide white line on an 8x4 picture, drawn 1:1 but 2.5 px to the right
+        let mut f = Frame8::solid(8, 4, [0, 0, 0, 255]);
+        for y in 0..4 {
+            let i = (y * 8 + 3) * 4;
+            f.rgba[i..i + 3].copy_from_slice(&[255, 255, 255]);
+        }
+        let mut p = props();
+        p.transform.position = (2.5, 0.0);
+        let fx = LayerFx {
+            snap: true,
+            ..LayerFx::default()
+        };
+        let mut c = Canvas::black(8, 4);
+        draw_layer_fx(&mut c, &f, &p, &fx);
+        // whole-pixel placement: the line is still one pure white pixel wide, not two grey ones
+        let row: Vec<[u8; 3]> = (0..8).map(|x| px(&c, x, 1)).collect();
+        assert_eq!(row.iter().filter(|v| **v == [255, 255, 255]).count(), 1);
+        assert!(row.iter().all(|v| *v == [255, 255, 255] || *v == [0, 0, 0]));
+        // without snapping (a moving layer) it is placed exactly, and so spreads over two pixels
+        let mut c = Canvas::black(8, 4);
+        draw_layer_fx(&mut c, &f, &p, &LayerFx::default());
+        assert_eq!(px(&c, 5, 1), px(&c, 6, 1));
     }
 
     #[test]
@@ -565,6 +731,101 @@ mod grade_tests {
             px([100, 100, 100], v),
             px([100, 100, 100], ColorProps::default()),
             "grey stays grey"
+        );
+    }
+}
+
+/// Average every pixel with its neighbours along the row over `len` pixels: a horizontal motion streak.
+/// Straight-alpha RGBA in, same size out. `len` < 2 returns a copy. With `wrap` the row is treated as a loop
+/// (for a picture repeated sideways, so the seam where it repeats is smeared like the rest).
+pub fn horizontal_blur(frame: &Frame8, len: usize, wrap: bool) -> Frame8 {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    if len < 2 || w == 0 || h == 0 {
+        return frame.clone();
+    }
+    let len = len.min(w);
+    let (before, after) = (len / 2, len - len / 2);
+    let mut out = vec![0u8; w * h * 4];
+    out.par_chunks_mut(w * 4)
+        .zip(frame.rgba.par_chunks(w * 4))
+        .for_each(|(dst, src)| {
+            // running sums over a window that is clamped at the picture's edges
+            let mut sum = [0u32; 4];
+            let at = |x: isize| {
+                if wrap {
+                    x.rem_euclid(w as isize) as usize * 4
+                } else {
+                    x.clamp(0, w as isize - 1) as usize * 4
+                }
+            };
+            for x in -(before as isize)..(after as isize) {
+                let i = at(x);
+                for c in 0..4 {
+                    sum[c] += src[i + c] as u32;
+                }
+            }
+            for x in 0..w {
+                for c in 0..4 {
+                    dst[x * 4 + c] = ((sum[c] + len as u32 / 2) / len as u32) as u8;
+                }
+                let (add, sub) = (
+                    at(x as isize + after as isize),
+                    at(x as isize - before as isize),
+                );
+                for c in 0..4 {
+                    sum[c] = sum[c] + src[add + c] as u32 - src[sub + c] as u32;
+                }
+            }
+        });
+    Frame8 {
+        width: frame.width,
+        height: frame.height,
+        rgba: out,
+    }
+}
+
+#[cfg(test)]
+mod blur_tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_blur_spreads_along_rows_only() {
+        // one white column in the middle of a black 9x3 picture
+        let (w, h) = (9u32, 3u32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h as usize {
+            let i = (y * w as usize + 4) * 4;
+            rgba[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+        for px in rgba.chunks_mut(4) {
+            px[3] = 255;
+        }
+        let f = Frame8 {
+            width: w,
+            height: h,
+            rgba,
+        };
+        let b = horizontal_blur(&f, 3, false);
+        let px = |x: usize, y: usize| b.rgba[(y * w as usize + x) * 4];
+        assert_eq!(px(4, 1), 85);
+        assert_eq!(px(3, 1), 85);
+        assert_eq!(px(5, 1), 85);
+        assert_eq!(px(1, 1), 0);
+        assert_eq!(px(4, 0), px(4, 2), "rows are treated alike");
+        assert_eq!(b.rgba[3], 255, "alpha of an opaque picture stays opaque");
+        assert_eq!(horizontal_blur(&f, 1, false).rgba, f.rgba);
+        // looped: the white column at the left edge bleeds into the right edge
+        let mut edge = f.clone();
+        for y in 0..h as usize {
+            let i = (y * w as usize + 4) * 4;
+            edge.rgba[i..i + 3].copy_from_slice(&[0, 0, 0]);
+            edge.rgba[y * w as usize * 4..y * w as usize * 4 + 3].copy_from_slice(&[255, 255, 255]);
+        }
+        let looped = horizontal_blur(&edge, 3, true);
+        assert_eq!(looped.rgba[(w as usize - 1) * 4], 85);
+        assert_eq!(
+            horizontal_blur(&edge, 3, false).rgba[(w as usize - 1) * 4],
+            0
         );
     }
 }

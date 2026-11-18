@@ -57,8 +57,29 @@ fn rotation(video: &serde_json::Value) -> i64 {
     deg.rem_euclid(360)
 }
 
+/// How long a still picture is in the media pool, in seconds.
+pub const STILL_SECONDS: f64 = 10.0;
+
+/// Picture files that are used as stills (looped by the decoder).
+pub fn is_still_image(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif"
+    )
+}
+
 /// Parses `ffprobe -print_format json -show_streams -show_format` output.
 pub fn parse_probe(json: &str) -> Result<ProbeInfo, MediaError> {
+    parse_probe_as(json, false)
+}
+
+/// [`parse_probe`] for a file known to be a picture (by its name), whatever its container says: an iPhone
+/// HEIC reads as a QuickTime file of one-frame tiles.
+pub fn parse_probe_as(json: &str, picture: bool) -> Result<ProbeInfo, MediaError> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| MediaError::Parse(e.to_string()))?;
     let streams = v["streams"]
@@ -76,13 +97,36 @@ pub fn parse_probe(json: &str) -> Result<ProbeInfo, MediaError> {
             .iter()
             .find_map(|k| video[*k].as_str().and_then(parse_rate))
             .ok_or_else(|| MediaError::Parse("no frame rate".into()))?;
-        let duration = secs(&video["duration"])
-            .or_else(|| secs(&v["format"]["duration"]))
-            .ok_or_else(|| MediaError::Parse("no duration (still image?)".into()))?;
-        let (w, h) = (
-            video["width"].as_u64().unwrap_or(0) as u32,
-            video["height"].as_u64().unwrap_or(0) as u32,
-        );
+        // A picture (PNG, JPEG, ...) has no duration: it is offered as a still of STILL_SECONDS, which the
+        // decoder loops, so it can be placed and trimmed like footage.
+        let format = v["format"]["format_name"].as_str().unwrap_or("");
+        let still = picture || format.ends_with("_pipe") || format == "image2";
+        let duration = if still {
+            STILL_SECONDS
+        } else {
+            secs(&video["duration"])
+                .or_else(|| secs(&v["format"]["duration"]))
+                .ok_or_else(|| MediaError::Parse("no duration".into()))?
+        };
+        // a still's own "frame rate" (1 fps for HEIC) would make it trim in whole seconds
+        let rate = if still {
+            Rational::new(30, 1).expect("valid rate")
+        } else {
+            rate
+        };
+        // a tiled picture (HEIC) is as big as its grid, not as one tile
+        let grid = v["stream_groups"].as_array().and_then(|g| {
+            g.iter()
+                .filter(|x| x["type"] == "Tile Grid")
+                .find_map(|x| x["components"].as_array()?.first().cloned())
+        });
+        let dim = |k: &str| {
+            grid.as_ref()
+                .and_then(|g| g[k].as_u64())
+                .or_else(|| video[k].as_u64())
+                .unwrap_or(0) as u32
+        };
+        let (w, h) = (dim("width"), dim("height"));
         let (width, height) = if rotation(video) % 180 == 90 {
             (h, w)
         } else {
@@ -116,6 +160,8 @@ pub fn parse_probe(json: &str) -> Result<ProbeInfo, MediaError> {
 }
 
 pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
+    let source = decodable_path(&path.to_string_lossy());
+    let decoded = Path::new(&source);
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -125,7 +171,13 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
             "-show_streams",
             "-show_format",
         ])
-        .arg(path)
+        .args(
+            // the picture size of a tiled HEIC is only in its stream group (FFmpeg 7.1+)
+            ["-show_stream_groups"]
+                .iter()
+                .filter(|_| is_tiled_picture(decoded)),
+        )
+        .arg(decoded)
         .output()
         .map_err(MediaError::Io)?;
     if !out.status.success() {
@@ -133,7 +185,58 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    parse_probe(&String::from_utf8_lossy(&out.stdout))
+    parse_probe_as(
+        &String::from_utf8_lossy(&out.stdout),
+        is_still_image(&path.to_string_lossy()),
+    )
+}
+
+/// A path FFmpeg decodes to the right picture. An iPhone HEIC holds the photo and a half-size HDR gain map
+/// as two tile grids, and FFmpeg picks the gain map; on macOS the photo is converted once with the
+/// system's `sips` into the temp folder (keyed by the file's path, size and date) and that copy is read.
+/// Anything else, or when the conversion is not possible, is read as it is.
+pub fn decodable_path(path: &str) -> String {
+    let p = Path::new(path);
+    if !cfg!(target_os = "macos") || !is_tiled_picture(p) {
+        return path.to_string();
+    }
+    let Ok(meta) = std::fs::metadata(p) else {
+        return path.to_string();
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    meta.len().hash(&mut h);
+    meta.modified().ok().hash(&mut h);
+    let dir = std::env::temp_dir().join("captaine-pictures");
+    let out = dir.join(format!("{:016x}.png", h.finish()));
+    if out.exists() {
+        return out.to_string_lossy().into_owned();
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let part = out.with_extension("part.png");
+    let ok = Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(p)
+        .arg("--out")
+        .arg(&part)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+        && std::fs::rename(&part, &out).is_ok();
+    if ok {
+        out.to_string_lossy().into_owned()
+    } else {
+        path.to_string()
+    }
+}
+
+/// HEIC and HEIF: pictures stored in a movie-style container, as tiles.
+pub fn is_tiled_picture(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| e == "heic" || e == "heif")
 }
 
 /// Probes `path` and builds its media-pool entry.
@@ -281,16 +384,37 @@ pub fn make_proxy(src: &Path, dst: &Path, max_height: u32) -> Result<(), MediaEr
         "scale=-2:'min({max_height},ih)'{}",
         to_rec709(detect_space(&src.to_string_lossy()))
     );
-    let out = Command::new("ffmpeg")
-        .args(["-y", "-v", "error", "-nostdin", "-i"])
-        .arg(src)
-        .args([
+    let run = |hw: bool| {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-y", "-v", "error", "-nostdin"]);
+        // decoding the camera original is most of the work (4K HEVC especially): let the video chip do it
+        if hw {
+            cmd.args(["-hwaccel", "videotoolbox"]);
+        }
+        // a still becomes a clip as long as it is in the pool, so the proxy reads like the original
+        let source = decodable_path(&src.to_string_lossy());
+        let still = is_still_image(&src.to_string_lossy());
+        if still && is_tiled_picture(Path::new(&source)) {
+            cmd.args(["-stream_loop", "-1"]); // a HEIC that could not be converted
+        } else if still {
+            cmd.args(["-loop", "1", "-framerate", "30"]);
+        }
+        cmd.arg("-i").arg(&source);
+        if still {
+            cmd.args(["-t", &format!("{STILL_SECONDS}")]);
+        }
+        cmd.args([
             "-an", "-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "1",
             "-pix_fmt", "yuv420p",
         ])
         .arg(&tmp)
         .output()
-        .map_err(MediaError::Io)?;
+    };
+    let mut out = run(cfg!(target_os = "macos")).map_err(MediaError::Io)?;
+    if !out.status.success() && cfg!(target_os = "macos") {
+        // a file the hardware decoder will not take: the software decoder can
+        out = run(false).map_err(MediaError::Io)?;
+    }
     if !out.status.success() {
         let _ = std::fs::remove_file(&tmp);
         return Err(MediaError::Tool(
@@ -421,4 +545,24 @@ mod plain_path_tests {
         assert_eq!(strip("/tmp/a.mp4"), "/tmp/a.mp4");
         assert_eq!(strip(r"C:\a.mp4"), r"C:\a.mp4");
     }
+}
+
+/// Make several proxies, `parallel` at a time (one file alone leaves most of the cores idle: decoding runs on
+/// the video chip and a proxy is small). `done(i, result)` is called from a worker thread as each finishes.
+pub fn make_proxies(
+    jobs: &[(std::path::PathBuf, std::path::PathBuf)],
+    max_height: u32,
+    parallel: usize,
+    done: &(dyn Fn(usize, Result<(), MediaError>) + Sync),
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..parallel.clamp(1, 4).min(jobs.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((src, dst)) = jobs.get(i) else { break };
+                done(i, make_proxy(src, dst, max_height));
+            });
+        }
+    });
 }

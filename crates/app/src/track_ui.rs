@@ -84,33 +84,11 @@ impl App {
         let Some(tl) = self.timeline().cloned() else {
             return;
         };
-        let count = count.clamp(1, 16) as usize;
-        let mut ops = Vec::new();
-        let mut have = tl.tracks.iter().filter(|t| t.kind == kind).count();
-        let first = match kind {
-            TrackKind::Video => tl
-                .tracks
-                .iter()
-                .rposition(|t| t.kind == TrackKind::Video)
-                .map_or(0, |i| i + 1),
-            TrackKind::Audio => tl.tracks.len(),
-        };
-        for index in first..first + count {
-            have += 1;
-            let name = format!("{}{have}", if kind == TrackKind::Video { "V" } else { "A" });
-            ops.push(Op::AddTrack {
-                timeline: tl.id,
-                index,
-                track: Track::new(Id::new(), name, kind),
-            });
+        if let Ok(op) = captaine_ops::edit::add_tracks(&tl, kind, count as usize, None) {
+            self.do_op(op);
         }
-        self.do_op(Op::Transaction {
-            description: format!("Add {count} track(s)"),
-            ops,
-        });
     }
 
-    /// Add a track of the same kind right above (video) or below (audio) `near`.
     pub fn add_track_beside(&mut self, near: Id) {
         let (Some(tl), Some(t)) = (self.timeline().cloned(), self.track(near)) else {
             return;
@@ -301,7 +279,9 @@ impl App {
 }
 
 /// The header of one track: colour strip, name, and the lock, eye or speaker and solo buttons.
-pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
+/// `buttons`: false for a row only partly scrolled into view; its buttons would sit outside the timeline, and
+/// placing widgets there would make the panel grow.
+pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id, buttons: bool) {
     let Some(t) = app.track(track) else { return };
     p.rect_filled(head, 0.0, theme::PANEL);
     let accent = t.color.map_or(
@@ -354,6 +334,9 @@ pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
     let mut button = |ui: &mut Ui, g: Glyph, lit: bool, label: &str, tip: &str| {
         let r = Rect::from_center_size(pos2(x, y), vec2(18.0, 18.0));
         x -= 20.0;
+        if !buttons {
+            return false;
+        }
         ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
             glyphs::small(ui, g, lit, label, tip).clicked()
         })
@@ -420,7 +403,7 @@ pub fn header(app: &mut App, ui: &mut Ui, p: &Painter, head: Rect, track: Id) {
     {
         app.untargeted.insert(track);
     }
-    if t.kind == TrackKind::Audio {
+    if t.kind == TrackKind::Audio && buttons {
         let r = Rect::from_center_size(pos2(x, y), vec2(18.0, 18.0));
         let resp = ui
             .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {

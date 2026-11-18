@@ -719,12 +719,8 @@ fn adding_and_removing_an_effect_in_the_inspector() {
     let id = first(app(&h)).id;
     app_mut(&mut h).selected_clip = Some(id);
     settle(&mut h);
-    h.get_by_label("+ Blur").scroll_to_me();
-    settle(&mut h);
-    h.get_by_label("+ Blur").click();
-    settle(&mut h);
-    h.get_by_label("+ Vignette").click();
-    settle(&mut h);
+    add_effect(&mut h, "Blur & sharpen", "Blur");
+    add_effect(&mut h, "Stylize", "Vignette");
     let kinds = |a: &App| first(a).effects.iter().map(|e| e.kind).collect::<Vec<_>>();
     assert_eq!(kinds(app(&h)), [EffectKind::Blur, EffectKind::Vignette]);
     // the first "Off" switches the blur off
@@ -787,9 +783,7 @@ fn mixer_tab_lists_tracks_and_audio_effects_can_be_added() {
     app_mut(&mut h).selected_clip = Some(first(app(&h)).id);
     settle(&mut h);
     // clips with sound offer the sound effects
-    h.get_by_label("+ Compressor").scroll_to_me();
-    settle(&mut h);
-    h.get_by_label("+ Compressor").click();
+    add_effect(&mut h, "Sound", "Compressor");
     settle(&mut h);
     assert_eq!(first(app(&h)).effects[0].kind, EffectKind::Compressor);
     h.get_by_label("Mixer").click();
@@ -867,8 +861,15 @@ fn multi_select_copy_paste_duplicate_and_delete() {
     assert_eq!(ids(app(&h)).len(), 4);
 }
 
+/// The Deliver page's Render button (the top bar has one too, top right; this one is in the left panel).
+fn render_button(h: &H) -> egui_kittest::Node<'_> {
+    h.get_all_by_label("Render")
+        .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .unwrap()
+}
+
 #[test]
-fn export_dialog_queues_jobs_and_writes_the_file() {
+fn deliver_page_queues_renders_and_writes_the_files() {
     if !have_ffmpeg() {
         return;
     }
@@ -876,15 +877,16 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
     let dir = std::env::temp_dir().join(format!("captaine-queue-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (wav, m4a) = (dir.join("mix.wav"), dir.join("mix.m4a"));
-    app_mut(&mut h).export.open = true;
+    // the top bar's Render button opens the Deliver page
+    h.get_by_label("Render").click();
     settle(&mut h);
+    assert_eq!(app(&h).page, Page::Deliver);
     h.get_by_label("Audio WAV").click(); // a preset
     settle(&mut h);
     assert_eq!(app(&h).export.codec, captaine_export::Codec::Wav);
     app_mut(&mut h).export.path = Some(wav.clone());
     settle(&mut h);
-    // the dialog's button comes after the top bar's and the window title
-    h.get_all_by_label("Export").last().unwrap().click();
+    render_button(&h).click();
     settle(&mut h);
     // queue a second one straight away
     h.get_by_label("Audio podcast").click();
@@ -915,10 +917,10 @@ fn export_dialog_queues_jobs_and_writes_the_file() {
         if app(&h).export.jobs.len() == 2 {
             break;
         }
-        // the button reads "Add to queue" while a job is running and "Export" otherwise
-        match h.query_by_label("Add to queue") {
+        // the button reads "Add to Render Queue" while a job is running and "Render" otherwise
+        match h.query_by_label("Add to Render Queue") {
             Some(button) => button.click(),
-            None => h.get_all_by_label("Export").last().unwrap().click(),
+            None => render_button(&h).click(),
         }
         settle(&mut h);
     }
@@ -1075,9 +1077,7 @@ fn shapes_and_adjustment_layers_from_the_pool() {
     settle(&mut h);
     let adj = app(&h).selected_title().unwrap().0;
     assert!(adj.adjustment && adj.shape.is_none());
-    h.get_by_label("+ Blur").scroll_to_me();
-    settle(&mut h);
-    h.get_by_label("+ Blur").click();
+    add_effect(&mut h, "Blur & sharpen", "Blur");
     settle(&mut h);
     assert_eq!(
         app(&h).selected_title().unwrap().0.effects[0].kind,
@@ -2707,4 +2707,437 @@ fn an_audio_plugin_is_added_from_the_inspector_and_its_controls_are_sliders() {
     // and it undoes
     app_mut(&mut h).undo();
     settle(&mut h);
+}
+
+#[test]
+fn an_open_menu_follows_the_mouse_along_the_menu_bar() {
+    let mut h = editor();
+    assert!(h.query_by_label("New Project…").is_none());
+    h.get_by_label("File").click();
+    settle(&mut h);
+    assert!(
+        h.query_by_label("New Project…").is_some(),
+        "File opens on click"
+    );
+    // with a menu open, hovering another title switches to it without a click
+    // "Edit" is also a page tab; the menu is the leftmost one
+    let edit = h
+        .get_all_by_label("Edit")
+        .map(|n| n.rect().center())
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    h.hover_at(edit);
+    settle(&mut h);
+    assert!(h.query_by_label("New Project…").is_none(), "File closed");
+    assert!(
+        h.query_by_label("Undo   ⌘Z").is_some(),
+        "Edit opened by hover"
+    );
+    let view = h.get_by_label("View").rect().center();
+    h.hover_at(view);
+    settle(&mut h);
+    assert!(h.query_by_label("Undo   ⌘Z").is_none());
+    // with no menu open, hovering does nothing
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert!(
+        h.query_by_label("Zoom In   =").is_none(),
+        "Escape closes the menu"
+    );
+    h.hover_at(edit);
+    settle(&mut h);
+    assert!(
+        h.query_by_label("Undo   ⌘Z").is_none(),
+        "hover alone opens nothing"
+    );
+}
+
+/// Two clicks in one frame (the test clock moves a fixed quarter second per input event, longer than a
+/// double-click may take).
+/// Through the inspector's "+ Add effect" menu: the category, then the effect.
+fn add_effect(h: &mut H, category: &str, effect: &str) {
+    h.get_by_label("+ Add effect").scroll_to_me();
+    settle(h);
+    h.get_by_label("+ Add effect").click();
+    settle(h);
+    // a submenu's label carries its arrow
+    h.get_by(|n| n.label().is_some_and(|l| l.starts_with(category)))
+        .click();
+    settle(h);
+    h.get_by_label(effect).click();
+    settle(h);
+}
+
+fn double_click(h: &mut H, label: &str) {
+    // the library is on the left; the same name may also be a chip in the controls
+    let c = h
+        .get_all_by_label(label)
+        .map(|n| n.rect().center())
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: c,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::default(),
+    };
+    h.input_mut().events.extend([
+        egui::Event::PointerMoved(c),
+        press(true),
+        press(false),
+        press(true),
+        press(false),
+    ]);
+    h.step();
+    settle(h);
+}
+
+/// The Effects page: open it from the top bar, find an effect by searching, add it by double-click, by the
+/// right-click menu and by dragging it onto a clip; keyframe one of its settings; star a favourite; put a
+/// transition on a cut; and the Edit page pool lists the same library.
+#[test]
+fn effects_page_adds_effects_and_transitions_and_keyframes_settings() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let page_tab = h
+        .get_all_by_label("Effects")
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .unwrap();
+    click(&mut h, page_tab.center());
+    assert_eq!(app(&h).page, captaine_app::app::Page::Effects);
+    assert!(h.query_by_label("Category Blur & sharpen").is_some());
+    // select the first clip, then search and double-click
+    let at = clip_pos(app(&h), 0, 0.5);
+    click(&mut h, at);
+    let first = v1(app(&h)).items[0].id();
+    assert_eq!(app(&h).selected_clip, Some(first));
+    app_mut(&mut h).effects.search = "glow".into();
+    settle(&mut h);
+    assert!(
+        h.query_by_label("Lens flare").is_some(),
+        "matched by its description"
+    );
+    assert!(h.query_by_label("Twirl").is_none(), "filtered out");
+    double_click(&mut h, "Glow");
+    let effects = |h: &H, i: usize| -> Vec<EffectKind> {
+        v1(app(h)).items[i]
+            .as_clip()
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.kind)
+            .collect()
+    };
+    assert_eq!(
+        effects(&h, 0),
+        vec![EffectKind::Glow],
+        "double-click adds it"
+    );
+    // right-click menu
+    app_mut(&mut h).effects.search = "twirl".into();
+    settle(&mut h);
+    h.get_by_label("Twirl").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Apply to selected").click();
+    settle(&mut h);
+    assert_eq!(effects(&h, 0), vec![EffectKind::Glow, EffectKind::Twirl]);
+    // keyframe a setting from the controls on the right
+    h.get_by_label("Keyframe Glow Intensity").click();
+    settle(&mut h);
+    let anim = v1(app(&h)).items[0].as_clip().unwrap().anim.clone();
+    assert!(
+        anim.has("fx.glow.intensity"),
+        "{:?}",
+        anim.0.keys().collect::<Vec<_>>()
+    );
+    // drag an effect onto the second clip
+    app_mut(&mut h).effects.search = String::new();
+    settle(&mut h);
+    let target = clip_pos(app(&h), 1, 0.5);
+    egui::DragAndDrop::set_payload(
+        &h.ctx,
+        captaine_app::effects_page::EffectDrag(EffectKind::CameraShake),
+    );
+    h.hover_at(target);
+    settle(&mut h);
+    h.drag_at(target);
+    h.step();
+    h.drop_at(target);
+    settle(&mut h);
+    assert_eq!(
+        effects(&h, 1),
+        vec![EffectKind::CameraShake],
+        "dropped on clip 2"
+    );
+    // a transition onto the cut before the second clip (it is now selected)
+    app_mut(&mut h).effects.tab = captaine_app::effects_page::LibTab::Transitions;
+    settle(&mut h);
+    app_mut(&mut h).effects.search = "flash".into();
+    settle(&mut h);
+    double_click(&mut h, "Flash");
+    assert_eq!(
+        v1(app(&h)).items[1]
+            .as_clip()
+            .unwrap()
+            .transition
+            .map(|t| t.kind),
+        Some(TransitionKind::Flash)
+    );
+    // star a favourite: it shows on the Favourites tab
+    app_mut(&mut h).effects.search = "spin".into();
+    settle(&mut h);
+    let row = h
+        .get_all_by_label("Spin")
+        .map(|n| n.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    click(&mut h, pos2(row.right() - 14.0, row.center().y));
+    assert!(app(&h).prefs.favourites.contains(&"t:spin".to_string()));
+    app_mut(&mut h).effects.tab = captaine_app::effects_page::LibTab::Favourites;
+    app_mut(&mut h).effects.search = String::new();
+    settle(&mut h);
+    let in_library = |h: &H, l: &str| h.query_all_by_label(l).any(|n| n.rect().left() < 400.0);
+    assert!(in_library(&h, "Spin"));
+    assert!(!in_library(&h, "Flash"));
+    // the Edit page's pool has the same library
+    app_mut(&mut h).set_page(captaine_app::app::Page::Edit);
+    app_mut(&mut h).pool_tab = captaine_app::app::PoolTab::Effects;
+    settle(&mut h);
+    assert!(h.query_by_label("Category Distort").is_some());
+}
+
+/// With many tracks the timeline stays on screen at its own height and the tracks scroll inside it; the viewer
+/// and the side panels keep their places.
+#[test]
+fn many_tracks_scroll_inside_the_timeline() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        let op = {
+            let a = app(&h);
+            captaine_ops::edit::add_tracks(a.timeline().unwrap(), kind, 12, None).unwrap()
+        };
+        assert!(app_mut(&mut h).do_op(op));
+    }
+    settle(&mut h);
+    if let Ok(out) = std::env::var("CAPTAINE_SHOTS") {
+        h.render()
+            .unwrap()
+            .save(std::path::Path::new(&out).join("many_tracks.png"))
+            .unwrap();
+    }
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let window_h = 940.0;
+    let timeline_h = app(&h).prefs.timeline_h;
+    assert!(
+        (g.ruler.top() - (window_h - timeline_h)).abs() < 60.0,
+        "timeline at its own height: ruler at {}, panel {timeline_h}",
+        g.ruler.top()
+    );
+    assert!(
+        app(&h).central_rect.bottom() <= window_h - timeline_h + 2.0,
+        "viewer above the timeline: {:?}",
+        app(&h).central_rect
+    );
+    // the wheel over the tracks scrolls them down; the top track goes out of view
+    let first = g.rows[0];
+    let over = egui::pos2(g.ruler.left() + 200.0, g.ruler.bottom() + 60.0);
+    h.hover_at(over);
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -400.0),
+        modifiers: Modifiers::default(),
+        phase: egui::TouchPhase::Move,
+    });
+    settle(&mut h);
+    assert!(
+        app(&h).track_scroll > 100.0,
+        "scrolled {}",
+        app(&h).track_scroll
+    );
+    let g2 = app(&h).timeline_layout.clone().unwrap();
+    assert!(g2.rows[0].1 < first.1 - 100.0, "rows moved up");
+    // and the panel still has not grown
+    assert!((g2.ruler.top() - g.ruler.top()).abs() < 1.0);
+}
+
+/// In the CoCaptain box, Shift+Enter starts a new line and Enter sends the whole message.
+#[test]
+fn cocaptain_input_takes_several_lines_and_enter_sends() {
+    let mut h = editor();
+    app_mut(&mut h).show_copilot = true;
+    settle(&mut h);
+    let input = h
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .rect()
+        .center();
+    click(&mut h, input);
+    h.event(egui::Event::Text("cut the silences".into()));
+    h.step();
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+    settle(&mut h);
+    h.event(egui::Event::Text("then add a fade".into()));
+    settle(&mut h);
+    assert_eq!(app(&h).copilot.input, "cut the silences\nthen add a fade");
+    let before = app(&h).copilot.messages.len();
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(app(&h).copilot.input, "", "sent");
+    assert!(
+        app(&h).copilot.messages.len() > before,
+        "the message went to the chat"
+    );
+}
+
+/// Dragging across empty timeline space draws a selection box: every clip it touches is selected (shift adds to
+/// the selection), and the selection then moves as a group.
+#[test]
+fn a_selection_box_selects_the_clips_it_touches() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    let ids: Vec<Id> = v1(app(&h)).items.iter().map(|i| i.id()).collect();
+    let v2 = app(&h)
+        .timeline()
+        .unwrap()
+        .tracks
+        .iter()
+        .find(|t| t.name == "V2")
+        .unwrap()
+        .id;
+    let g = app(&h).timeline_layout.clone().unwrap();
+    let above = |x: f32| pos2(x, g.row_center(v2).unwrap());
+    // from empty V2 over the first clip, down and across into the second
+    let from = above(clip_pos(app(&h), 0, 0.3).x);
+    let to = clip_pos(app(&h), 1, 0.4);
+    drag(&mut h, from, to);
+    let mut sel = app(&h).selection_ids();
+    sel.sort();
+    let mut want = vec![ids[0], ids[1]];
+    want.sort();
+    assert_eq!(sel, want, "the box picked the first two clips");
+    assert!(matches!(app(&h).drag, Drag::None));
+    // shift and another box over the third adds it
+    let from = above(clip_pos(app(&h), 2, 0.2).x);
+    let to = clip_pos(app(&h), 2, 0.6);
+    h.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    drag(&mut h, from, to);
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    settle(&mut h);
+    assert_eq!(app(&h).selection_ids().len(), 3, "shift added the third");
+    // a plain box over nothing clears the selection
+    let empty = above(clip_pos(app(&h), 2, 0.9).x);
+    drag(&mut h, empty, empty + egui::vec2(30.0, 0.0));
+    assert!(app(&h).selection_ids().is_empty());
+}
+
+/// A picture of the docked CoCaptain chat with a short conversation, for looking at the layout by eye:
+/// `cargo test -p captaine-app --test interaction cocaptain_picture -- --ignored`, then open the PNG it names.
+#[test]
+#[ignore]
+fn cocaptain_picture() {
+    let mut h = editor();
+    {
+        let a = app_mut(&mut h);
+        a.show_copilot = true;
+        a.prefs.cocaptain_frames = true;
+    }
+    settle(&mut h);
+    {
+        let a = app_mut(&mut h);
+        a.copilot.messages.push(captaine_app::copilot::Msg {
+            user: true,
+            text: "does the colour grading look good?".into(),
+            ..Default::default()
+        });
+        a.copilot.messages.push(captaine_app::copilot::Msg {
+            user: false,
+            text: "Mostly, but the shots don't match yet.\n\n- **m_valley** has neon greens and a blown sky\n- **m_ebus** is flat\n\nI can match them to m_hotel if you like.".into(),
+            steps: vec!["get_timeline".into(), "look per_clip=true".into()],
+            ..Default::default()
+        });
+        a.copilot.wants_frames = Some("check the titles".into());
+    }
+    settle(&mut h);
+    let img = h.render().expect("render");
+    let out = std::env::temp_dir().join("cocaptain_picture.png");
+    img.save(&out).unwrap();
+    eprintln!("saved {}", out.display());
+}
+
+/// A picture file attached to CoCaptain becomes a PNG picture with a thumbnail; a video is attached by path; and
+/// both go out with the next message.
+#[test]
+fn files_attach_to_the_cocaptain_message() {
+    let mut h = editor();
+    app_mut(&mut h).show_copilot = true;
+    settle(&mut h);
+    let dir = std::env::temp_dir().join(format!("captaine-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pic = dir.join("shot.jpg");
+    let ok = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=64x48",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&pic)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let video = dir.join("reference.mp4");
+    std::fs::write(&video, b"not really a video").unwrap();
+    {
+        let a = app_mut(&mut h);
+        captaine_app::copilot::attach_file(a, pic.clone());
+        captaine_app::copilot::attach_file(a, video.clone());
+        let atts = &a.copilot.attachments;
+        assert_eq!(atts.len(), 2);
+        assert_eq!(&atts[0].png.as_ref().unwrap()[1..4], b"PNG");
+        assert!(atts[0].path.is_none());
+        assert_eq!(atts[1].path.as_deref(), Some(video.as_path()));
+    }
+    settle(&mut h);
+}
+
+#[test]
+fn clicking_a_gap_and_pressing_delete_closes_it() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut h = editor();
+    // lift the middle clip: a 4 s gap between the other two
+    let p = clip_pos(app(&h), 1, 0.5);
+    click(&mut h, p);
+    h.key_press(Key::Delete);
+    settle(&mut h);
+    let with_gap = layout(app(&h));
+    assert_eq!(with_gap.len(), 3);
+    // click the empty stretch: the gap is picked, no clip is
+    let p = clip_pos(app(&h), 1, 0.5);
+    click(&mut h, p);
+    assert!(app(&h).selected_clip.is_none());
+    assert!(app(&h).selected_gap.is_some(), "the gap is selected");
+    // delete closes it: the last clip moves up against the first
+    h.key_press(Key::Backspace);
+    settle(&mut h);
+    assert_eq!(layout(app(&h)), [(0, 96), (96, 96)]);
+    assert!(app(&h).selected_gap.is_none());
+    // one undo step brings the gap back
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert_eq!(layout(app(&h)), with_gap);
 }

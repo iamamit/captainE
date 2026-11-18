@@ -147,7 +147,7 @@ fn the_editor_lays_out_like_the_design() {
         harness.step();
         std::thread::sleep(std::time::Duration::from_millis(60)); // let thumbnails, waveforms and the first frame arrive
     }
-    // select a clip, move the playhead into it, open Copilot
+    // select a clip, move the playhead into it, open CoCaptain
     {
         let app = harness.state_mut().as_mut().unwrap();
         let (id, start) = {
@@ -167,7 +167,7 @@ fn the_editor_lays_out_like_the_design() {
         let img = harness.render().expect("render");
         std::fs::create_dir_all(&out).unwrap();
         img.save(Path::new(&out).join("editor.png")).unwrap();
-        // second view: the lower third selected, Titles tab open, Copilot closed
+        // second view: the lower third selected, Titles tab open, CoCaptain closed
         {
             let app = harness.state_mut().as_mut().unwrap();
             let (id, start) = {
@@ -193,6 +193,93 @@ fn the_editor_lays_out_like_the_design() {
             .render()
             .expect("render")
             .save(Path::new(&out).join("titles.png"))
+            .unwrap();
+    }
+    // the Color page: a shot selected and graded, the scopes reading the frame
+    {
+        let app = harness.state_mut().as_mut().unwrap();
+        let (id, start) = {
+            let tl = app.timeline().unwrap();
+            let v1 = tl.tracks.iter().find(|t| t.name == "V1").unwrap();
+            (v1.items[1].id(), v1.item_starts()[1])
+        };
+        app.selected_clip = Some(id);
+        app.set_playhead(start + 12);
+        app.show_copilot = false;
+        app.set_page(Page::Color);
+        let clip = app.selected().unwrap().0;
+        let mut video = clip.video;
+        video.color.exposure = 0.4;
+        video.color.saturation = 130.0;
+        assert!(app.do_op(Op::SetVideo { item: id, video }));
+    }
+    for _ in 0..30 {
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+    if let Ok(out) = std::env::var("CAPTAINE_SHOTS") {
+        harness
+            .render()
+            .expect("render")
+            .save(Path::new(&out).join("color.png"))
+            .unwrap();
+    }
+    {
+        let app = harness.state().as_ref().unwrap();
+        assert_eq!(app.page, Page::Color);
+        assert!(
+            app.scope_src.is_some(),
+            "the Color page's scopes got a frame"
+        );
+        assert_eq!(app.selected().unwrap().0.video.color.exposure, 0.4);
+    }
+    // the Effects page: the library, a clip with two effects (one setting keyframed) and a transition
+    {
+        let app = harness.state_mut().as_mut().unwrap();
+        let id = app.selected_clip.unwrap();
+        app.set_page(Page::Effects);
+        let mut glow = Effect::new(EffectKind::Glow);
+        glow.params[0] = 55.0;
+        let mut leak = Effect::new(EffectKind::LightLeak);
+        leak.params[0] = 45.0;
+        assert!(app.do_op(Op::SetEffects {
+            item: id,
+            effects: vec![glow, leak],
+        }));
+        assert!(app.set_transition_kind(id, TransitionKind::Flash).is_ok());
+        assert!(app.do_op(Op::SetAnimTrack {
+            item: id,
+            prop: "fx.glow.intensity".into(),
+            keys: vec![Keyframe::new(0, 20.0), Keyframe::new(30, 150.0)],
+        }));
+    }
+    for _ in 0..30 {
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+    if let Ok(out) = std::env::var("CAPTAINE_SHOTS") {
+        harness
+            .render()
+            .expect("render")
+            .save(Path::new(&out).join("effects.png"))
+            .unwrap();
+    }
+    assert_eq!(harness.state().as_ref().unwrap().page, Page::Effects);
+    // the Deliver page: settings, viewer and timeline, the render queue
+    harness
+        .state_mut()
+        .as_mut()
+        .unwrap()
+        .set_page(Page::Deliver);
+    for _ in 0..10 {
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    if let Ok(out) = std::env::var("CAPTAINE_SHOTS") {
+        harness
+            .render()
+            .expect("render")
+            .save(Path::new(&out).join("deliver.png"))
             .unwrap();
     }
     let app = harness.state().as_ref().unwrap();

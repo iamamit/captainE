@@ -11,7 +11,29 @@ use captaine_render::{preview_project, RenderOptions, Renderer};
 
 enum Req {
     Project { project: Arc<Project>, timeline: Id },
-    Frame { tick: i64, seq: u64 },
+    Frame { tick: i64, seq: u64, still: bool },
+    Quality(Quality),
+}
+
+/// How the viewer's pictures are made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quality {
+    /// Width of pictures while playing, in pixels
+    pub play_width: u32,
+    /// Width of the picture shown when stopped: always made from the original footage
+    pub still_width: u32,
+    /// Play from proxy files where they exist
+    pub proxies: bool,
+}
+
+impl Default for Quality {
+    fn default() -> Quality {
+        Quality {
+            play_width: 960,
+            still_width: 960,
+            proxies: false,
+        }
+    }
 }
 
 pub struct Frame {
@@ -27,9 +49,6 @@ pub struct RenderWorker {
     /// requests sent minus frames received (lets playback skip frames when the worker is behind)
     pub in_flight: u64,
 }
-
-/// Pictures are rendered at most this wide: plenty for the viewer, much cheaper than full size.
-const PREVIEW_WIDTH: f64 = 960.0;
 
 impl RenderWorker {
     pub fn spawn(ctx: egui::Context) -> RenderWorker {
@@ -51,14 +70,20 @@ impl RenderWorker {
         let _ = self.tx.send(Req::Project { project, timeline });
     }
 
-    pub fn request(&mut self, tick: i64) -> u64 {
+    /// Ask for the picture at `tick`; `still` when nothing is playing, so it is made at full quality.
+    pub fn request(&mut self, tick: i64, still: bool) -> u64 {
         self.next_seq += 1;
         self.in_flight += 1;
         let _ = self.tx.send(Req::Frame {
             tick,
             seq: self.next_seq,
+            still,
         });
         self.next_seq
+    }
+
+    pub fn set_quality(&self, q: Quality) {
+        let _ = self.tx.send(Req::Quality(q));
     }
 
     /// The newest finished frame, if any.
@@ -72,13 +97,38 @@ impl RenderWorker {
     }
 }
 
+/// One renderer per way of rendering: playing (fast) and stopped (sharp). When both ask for the same thing they
+/// share one, so the decoders are not doubled.
+struct Renderers {
+    play: Option<Renderer>,
+    still: Option<Renderer>,
+}
+
+fn make(p: &Project, tl: Id, width: u32, proxies: bool) -> Option<Renderer> {
+    let scale = (width as f64 / p.canvas(tl).0.max(1) as f64).min(1.0);
+    let scaled = preview_project(p, scale);
+    // pictures are decoded at the size they will be shown, camera originals on the video chip
+    let opts = RenderOptions {
+        use_proxy: proxies,
+        decode_scale: scale,
+        hw_decode: true,
+        ..RenderOptions::default()
+    };
+    Renderer::new(&scaled, tl, opts).ok()
+}
+
 fn run(rx: Receiver<Req>, tx: Sender<Frame>, ctx: egui::Context) {
-    let mut renderer: Option<Renderer> = None;
+    let mut r = Renderers {
+        play: None,
+        still: None,
+    };
+    let mut quality = Quality::default();
     let mut current: Option<(Arc<Project>, Id)> = None;
     while let Ok(first) = rx.recv() {
-        // fold everything queued into "newest project" and "newest frame"
+        // fold everything queued into "newest project", "newest quality" and "newest frame"
         let mut project = None;
         let mut frame = None;
+        let mut new_quality = None;
         let mut skipped = 0u64;
         for req in std::iter::once(first).chain(rx.try_iter()) {
             match req {
@@ -86,31 +136,43 @@ fn run(rx: Receiver<Req>, tx: Sender<Frame>, ctx: egui::Context) {
                     project: p,
                     timeline,
                 } => project = Some((p, timeline)),
-                Req::Frame { tick, seq } => {
+                Req::Frame { tick, seq, still } => {
                     if frame.is_some() {
                         skipped += 1;
                     }
-                    frame = Some((tick, seq));
+                    frame = Some((tick, seq, still));
                 }
+                Req::Quality(q) => new_quality = Some(q),
             }
         }
-        if let Some((p, tl)) = project {
-            let scale = (PREVIEW_WIDTH / p.canvas(tl).0 as f64).min(1.0);
-            let scaled = preview_project(&p, scale);
+        let quality_changed = new_quality.is_some_and(|q| q != quality);
+        if let Some(q) = new_quality {
+            quality = q;
+        }
+        if let Some((p, tl)) = project
+            .clone()
+            .or_else(|| quality_changed.then(|| current.clone()).flatten())
+        {
             let same_timeline = current.as_ref().is_some_and(|(_, t)| *t == tl);
-            let reused = match (&mut renderer, same_timeline) {
-                (Some(r), true) => r.set_project(&scaled).is_ok(),
-                _ => false,
-            };
-            if !reused {
-                // pictures are decoded at the size they will be shown, on the video chip where there is one
-                let opts = RenderOptions {
-                    use_proxy: true,
-                    decode_scale: scale,
-                    hw_decode: true,
-                    ..RenderOptions::default()
+            let shared = quality.play_width == quality.still_width && !quality.proxies;
+            // an edit keeps decoders and cached frames; a new timeline or new quality starts afresh
+            let refresh = |slot: &mut Option<Renderer>, width: u32, proxies: bool| {
+                let scale = (width as f64 / p.canvas(tl).0.max(1) as f64).min(1.0);
+                let kept = match slot {
+                    Some(r) if same_timeline && !quality_changed => {
+                        r.set_project(&preview_project(&p, scale)).is_ok()
+                    }
+                    _ => false,
                 };
-                renderer = Renderer::new(&scaled, tl, opts).ok();
+                if !kept {
+                    *slot = make(&p, tl, width, proxies);
+                }
+            };
+            refresh(&mut r.play, quality.play_width, quality.proxies);
+            if shared {
+                r.still = None;
+            } else {
+                refresh(&mut r.still, quality.still_width, false);
             }
             current = Some((p, tl));
         }
@@ -122,13 +184,20 @@ fn run(rx: Receiver<Req>, tx: Sender<Frame>, ctx: egui::Context) {
                 image: Err(String::new()),
             });
         }
-        if let Some((tick, seq)) = frame {
-            let image = match &mut renderer {
+        if let Some((tick, seq, still)) = frame {
+            let renderer = if still {
+                r.still.as_mut().or(r.play.as_mut())
+            } else {
+                r.play.as_mut()
+            };
+            let image = match renderer {
                 Some(r) => r.render(tick).map_err(|e| e.to_string()).map(|c| {
-                    egui::ColorImage::from_rgba_unmultiplied(
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
                         [c.width as usize, c.height as usize],
                         &c.to_rgba8(),
-                    )
+                    );
+                    r.recycle(c);
+                    img
                 }),
                 None => Err("no timeline".to_string()),
             };

@@ -15,7 +15,8 @@ use crate::Frame8;
 /// low-resolution proxy still yields frames the size of the original. Asking for the next frame is cheap;
 /// jumping far or backwards restarts the process at the new position.
 pub struct VideoReader {
-    child: Child,
+    /// The FFmpeg process; taken out when the reader is dropped
+    child: Option<Child>,
     /// Frames the reading thread has already pulled out of FFmpeg, in order
     frames: std::sync::mpsc::Receiver<Vec<u8>>,
     width: u32,
@@ -77,8 +78,15 @@ impl VideoReader {
         if hw && cfg!(target_os = "macos") {
             cmd.args(["-hwaccel", "videotoolbox"]);
         }
+        let source = captaine_media::decodable_path(path);
+        // a picture is one frame: loop it so any frame of the clip can be read
+        if captaine_media::is_tiled_picture(Path::new(&source)) {
+            cmd.args(["-stream_loop", "-1"]); // a HEIC that could not be converted
+        } else if captaine_media::is_still_image(&source) {
+            cmd.args(["-loop", "1"]);
+        }
         let mut child = cmd
-            .args(["-ss", &format!("{secs:.6}"), "-i", path])
+            .args(["-ss", &format!("{secs:.6}"), "-i", &source])
             // one output frame per decoded frame: the default would duplicate the first one when the seek
             // lands exactly half a frame early, shifting every later frame by one
             .args(["-fps_mode", "passthrough"])
@@ -87,7 +95,15 @@ impl VideoReader {
                 "-sn",
                 "-vf",
                 &format!(
-                    "scale={width}:{height}:flags=bicubic{}",
+                    // Frames are addressed by index (frame N = N / fps seconds), so the stream must be constant
+                    // rate: phone footage and re-exported edits are often variable frame rate (here 24 to 96 fps in
+                    // one file), and counting their raw frames drifts the picture away from the sound. The fps
+                    // filter puts every frame on the fps grid, starting at the first frame after the seek, picking
+                    // the source frame nearest each slot; a constant-rate file passes through unchanged.
+                    // Lanczos keeps the fine detail of camera originals when they are scaled down to the size
+                    // they are shown at (bicubic softens it noticeably at 2:1 and beyond)
+                    "fps=fps={:.9}:round=near,scale={width}:{height}:flags=lanczos{}",
+                    fps.as_f64(),
                     captaine_media::to_rec709(space)
                 ),
             ])
@@ -113,7 +129,7 @@ impl VideoReader {
             })
             .map_err(|e| e.to_string())?;
         Ok(VideoReader {
-            child,
+            child: Some(child),
             frames,
             width,
             height,
@@ -178,8 +194,21 @@ impl VideoReader {
 
 impl Drop for VideoReader {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // stopping FFmpeg means waiting for it to exit; do that off the thread that is rendering, so the frame
+        // at a cut does not wait for the previous clip's decoder to shut down
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let reap = move || {
+                let _ = child.wait();
+            };
+            if std::thread::Builder::new()
+                .name("reap-decoder".into())
+                .spawn(reap)
+                .is_err()
+            {
+                // no thread to spare: the process was killed already, it is reaped when we exit
+            }
+        }
     }
 }
 
@@ -229,6 +258,18 @@ impl FrameCache {
         }
     }
 
+    /// Drop every picture of `media` (its file changed on disk).
+    pub fn forget(&mut self, media: Id) {
+        let bytes = &mut self.bytes;
+        self.map.retain(|(m, _), (f, _)| {
+            let keep = *m != media;
+            if !keep {
+                *bytes -= f.rgba.len();
+            }
+            keep
+        });
+    }
+
     pub fn bytes(&self) -> usize {
         self.bytes
     }
@@ -265,6 +306,19 @@ mod tests {
         assert!(c.get(m, 1).is_none());
         assert!(c.get(m, 0).is_some() && c.get(m, 2).is_some());
         assert_eq!(c.bytes(), 80);
+    }
+
+    #[test]
+    fn forgetting_a_media_drops_only_its_pictures() {
+        let mut c = FrameCache::new(1 << 30);
+        let (a, b) = (Id::new(), Id::new());
+        c.insert(a, 0, f(10));
+        c.insert(a, 1, f(10));
+        c.insert(b, 0, f(10));
+        c.forget(a);
+        assert_eq!(c.len(), 1);
+        assert!(c.get(b, 0).is_some() && c.get(a, 0).is_none());
+        assert_eq!(c.bytes(), f(10).rgba.len());
     }
 
     #[test]

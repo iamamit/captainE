@@ -221,7 +221,7 @@ impl App {
         let new_id = copy.id;
         let media = self.project().media.clone();
         let fps = self.fps();
-        let what: &'static str = "Auto reframe";
+        let what: &'static str = "Reframe";
         let first = tl.id;
         self.spawn_job(first, what, move || {
             let mut ops: Vec<Op> = vec![Op::AddTimeline {
@@ -243,7 +243,7 @@ impl App {
             }
             Ok(Outcome::Edit {
                 description: format!(
-                    "Auto reframe to {label_owned}",
+                    "Reframe to {label_owned}",
                     label_owned = canvas.0.to_string() + "x" + &canvas.1.to_string()
                 ),
                 ops,

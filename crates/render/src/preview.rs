@@ -23,9 +23,23 @@ pub fn preview_project(project: &Project, scale: f64) -> Project {
         for track in tl.tracks.iter_mut() {
             let track = Arc::make_mut(track);
             for item in track.items.iter_mut() {
-                if let Item::Clip(c) = item {
-                    c.video.transform.position.0 *= sx;
-                    c.video.transform.position.1 *= sx;
+                // positions are canvas pixels: static ones and keyframed ones scale with the canvas
+                let (video, anim) = match item {
+                    Item::Clip(c) => (&mut c.video, &mut c.anim),
+                    Item::Title(t) => (&mut t.video, &mut t.anim),
+                    Item::Gap(_) => continue,
+                };
+                video.transform.position.0 *= sx;
+                video.transform.position.1 *= sx;
+                for prop in ["position.x", "position.y"] {
+                    let keys: Vec<_> = anim
+                        .keys(prop)
+                        .iter()
+                        .map(|k| captaine_model::Keyframe { v: k.v * sx, ..*k })
+                        .collect();
+                    if !keys.is_empty() {
+                        anim.set_track(prop, keys);
+                    }
                 }
             }
         }

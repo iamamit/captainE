@@ -235,7 +235,8 @@ pub fn matte_video(
     let n = (dur_secs * fps).round().max(1.0) as usize;
     let scratch = Scratch::new("matte")?;
     let (frames, mattes) = (scratch.0.join("in"), scratch.0.join("out"));
-    let got = extract_frames(media, from_secs, n, fps, 640, &frames)?;
+    // 1280 wide: at 640 a person far from the camera is a few pixels across and the cut-out edge goes soft
+    let got = extract_frames(media, from_secs, n, fps, 1280, &frames)?;
     if got == 0 {
         return Err("no frames could be read from the media".into());
     }

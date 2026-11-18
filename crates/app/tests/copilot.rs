@@ -1,4 +1,4 @@
-//! The local Copilot skills: real analysis, real ops, undoable.
+//! The local CoCaptain skills: real analysis, real ops, undoable.
 
 use std::process::Command;
 
@@ -107,7 +107,7 @@ fn run_until(h: &mut H, cond: impl Fn(&App) -> bool) {
             return;
         }
     }
-    panic!("timed out waiting for Copilot");
+    panic!("timed out waiting for CoCaptain");
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn say(text: &str) -> Result<Value, String> {
     Ok(json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}))
 }
 
-/// Make the Copilot talk to `responses` instead of the Anthropic API.
+/// Make the CoCaptain talk to `responses` instead of the Anthropic API.
 fn script(h: &mut H, responses: Vec<Result<Value, String>>) -> Arc<Mutex<Vec<Value>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (s2, queue) = (

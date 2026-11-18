@@ -58,7 +58,14 @@ impl Jobs {
 fn thumbnail(m: &MediaRef) -> Option<egui::ColorImage> {
     let len = m.duration?;
     let frame = (len.value / 10).clamp(0, (len.value - 1).max(0));
-    let mut r = VideoReader::open(&m.path, m.width, m.height, len.rate, frame).ok()?;
+    // decode straight at a small size (on the video chip where there is one): a 4K frame would be decoded and
+    // piped in full only to be shrunk to a thumbnail
+    let w = m.width.clamp(2, 640);
+    let h = ((m.height as u64 * w as u64 / m.width.max(1) as u64) as u32).max(2) & !1;
+    let space = captaine_media::detect_space(&m.path);
+    let mut r = VideoReader::open_in(&m.path, w & !1, h, len.rate, frame, true, space)
+        .or_else(|_| VideoReader::open(&m.path, m.width, m.height, len.rate, frame))
+        .ok()?;
     let f = r.frame(frame).ok()?.thumbnail(320);
     Some(egui::ColorImage::from_rgba_unmultiplied(
         [f.width as usize, f.height as usize],

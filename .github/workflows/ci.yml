@@ -35,6 +35,9 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
 
+      - name: License check (CONTRIBUTING.md rule 3)
+        if: runner.os == 'Linux'
+        run: python3 tools/license_check.py
       - name: Build
         run: cargo build --workspace --all-targets
       - name: Test

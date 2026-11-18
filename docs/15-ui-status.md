@@ -23,12 +23,12 @@ screenshot above is produced. Qt/QML (docs/10) stays the fallback if egui's text
 
 | Area | State |
 |---|---|
-| Top bar: menus, page tabs, project name and fps, Copilot toggle, Render | Done. Only **Edit** and **Deliver** (opens export) are real pages; Media, Cut, Color, Effects say they are planned |
-| Media pool: bins, search, thumbnails, drag to timeline, double-click to append, drop files from Finder | Done. Titles tab works; Effects and Transitions tabs are placeholders (not in the engine yet) |
+| Top bar: menus, page tabs, project name and fps, CoCaptain toggle, Render | Done. **Edit**, **Color**, **Effects** and **Deliver** are real pages; Cut says it is planned; Media was removed (see [STATUS](STATUS.md)) |
+| Media pool: bins, search, thumbnails, drag to timeline, double-click to append, drop files from Finder | Done. Titles, Effects and Transitions tabs work (the last two show the effects library) |
 | Program viewer: picture, timecode chip, dashed outline of the selected clip's transform, transport, Mark In/Out | Done |
 | Inspector: Transform, Color, Audio, Blend, Metadata | Done and live. Drag a slider and it is one undo step. **Speed** is shown disabled (no speed changes in the engine yet) |
 | Timeline: tracks, clips with waveforms, ruler, playhead, snapping, zoom/scroll, Select/Trim/Blade/Hand/Zoom, Lift, Extract | Done. **Link** and **Markers** are shown disabled |
-| Copilot panel | **Done, two modes.** With an Anthropic API key (paste it in the panel, or set `ANTHROPIC_API_KEY`) it is the Claude agent of docs/08: free-form requests, live tool progress, one suggestion to Preview / Apply / Discard, follow-ups that build on it. Without a key it runs built-in local skills (remove silences, colour, fades) so it still works offline. Not tried against the live API from this machine (no key here); the loop is tested end to end with a scripted model |
+| CoCaptain panel | **Done, two modes.** With an Anthropic API key (paste it in the panel, or set `ANTHROPIC_API_KEY`) it is the Claude agent of docs/08: free-form requests, live tool progress, one suggestion to Preview / Apply / Discard, follow-ups that build on it. Without a key it runs built-in local skills (remove silences, colour, fades) so it still works offline. Not tried against the live API from this machine (no key here); the loop is tested end to end with a scripted model |
 | Title clips (the purple "Lower Third" in the mockup) | **Done.** Lower Third, Centered and Caption templates; Titles tab, inspector (text, size, colours, fades, transform), move/trim/cut like clips, burned into exports |
 | Keyframe diamonds in the inspector | Not built (no keyframes in the engine yet) |
 
@@ -58,4 +58,4 @@ wall clock. Proxies (`captaine proxy`) are used automatically for preview when t
 ## Branches (Phase 4)
 
 The branch pill in the top bar opens the branch menu; the inspector has a **History** tab; **Compare** and **Merge** are
-full-window review screens; Copilot can save a suggestion on its own branch. See [16](16-phase-4-status.md).
+full-window review screens; CoCaptain can save a suggestion on its own branch. See [16](16-phase-4-status.md).

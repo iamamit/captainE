@@ -61,27 +61,120 @@ def empty_matte(w, h, out):
     write_matte(black.imageByCroppingToRect_(Quartz.CGRectMake(0, 0, w, h)), w, h, out)
 
 
-def matte_one(path, out, mode):
-    w, h = image_size(path)
-    handler = handler_for(path)
+def segment(handler, mode):
+    """The subject matte for the picture behind `handler` as a CIImage at the model's own size, or None."""
     if mode == "person":
         req = Vision.VNGeneratePersonSegmentationRequest.alloc().initWithCompletionHandler_(None)
         req.setQualityLevel_(Vision.VNGeneratePersonSegmentationRequestQualityLevelAccurate)
         ok, _ = handler.performRequests_error_([req], None)
         res = req.results() if ok else None
-        if res:
-            write_matte(CIImage.imageWithCVPixelBuffer_(res[0].pixelBuffer()), w, h, out)
-            return
-    else:
-        req = Vision.VNGenerateForegroundInstanceMaskRequest.alloc().initWithCompletionHandler_(None)
-        ok, _ = handler.performRequests_error_([req], None)
-        res = req.results() if ok else None
-        if res:
-            inst = res[0].allInstances()
-            mask, err = res[0].generateScaledMaskForImageForInstances_fromRequestHandler_error_(inst, handler, None)
-            if mask is not None:
-                write_matte(CIImage.imageWithCVPixelBuffer_(mask), w, h, out)
-                return
+        return CIImage.imageWithCVPixelBuffer_(res[0].pixelBuffer()) if res else None
+    req = Vision.VNGenerateForegroundInstanceMaskRequest.alloc().initWithCompletionHandler_(None)
+    ok, _ = handler.performRequests_error_([req], None)
+    res = req.results() if ok else None
+    if not res:
+        return None
+    mask, _ = res[0].generateScaledMaskForImageForInstances_fromRequestHandler_error_(
+        res[0].allInstances(), handler, None
+    )
+    return CIImage.imageWithCVPixelBuffer_(mask) if mask is not None else None
+
+
+def brightest(ci):
+    """The largest value in a grey image, 0..1."""
+    global _ctx
+    if _ctx is None:
+        _ctx = CIContext.alloc().init()
+    f = Quartz.CIFilter.filterWithName_("CIAreaMaximum")
+    f.setValue_forKey_(ci, "inputImage")
+    f.setValue_forKey_(Quartz.CIVector.vectorWithCGRect_(ci.extent()), "inputExtent")
+    px = bytearray(4)
+    _ctx.render_toBitmap_rowBytes_bounds_format_colorSpace_(
+        f.outputImage(), px, 4, Quartz.CGRectMake(0, 0, 1, 1), Quartz.kCIFormatRGBA8, None
+    )
+    return px[0] / 255.0
+
+
+def fit(ci, w, h, x=0.0, y=0.0):
+    """`ci` scaled to w x h and moved to (x, y) (bottom-left origin)."""
+    ext = ci.extent()
+    t = Quartz.CGAffineTransformMakeScale(w / ext.size.width, h / ext.size.height)
+    t = Quartz.CGAffineTransformConcat(
+        Quartz.CGAffineTransformMakeTranslation(-ext.origin.x, -ext.origin.y), t
+    )
+    t = Quartz.CGAffineTransformConcat(t, Quartz.CGAffineTransformMakeTranslation(x, y))
+    return ci.imageByApplyingTransform_(t)
+
+
+def small_subjects(path, w, h, mode):
+    """Matte for subjects too small in the frame for the segmentation model: find them (people, or for
+    foreground what draws the eye), segment a square crop around each at a size the model can see, and put the
+    pieces back in place. None when nothing is found."""
+    full = CIImage.imageWithContentsOfURL_(NSURL.fileURLWithPath_(path))
+    finder = (
+        Vision.VNDetectHumanRectanglesRequest.alloc().initWithCompletionHandler_(None)
+        if mode == "person"
+        else Vision.VNGenerateObjectnessBasedSaliencyImageRequest.alloc().initWithCompletionHandler_(None)
+    )
+    if mode == "person":
+        finder.setUpperBodyOnly_(False)
+    ok, _ = handler_for(path).performRequests_error_([finder], None)
+    found = finder.results() if ok else None
+    if not found:
+        return None
+    boxes = (
+        [o.boundingBox() for o in found]
+        if mode == "person"
+        else [o.boundingBox() for o in (found[0].salientObjects() or [])]
+    )
+    canvas = None
+    for b in boxes:
+        bw, bh = b.size.width * w, b.size.height * h
+        side = min(max(bw, bh) * 1.6, w, h)
+        side = max(side, min(256.0, w, h))
+        cx, cy = (b.origin.x + b.size.width / 2) * w, (b.origin.y + b.size.height / 2) * h
+        x = min(max(cx - side / 2, 0.0), w - side)
+        y = min(max(cy - side / 2, 0.0), h - side)
+        crop = fit(full.imageByCroppingToRect_(Quartz.CGRectMake(x, y, side, side)), side, side)
+        piece = segment(Vision.VNImageRequestHandler.alloc().initWithCIImage_options_(crop, {}), mode)
+        if piece is None:
+            continue
+        piece = fit(piece, side, side, x, y)
+        if canvas is None:
+            canvas = piece
+        else:
+            f = Quartz.CIFilter.filterWithName_("CIMaximumCompositing")
+            f.setValue_forKey_(piece, "inputImage")
+            f.setValue_forKey_(canvas, "inputBackgroundImage")
+            canvas = f.outputImage()
+    if canvas is None:
+        return None
+    # a crop's matte keeps a faint haze around the subject that shows as a ghost of the background: take
+    # everything under 15% to nothing and stretch the rest back to 0..1
+    lift = Quartz.CIFilter.filterWithName_("CIColorMatrix")
+    lift.setValue_forKey_(canvas, "inputImage")
+    k, b = 1 / 0.85, -0.15 / 0.85
+    for name, vec in (("inputRVector", (k, 0, 0, 0)), ("inputGVector", (0, k, 0, 0)), ("inputBVector", (0, 0, k, 0))):
+        lift.setValue_forKey_(Quartz.CIVector.vectorWithX_Y_Z_W_(*vec), name)
+    lift.setValue_forKey_(Quartz.CIVector.vectorWithX_Y_Z_W_(b, b, b, 0), "inputBiasVector")
+    clamp = Quartz.CIFilter.filterWithName_("CIColorClamp")
+    clamp.setValue_forKey_(lift.outputImage(), "inputImage")
+    canvas = clamp.outputImage()
+    black = CIImage.imageWithColor_(Quartz.CIColor.colorWithRed_green_blue_(0, 0, 0))
+    return canvas.imageByCompositingOverImage_(black).imageByCroppingToRect_(Quartz.CGRectMake(0, 0, w, h))
+
+
+def matte_one(path, out, mode):
+    w, h = image_size(path)
+    ci = segment(handler_for(path), mode)
+    if ci is not None and brightest(ci) > 0.5:
+        write_matte(ci, w, h, out)
+        return
+    # nothing found in the whole frame: the subject may just be small in it
+    ci = small_subjects(path, w, h, mode)
+    if ci is not None:
+        write_matte(ci, w, h, out)
+        return
     empty_matte(w, h, out)
 
 
